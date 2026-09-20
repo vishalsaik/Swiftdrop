@@ -1,0 +1,34 @@
+# SwiftDrop API — manual test curls
+# Server: go run ./cmd/api  (listens on 127.0.0.1:8080)
+# DB: docker run --name postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=swiftdrop -p 5434:5432 -d postgres:16-alpine
+
+## Health check
+curl -i http://127.0.0.1:8080/health
+
+
+## Create order
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"order-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":2,"unitPriceCents":599}],"state":"created"}'
+
+
+## Get order by id
+curl -i http://127.0.0.1:8080/orders/order-1
+
+
+## Get an order that was never created (should 404 once real persistence exists)
+curl -i http://127.0.0.1:8080/orders/does-not-exist
+
+
+## Create with an invalid body (missing/malformed JSON) — should 400
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d 'not valid json'
+
+
+## Create a second order, to check list/lookup isn't accidentally sharing state
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"order-2","customerId":"cust-2","restaurantId":"rest-1","items":[{"sku":"SKU2","name":"Fries","quantity":1,"unitPriceCents":249}],"state":"created"}'
+
+curl -i http://127.0.0.1:8080/orders/order-2

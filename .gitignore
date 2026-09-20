@@ -1,0 +1,12 @@
+# Go build artifacts
+/bin/
+*.exe
+*.exe~
+*.test
+*.out
+
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
