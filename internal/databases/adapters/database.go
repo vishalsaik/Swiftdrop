@@ -79,3 +79,27 @@ func (db *DBAdapter) GetOrderbyId(ctx context.Context, id string) (domain.Order,
 
 	return order, nil
 }
+func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, state string) (domain.Order, error) {
+	query := `
+		UPDATE orders
+		SET state = $1
+		WHERE id = $2
+		RETURNING id, customer_id, restaurant_id, items, state;
+	`
+
+	var order domain.Order
+	err := db.Pool.QueryRow(ctx, query, state, id).Scan(
+		&order.ID,
+		&order.CustomerID,
+		&order.RestaurantID,
+		&order.Items,
+		&order.State,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Order{}, fmt.Errorf("order not found: %s", id)
+		}
+		return domain.Order{}, fmt.Errorf("failed to update order: %w", err)
+	}
+	return order, nil
+}

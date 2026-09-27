@@ -9,6 +9,7 @@ import (
 
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
+	"swiftdrop/internal/order"
 
 	"github.com/gorilla/mux"
 )
@@ -34,6 +35,7 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/health", GetHealth).Methods("GET")
 	s.Router.HandleFunc("/orders", s.CreateOrder).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}", s.GetOrderByID).Methods("GET")
+	s.Router.HandleFunc("/orders/{id}/cancel", s.CancelOrder).Methods("POST")
 }
 
 func GetHealth(w http.ResponseWriter, r *http.Request) {
@@ -98,4 +100,49 @@ func (s *Server) GetOrderByID(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(order)
+}
+func (s *Server) CancelOrder(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	vars := mux.Vars(r)
+	orderID := vars["id"]
+	if orderID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing order ID route parameter"})
+		return
+	}
+	orderItem, err := s.DB.GetOrderbyId(r.Context(), orderID)
+	if err != nil {
+		log.Printf("database query error for %s: %v", orderID, err)
+
+		// 404 Condition checked via the adapter error format match
+		if strings.Contains(err.Error(), "not found") {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Order %s could not be found", orderID)})
+			return
+		}
+
+		// Return 500 database access error as a structural JSON object
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Internal database verification step failed"})
+		return
+	}
+
+	if !order.CanTransition(orderItem.State, domain.OrderCancelled) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("order %s cannot be cancelled from state %s", orderID, orderItem.State),
+		})
+		return
+	}
+
+	updatedOrder, err := s.DB.UpdateOrderState(r.Context(), orderID, string(domain.OrderCancelled))
+	if err != nil {
+		log.Printf("database update error for %s: %v", orderID, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update order due to an internal server error"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(updatedOrder)
 }

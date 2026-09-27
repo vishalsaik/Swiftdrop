@@ -12,8 +12,6 @@ const (
 	OrderPaymentPending OrderState = "payment_pending"
 	OrderPaid           OrderState = "paid"
 	OrderPreparing      OrderState = "preparing"
-	OrderReadyForPickup OrderState = "ready_for_pickup"
-	OrderDriverAssigned OrderState = "driver_assigned"
 	OrderPickedUp       OrderState = "picked_up"
 	OrderDelivered      OrderState = "delivered"
 	OrderCancelled      OrderState = "cancelled"
@@ -39,9 +37,14 @@ type Order struct {
 	RestaurantID     string      `json:"restaurantId"`
 	Items            []OrderItem `json:"items"`
 	State            OrderState  `json:"state"`
-	AssignedDriverID string      `json:"assignedDriverId"`
-	CreatedAt        time.Time   `json:"createdAt"`
-	UpdatedAt        time.Time   `json:"updatedAt"`
+	// FoodReady is nil until the kitchen (or a prep-time timer) marks the
+	// order ready; once set, it also records when. Independent of
+	// AssignedDriverID — either can become true first (see internal/order
+	// state design notes: dispatch can start during Preparing).
+	FoodReady        *time.Time `json:"foodReady,omitempty"`
+	AssignedDriverID string     `json:"assignedDriverId"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 // TotalCents sums the order's line items.
