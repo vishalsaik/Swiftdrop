@@ -33,7 +33,7 @@ func (db *DBAdapter) CreateOrder(ctx context.Context, order domain.Order) (domai
 	query := `
 		INSERT INTO orders (id, customer_id, restaurant_id, items, state) 
 		VALUES ($1, $2, $3, $4, $5) 
-		RETURNING id, customer_id, restaurant_id, items, state`
+		RETURNING id, customer_id, restaurant_id, items, state,food_ready,assigned_driver_id`
 	// pgx natively serializes order.Items slice directly into a JSONB column block
 	err := db.Pool.QueryRow(ctx, query,
 		order.ID,
@@ -47,6 +47,8 @@ func (db *DBAdapter) CreateOrder(ctx context.Context, order domain.Order) (domai
 		&order.RestaurantID,
 		&order.Items,
 		&order.State,
+		&order.FoodReady,
+		&order.AssignedDriverID,
 	)
 	if err != nil {
 		return domain.Order{}, fmt.Errorf("failed to insert order payload: %w", err)
@@ -56,7 +58,7 @@ func (db *DBAdapter) CreateOrder(ctx context.Context, order domain.Order) (domai
 }
 func (db *DBAdapter) GetOrderbyId(ctx context.Context, id string) (domain.Order, error) {
 	query := `
-		SELECT id, customer_id, restaurant_id, items, state 
+		SELECT id, customer_id, restaurant_id, items, state,food_ready,assigned_driver_id
 		FROM orders 
 		WHERE id = $1;
 	`
@@ -69,6 +71,8 @@ func (db *DBAdapter) GetOrderbyId(ctx context.Context, id string) (domain.Order,
 		&order.RestaurantID,
 		&order.Items,
 		&order.State,
+		&order.FoodReady,
+		&order.AssignedDriverID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -84,7 +88,7 @@ func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, state stri
 		UPDATE orders
 		SET state = $1
 		WHERE id = $2
-		RETURNING id, customer_id, restaurant_id, items, state;
+		RETURNING id, customer_id, restaurant_id, items, state,food_ready,assigned_driver_id;
 	`
 
 	var order domain.Order
@@ -94,6 +98,60 @@ func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, state stri
 		&order.RestaurantID,
 		&order.Items,
 		&order.State,
+		&order.FoodReady,
+		&order.AssignedDriverID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Order{}, fmt.Errorf("order not found: %s", id)
+		}
+		return domain.Order{}, fmt.Errorf("failed to update order: %w", err)
+	}
+	return order, nil
+}
+
+func (db *DBAdapter) SetFoodReady(ctx context.Context, id string) (domain.Order, error) {
+	query := `
+		UPDATE orders
+		SET food_ready = COALESCE(food_ready, now())
+		WHERE id = $1
+		RETURNING id, customer_id, restaurant_id, items,state, food_ready,assigned_driver_id;
+	`
+
+	var order domain.Order
+	err := db.Pool.QueryRow(ctx, query, id).Scan(
+		&order.ID,
+		&order.CustomerID,
+		&order.RestaurantID,
+		&order.Items,
+		&order.State,
+		&order.FoodReady,
+		&order.AssignedDriverID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Order{}, fmt.Errorf("order not found: %s", id)
+		}
+		return domain.Order{}, fmt.Errorf("failed to update order: %w", err)
+	}
+	return order, nil
+}
+func (db *DBAdapter) AcceptOrder(ctx context.Context, id string, driverID string, state string) (domain.Order, error) {
+	query := `
+		UPDATE orders
+		SET state = $1, assigned_driver_id = $2
+		WHERE id = $3
+		RETURNING id, customer_id, restaurant_id, items, state, food_ready, assigned_driver_id;
+		`
+	var order domain.Order
+	err := db.Pool.QueryRow(ctx, query, state, driverID, id).Scan(
+		&order.ID,
+		&order.CustomerID,
+		&order.RestaurantID,
+		&order.Items,
+		&order.State,
+		&order.FoodReady,
+		&order.AssignedDriverID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

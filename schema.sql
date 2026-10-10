@@ -5,9 +5,11 @@
 --   docker run --name postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=swiftdrop -p 5434:5432 -d postgres:16-alpine)
 
 CREATE TABLE IF NOT EXISTS orders (
-    id            TEXT PRIMARY KEY,
-    customer_id   TEXT NOT NULL,
-    restaurant_id TEXT NOT NULL,
-    items         JSONB NOT NULL,
-    state         TEXT NOT NULL
+    id                 TEXT PRIMARY KEY,
+    customer_id        TEXT NOT NULL,
+    restaurant_id      TEXT NOT NULL,
+    items              JSONB NOT NULL,
+    state              TEXT NOT NULL,
+    food_ready         TIMESTAMPTZ,        -- NULL until the kitchen (or its stand-in) marks it ready
+    assigned_driver_id TEXT NOT NULL DEFAULT ''
 );

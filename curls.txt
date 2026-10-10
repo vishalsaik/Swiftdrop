@@ -48,3 +48,74 @@ curl -i -X POST http://127.0.0.1:8080/orders/order-3/cancel
 
 ## Cancel an order that doesn't exist — 404
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/cancel
+
+
+# ---------------------------------------------------------------------------
+# Full order lifecycle through the real endpoints:
+#   create -> pay (mock) -> accept (assigns a stub driver) -> ready -> pickup -> deliver
+# ---------------------------------------------------------------------------
+
+## 1. Create the order (starts as "created")
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"life-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":1,"unitPriceCents":599}],"state":"created"}'
+
+
+## 2. Accept before paying — 409 (created cannot jump to preparing)
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/accept
+
+
+## 3. Pay (mock) — 200, state "paid"
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/pay
+
+
+## 4. Pay again — 409 (already paid)
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/pay
+
+
+## 5. Restaurant accepts — 200, state "preparing", assignedDriverId is set
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/accept
+
+
+## 6. Pickup before the food is ready — 409 "Food is not ready yet"
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/pickup
+
+
+## 7. Kitchen marks the food ready — 200, foodReady set, state stays "preparing"
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/ready
+
+
+## 8. Ready again — 200, same foodReady timestamp (idempotent)
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/ready
+
+
+## 9. Pickup — 200, state "picked_up" (food ready AND driver assigned)
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/pickup
+
+
+## 10. Deliver — 200, state "delivered"
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/deliver
+
+
+## 11. Deliver again — 409 (delivered is terminal)
+curl -i -X POST http://127.0.0.1:8080/orders/life-1/deliver
+
+
+## Cancelling is allowed up to pickup, e.g. after paying
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"life-2","customerId":"cust-2","restaurantId":"rest-1","items":[],"state":"created"}'
+curl -i -X POST http://127.0.0.1:8080/orders/life-2/pay
+curl -i -X POST http://127.0.0.1:8080/orders/life-2/cancel
+
+
+## Paying a cancelled order — 409
+curl -i -X POST http://127.0.0.1:8080/orders/life-2/pay
+
+
+## Any lifecycle endpoint on an order that doesn't exist — 404
+curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/pay
+curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/accept
+curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/ready
+curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/pickup
+curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/deliver
