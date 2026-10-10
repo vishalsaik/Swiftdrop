@@ -67,6 +67,27 @@ curls.txt         example curl commands for manual API testing
    curl http://127.0.0.1:8080/health
    ```
 
+## Tests
+
+```bash
+go test ./...
+```
+
+The state-machine, domain and HTTP handler tests need nothing but Go: the handlers are driven through the real router against an in-memory fake of `ports.IDatabase`.
+
+The Postgres adapter tests need a database and are skipped unless `SWIFTDROP_TEST_DSN` is set. Use a separate database so your dev data is never touched:
+
+```bash
+docker exec postgres psql -U postgres -c "CREATE DATABASE swiftdrop_test;"
+docker exec -i postgres psql -U postgres -d swiftdrop_test < schema.sql
+```
+
+```bash
+SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?sslmode=disable" go test ./... -cover
+```
+
+(PowerShell: `$env:SWIFTDROP_TEST_DSN = "postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?sslmode=disable"` first, then `go test ./... -cover`.)
+
 ## API
 
 | Method | Path                   | Description                                                                              |
