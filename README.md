@@ -11,7 +11,10 @@ Early stage. Working today:
 - Postgres-backed persistence via [pgx](https://github.com/jackc/pgx), behind a `ports.IDatabase` interface so the storage backend is swappable
 - Order state machine (`internal/order`) — a `legalTransitions` table + `CanTransition`/`Apply` that decide which order-state changes are legal. `Order.State` is a short linear chain (`Created → PaymentPending → Paid → Preparing → PickedUp → Delivered`, plus `Cancelled` from any pre-`PickedUp` state); food-ready and driver-assignment are tracked as independent fields (`FoodReady`, `AssignedDriverID`) rather than states, since either can become true before the other
 
-Stand-ins for now: `/pay` is a mock (no payment provider, no idempotency key yet) and `/accept` assigns a random UUID as the driver. Not built yet: real payment processing, real driver registry and dispatch, and forcing `POST /orders` to always start in `created` (it still honours the client's `state`).
+- Request validation on `POST /orders` as two Chain-of-Responsibility pipelines: an HTTP middleware chain (body size limit, `Content-Type` check) and a validator chain of field rules (`internal/validation`) that stops at the first failure. Orders always start as `created`, and the payment type (`card`, `cash`, `wallet`) is required and stored
+- Storage errors cross the `IDatabase` boundary as sentinels (`ports.ErrOrderNotFound`, `ports.ErrOrderExists`), so handlers never see driver-specific errors
+
+Stand-ins for now: `/pay` is a mock (no payment provider, no idempotency key yet) and `/accept` assigns a random UUID as the driver. Not built yet: real payment processing, a real driver registry and dispatch, CORS, and compare-and-set on state writes.
 
 ## Tech stack
 
@@ -26,10 +29,11 @@ Stand-ins for now: `/pay` is a mock (no payment provider, no idempotency key yet
 ```
 cmd/
   api/            entry point — wires dependencies, starts the HTTP server
-  handlers/       Server struct + HTTP handlers
+  handlers/       Server struct, HTTP handlers, and the middleware chain
 internal/
   domain/         plain data types: Order, Driver, Payment, Event
   order/          legal order-state transitions (CanTransition/Apply)
+  validation/     the field rules for a new order and the chain that runs them
   databases/
     ports/        IDatabase — the storage interface handlers depend on
     adapters/     Postgres implementation of IDatabase
@@ -93,7 +97,7 @@ SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?s
 | Method | Path                   | Description                                                                              |
 |--------|------------------------|--------------------------------------------------------------------------------------------|
 | GET    | `/health`              | Health check                                                                               |
-| POST   | `/orders`              | Create an order                                                                            |
+| POST   | `/orders`              | Create an order (always starts `created`); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing)                                                      |
 | POST   | `/orders/{id}/pay`     | Mock payment: `created → payment_pending → paid`; `409` from any other state              |
 | POST   | `/orders/{id}/accept`  | Restaurant accepts: `paid → preparing` and a stub driver is assigned; `409` otherwise       |
@@ -102,4 +106,16 @@ SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?s
 | POST   | `/orders/{id}/pickup`  | `preparing → picked_up`; `409` unless food is ready **and** a driver is assigned           |
 | POST   | `/orders/{id}/deliver` | `picked_up → delivered`; `409` from any other state                                        |
 
-Every lifecycle endpoint answers `404` for an unknown order and `409` for a move the order's current state doesn't allow. Errors are `{"error": "..."}`.
+Every lifecycle endpoint answers `404` for an unknown order and `409` for a move the order's current state doesn't allow. Errors are always `{"error": "..."}`.
+
+A create request looks like this (`paymentType` is one of `card`, `cash`, `wallet`; unknown fields are rejected, and the server owns `state`, `foodReady` and `assignedDriverId`):
+
+```json
+{
+  "id": "order-1",
+  "customerId": "cust-1",
+  "restaurantId": "rest-1",
+  "paymentType": "card",
+  "items": [{ "sku": "SKU1", "name": "Burger", "quantity": 2, "unitPriceCents": 599 }]
+}
+```

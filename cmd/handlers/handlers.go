@@ -2,14 +2,15 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/order"
+	"swiftdrop/internal/validation"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -22,12 +23,18 @@ type Server struct {
 	DB     ports.IDatabase
 }
 
+// maxBodyBytes caps every request body.
+const maxBodyBytes = 1 << 20 // 1 MB
+
 // NewServer builds the router and wires every route to its handler.
 func NewServer(db ports.IDatabase) *Server {
 	s := &Server{
 		Router: mux.NewRouter(),
 		DB:     db,
 	}
+	// The middleware chain: links run in this order for every route.
+	s.Router.Use(MaxBody(maxBodyBytes))
+	s.Router.Use(RequireJSON)
 	s.routes()
 	return s
 }
@@ -74,8 +81,7 @@ func (s *Server) loadOrder(w http.ResponseWriter, r *http.Request) (domain.Order
 	o, err := s.DB.GetOrderbyId(r.Context(), orderID)
 	if err != nil {
 		log.Printf("database query error for %s: %v", orderID, err)
-		// 404 is decided by matching the adapter's error text.
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ports.ErrOrderNotFound) {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("Order %s could not be found", orderID))
 			return domain.Order{}, false
 		}
@@ -119,33 +125,46 @@ func (s *Server) saveState(w http.ResponseWriter, r *http.Request, id string, to
 }
 
 func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	// Decode strictly: a field we don't know about is a client mistake worth
+	// telling them about, not something to silently drop.
 	var orderItem domain.Order
-	err := json.NewDecoder(r.Body).Decode(&orderItem)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&orderItem); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	defer r.Body.Close()
+
+	// The validator chain: first failing rule wins.
+	if err := validation.Order(orderItem); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
 	// A new order always starts as "created"; the client doesn't choose its state.
 	orderItem.State = domain.OrderCreated
-	// 2. Call DB with request context and handle the database outcome
-	// Replaced context.Background() with r.Context()
+
 	savedOrder, err := s.DB.CreateOrder(r.Context(), orderItem)
 	if err != nil {
+		if errors.Is(err, ports.ErrOrderExists) {
+			writeError(w, http.StatusConflict, fmt.Sprintf("order %s already exists", orderItem.ID))
+			return
+		}
 		log.Printf("database insertion error: %v", err)
-
-		// Return 500 error as a structured JSON object
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create order due to an internal server error"})
+		writeError(w, http.StatusInternalServerError, "Failed to create order due to an internal server error")
 		return
 	}
 
-	// 3. Write success header and encode the SAVED order returned from DB
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	// Use savedOrder here since it contains modifications made by the DB (like serial IDs or default values)
-	json.NewEncoder(w).Encode(savedOrder)
+	// Respond with the stored row (not the request), so the client sees what
+	// the database actually holds.
+	writeJSON(w, http.StatusCreated, savedOrder)
 }
 
 func (s *Server) GetOrderByID(w http.ResponseWriter, r *http.Request) {

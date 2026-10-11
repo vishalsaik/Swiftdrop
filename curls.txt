@@ -9,7 +9,7 @@ curl -i http://127.0.0.1:8080/health
 ## Create order
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
-  -d '{"id":"order-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":2,"unitPriceCents":599}],"state":"created"}'
+  -d '{"id":"order-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":2,"unitPriceCents":599}],"paymentType":"card"}'
 
 
 ## Get order by id
@@ -29,7 +29,7 @@ curl -i -X POST http://127.0.0.1:8080/orders \
 ## Create a second order, to check list/lookup isn't accidentally sharing state
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
-  -d '{"id":"order-2","customerId":"cust-2","restaurantId":"rest-1","items":[{"sku":"SKU2","name":"Fries","quantity":1,"unitPriceCents":249}],"state":"created"}'
+  -d '{"id":"order-2","customerId":"cust-2","restaurantId":"rest-1","items":[{"sku":"SKU2","name":"Fries","quantity":1,"unitPriceCents":249}],"paymentType":"card"}'
 
 curl -i http://127.0.0.1:8080/orders/order-2
 
@@ -37,7 +37,7 @@ curl -i http://127.0.0.1:8080/orders/order-2
 ## Cancel order — Created -> Cancelled is legal, should succeed (200)
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
-  -d '{"id":"order-3","customerId":"cust-3","restaurantId":"rest-1","items":[{"sku":"SKU3","name":"Pizza","quantity":1,"unitPriceCents":899}],"state":"created"}'
+  -d '{"id":"order-3","customerId":"cust-3","restaurantId":"rest-1","items":[{"sku":"SKU3","name":"Pizza","quantity":1,"unitPriceCents":899}],"paymentType":"card"}'
 
 curl -i -X POST http://127.0.0.1:8080/orders/order-3/cancel
 
@@ -51,6 +51,67 @@ curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/cancel
 
 
 # ---------------------------------------------------------------------------
+# Request validation. POST /orders runs a middleware chain (body size,
+# Content-Type) and then a validator chain (field rules); the first failure
+# is returned as {"error": "..."}.
+# ---------------------------------------------------------------------------
+
+## A rule fails - 422 "paymentType must be one of: card, cash, wallet"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-1","customerId":"c","restaurantId":"r","items":[{"sku":"S","name":"B","quantity":1,"unitPriceCents":100}]}'
+
+
+## Missing id - 422 "id is required"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"B","quantity":1,"unitPriceCents":100}]}'
+
+
+## Empty cart - 422 "items must not be empty"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-2","customerId":"c","restaurantId":"r","paymentType":"card","items":[]}'
+
+
+## Bad quantity - 422 "items[0].quantity must be greater than 0"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-3","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"B","quantity":0,"unitPriceCents":100}]}'
+
+
+## Negative price - 422 "items[0].unitPriceCents must not be negative"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-4","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"B","quantity":1,"unitPriceCents":-5}]}'
+
+
+## Unknown field - 400 "invalid request body: json: unknown field ..."
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-5","bogus":1,"customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"B","quantity":1,"unitPriceCents":100}]}'
+
+
+## Wrong Content-Type - 415
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: text/plain" \
+  -d '{"id":"v-6"}'
+
+
+## Duplicate order id - 409 (run the same create twice)
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-7","customerId":"c","restaurantId":"r","paymentType":"cash","items":[{"sku":"S","name":"B","quantity":1,"unitPriceCents":100}]}'
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"v-7","customerId":"c","restaurantId":"r","paymentType":"cash","items":[{"sku":"S","name":"B","quantity":1,"unitPriceCents":100}]}'
+
+
+## Body over 1 MB - 413 (generates a 1.2 MB body on the fly)
+# python -c "print('{\"id\":\"big\",\"customerId\":\"' + 'a'*1200000 + '\"}')" | curl -i -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" --data-binary @-
+
+
+# ---------------------------------------------------------------------------
 # Full order lifecycle through the real endpoints:
 #   create -> pay (mock) -> accept (assigns a stub driver) -> ready -> pickup -> deliver
 # ---------------------------------------------------------------------------
@@ -58,7 +119,7 @@ curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/cancel
 ## 1. Create the order (starts as "created")
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
-  -d '{"id":"life-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":1,"unitPriceCents":599}],"state":"created"}'
+  -d '{"id":"life-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":1,"unitPriceCents":599}],"paymentType":"card"}'
 
 
 ## 2. Accept before paying — 409 (created cannot jump to preparing)
@@ -104,7 +165,7 @@ curl -i -X POST http://127.0.0.1:8080/orders/life-1/deliver
 ## Cancelling is allowed up to pickup, e.g. after paying
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
-  -d '{"id":"life-2","customerId":"cust-2","restaurantId":"rest-1","items":[],"state":"created"}'
+  -d '{"id":"life-2","customerId":"cust-2","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":1,"unitPriceCents":599}],"paymentType":"card"}'
 curl -i -X POST http://127.0.0.1:8080/orders/life-2/pay
 curl -i -X POST http://127.0.0.1:8080/orders/life-2/cancel
 

@@ -32,7 +32,7 @@ type OrderItem struct {
 // data holder and the transition logic stays independently testable.
 type Order struct {
 	ID               string      `json:"id"`
-	PaymentType      string      `json:"paymentType"`
+	PaymentType      PaymentType `json:"paymentType"`
 	CustomerID       string      `json:"customerId"`
 	RestaurantID     string      `json:"restaurantId"`
 	Items            []OrderItem `json:"items"`
