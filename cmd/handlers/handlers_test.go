@@ -44,18 +44,21 @@ type fakeDB struct {
 
 func newFakeDB() *fakeDB { return &fakeDB{orders: map[string]domain.Order{}} }
 
-func notFound(id string) error { return fmt.Errorf("order not found: %s", id) }
+// notFound and the duplicate error below use the same ports sentinels as the
+// real adapter, wrapped with the id, so handlers are tested against the real
+// contract instead of error text.
+func notFound(id string) error { return fmt.Errorf("%w: %s", ports.ErrOrderNotFound, id) }
 
 func (f *fakeDB) CreateOrder(_ context.Context, o domain.Order) (domain.Order, error) {
 	if f.createErr != nil {
 		return domain.Order{}, f.createErr
 	}
 	if _, dup := f.orders[o.ID]; dup {
-		return domain.Order{}, fmt.Errorf("duplicate key: %s", o.ID)
+		return domain.Order{}, fmt.Errorf("%w: %s", ports.ErrOrderExists, o.ID)
 	}
 	stored := domain.Order{
-		ID: o.ID, CustomerID: o.CustomerID, RestaurantID: o.RestaurantID,
-		Items: o.Items, State: o.State,
+		ID: o.ID, PaymentType: o.PaymentType, CustomerID: o.CustomerID,
+		RestaurantID: o.RestaurantID, Items: o.Items, State: o.State,
 	}
 	f.orders[o.ID] = stored
 	return stored, nil
@@ -148,15 +151,34 @@ var allStates = []domain.OrderState{
 	domain.OrderCancelled,
 }
 
+// do sends a request through the real router. A request with a body is sent
+// as application/json, like a well-behaved client.
 func do(t *testing.T, db *fakeDB, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doWith(t, db, method, path, body, "application/json")
+}
+
+// doWith is do with an explicit Content-Type ("" sends none).
+func doWith(t *testing.T, db *fakeDB, method, path, body, contentType string) *httptest.ResponseRecorder {
 	t.Helper()
 	var rdr io.Reader
 	if body != "" {
 		rdr = strings.NewReader(body)
 	}
+	req := httptest.NewRequest(method, path, rdr)
+	if body != "" && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	rec := httptest.NewRecorder()
-	NewServer(db).Router.ServeHTTP(rec, httptest.NewRequest(method, path, rdr))
+	NewServer(db).Router.ServeHTTP(rec, req)
 	return rec
+}
+
+// validBody is a create request that passes every validation rule.
+const validItems = `[{"sku":"S1","name":"Burger","quantity":2,"unitPriceCents":599}]`
+
+func validBody(id string) string {
+	return `{"id":"` + id + `","customerId":"c","restaurantId":"r","paymentType":"card","items":` + validItems + `}`
 }
 
 func wantStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
@@ -311,15 +333,19 @@ func TestLoadOrderOutcomes(t *testing.T) {
 // POST /orders
 // ---------------------------------------------------------------------------
 
+// withFields appends extra JSON members to a JSON object body.
+func withFields(body, extra string) string {
+	return strings.TrimSuffix(body, "}") + "," + extra + "}"
+}
+
 func TestCreateOrderAlwaysStartsAsCreated(t *testing.T) {
 	for _, clientState := range []string{"", "preparing", "picked_up", "delivered", "banana"} {
 		t.Run("client sends "+clientState, func(t *testing.T) {
 			db := newFakeDB()
-			body := `{"id":"o1","customerId":"c","restaurantId":"r","items":[]`
+			body := validBody("o1")
 			if clientState != "" {
-				body += `,"state":"` + clientState + `"`
+				body = withFields(body, `"state":"`+clientState+`"`)
 			}
-			body += `}`
 
 			rec := do(t, db, http.MethodPost, "/orders", body)
 			wantStatus(t, rec, http.StatusCreated)
@@ -336,8 +362,7 @@ func TestCreateOrderAlwaysStartsAsCreated(t *testing.T) {
 
 func TestCreateOrderIgnoresServerOwnedFields(t *testing.T) {
 	db := newFakeDB()
-	body := `{"id":"o1","customerId":"c","restaurantId":"r","items":[],` +
-		`"assignedDriverId":"hacker","foodReady":"2020-01-01T00:00:00Z"}`
+	body := withFields(validBody("o1"), `"assignedDriverId":"hacker","foodReady":"2020-01-01T00:00:00Z"`)
 	rec := do(t, db, http.MethodPost, "/orders", body)
 	wantStatus(t, rec, http.StatusCreated)
 
@@ -355,16 +380,32 @@ func TestCreateOrderIgnoresServerOwnedFields(t *testing.T) {
 
 func TestCreateOrderPersistsFields(t *testing.T) {
 	db := newFakeDB()
-	body := `{"id":"o1","customerId":"cust-9","restaurantId":"rest-3",` +
+	body := `{"id":"o1","customerId":"cust-9","restaurantId":"rest-3","paymentType":"wallet",` +
 		`"items":[{"sku":"S1","name":"Burger","quantity":2,"unitPriceCents":599}]}`
-	wantStatus(t, do(t, db, http.MethodPost, "/orders", body), http.StatusCreated)
+	rec := do(t, db, http.MethodPost, "/orders", body)
+	wantStatus(t, rec, http.StatusCreated)
 
 	got := db.orders["o1"]
 	if got.CustomerID != "cust-9" || got.RestaurantID != "rest-3" {
 		t.Errorf("wrong ids stored: %+v", got)
 	}
+	if got.PaymentType != domain.PaymentWallet {
+		t.Errorf("paymentType stored = %q, want wallet", got.PaymentType)
+	}
 	if len(got.Items) != 1 || got.Items[0].Quantity != 2 || got.Items[0].UnitPriceCents != 599 {
 		t.Errorf("wrong items stored: %+v", got.Items)
+	}
+	if resp := orderFrom(t, rec); resp.PaymentType != domain.PaymentWallet {
+		t.Errorf("response paymentType = %q, want wallet", resp.PaymentType)
+	}
+}
+
+func TestCreateOrderAcceptsEveryPaymentType(t *testing.T) {
+	for _, pt := range domain.PaymentTypes {
+		t.Run(string(pt), func(t *testing.T) {
+			body := strings.Replace(validBody("o1"), `"card"`, `"`+string(pt)+`"`, 1)
+			wantStatus(t, do(t, newFakeDB(), http.MethodPost, "/orders", body), http.StatusCreated)
+		})
 	}
 }
 
@@ -374,10 +415,14 @@ func TestCreateOrderRejectsBadBodies(t *testing.T) {
 		"truncated":     `{"id":"o1",`,
 		"wrong type":    `{"id":123}`,
 		"array not obj": `[]`,
+		"unknown field": withFields(validBody("o1"), `"bogus":1`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			db := newFakeDB()
-			wantStatus(t, do(t, db, http.MethodPost, "/orders", body), http.StatusBadRequest)
+			rec := do(t, db, http.MethodPost, "/orders", body)
+			wantStatus(t, rec, http.StatusBadRequest)
+			wantContentTypeJSON(t, rec)
+			wantErrorContains(t, rec, "invalid request body")
 			if len(db.orders) != 0 {
 				t.Errorf("a rejected request must not store anything, got %d orders", len(db.orders))
 			}
@@ -385,14 +430,136 @@ func TestCreateOrderRejectsBadBodies(t *testing.T) {
 	}
 }
 
+func TestCreateOrderNamesTheUnknownField(t *testing.T) {
+	rec := do(t, newFakeDB(), http.MethodPost, "/orders", withFields(validBody("o1"), `"bogus":1`))
+	wantStatus(t, rec, http.StatusBadRequest)
+	wantErrorContains(t, rec, "bogus")
+}
+
+func TestCreateOrderValidationRules(t *testing.T) {
+	const ok = `"customerId":"c","restaurantId":"r","paymentType":"card"`
+	item := `{"sku":"S","name":"B","quantity":1,"unitPriceCents":100}`
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"missing id", `{` + ok + `,"items":[` + item + `]}`, "id is required"},
+		{"blank id", `{"id":"   ",` + ok + `,"items":[` + item + `]}`, "id is required"},
+		{"missing customerId", `{"id":"o1","restaurantId":"r","paymentType":"card","items":[` + item + `]}`, "customerId is required"},
+		{"missing restaurantId", `{"id":"o1","customerId":"c","paymentType":"card","items":[` + item + `]}`, "restaurantId is required"},
+		{"missing paymentType", `{"id":"o1","customerId":"c","restaurantId":"r","items":[` + item + `]}`, "paymentType must be one of: card, cash, wallet"},
+		{"unknown paymentType", `{"id":"o1","customerId":"c","restaurantId":"r","paymentType":"bitcoin","items":[` + item + `]}`, "paymentType must be one of"},
+		{"no items field", `{"id":"o1",` + ok + `}`, "items must not be empty"},
+		{"empty items", `{"id":"o1",` + ok + `,"items":[]}`, "items must not be empty"},
+		{"zero quantity", `{"id":"o1",` + ok + `,"items":[{"sku":"S","name":"B","quantity":0,"unitPriceCents":100}]}`, "items[0].quantity must be greater than 0"},
+		{"negative quantity", `{"id":"o1",` + ok + `,"items":[{"sku":"S","name":"B","quantity":-2,"unitPriceCents":100}]}`, "items[0].quantity"},
+		{"negative price reports its index", `{"id":"o1",` + ok + `,"items":[` + item + `,{"sku":"S","name":"B","quantity":1,"unitPriceCents":-1}]}`, "items[1].unitPriceCents must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newFakeDB()
+			rec := do(t, db, http.MethodPost, "/orders", tt.body)
+			wantStatus(t, rec, http.StatusUnprocessableEntity)
+			wantContentTypeJSON(t, rec)
+			wantErrorContains(t, rec, tt.want)
+			if len(db.orders) != 0 {
+				t.Errorf("an invalid order must not be stored, got %d", len(db.orders))
+			}
+		})
+	}
+}
+
+func TestCreateOrderZeroPriceIsAllowed(t *testing.T) {
+	body := `{"id":"o1","customerId":"c","restaurantId":"r","paymentType":"cash",` +
+		`"items":[{"sku":"S","name":"Free sample","quantity":1,"unitPriceCents":0}]}`
+	wantStatus(t, do(t, newFakeDB(), http.MethodPost, "/orders", body), http.StatusCreated)
+}
+
+func TestCreateOrderReportsOnlyTheFirstFailure(t *testing.T) {
+	// Breaks every rule at once; the chain must stop at the first (id).
+	rec := do(t, newFakeDB(), http.MethodPost, "/orders", `{"paymentType":"bitcoin","items":[]}`)
+	wantStatus(t, rec, http.StatusUnprocessableEntity)
+	if got := errorFrom(t, rec); got != "id is required" {
+		t.Errorf("error = %q, want only the first failure (id is required)", got)
+	}
+}
+
+func TestCreateOrderDuplicateID(t *testing.T) {
+	db := newFakeDB()
+	wantStatus(t, do(t, db, http.MethodPost, "/orders", validBody("o1")), http.StatusCreated)
+	original := db.orders["o1"]
+
+	other := strings.Replace(validBody("o1"), `"customerId":"c"`, `"customerId":"someone-else"`, 1)
+	rec := do(t, db, http.MethodPost, "/orders", other)
+	wantStatus(t, rec, http.StatusConflict)
+	wantContentTypeJSON(t, rec)
+	wantErrorContains(t, rec, "o1", "already exists")
+	if db.orders["o1"].CustomerID != original.CustomerID {
+		t.Error("a rejected duplicate must not overwrite the original order")
+	}
+}
+
 func TestCreateOrderDatabaseFailure(t *testing.T) {
 	db := newFakeDB()
 	db.createErr = errors.New("disk full")
-	rec := do(t, db, http.MethodPost, "/orders", `{"id":"o1","customerId":"c","restaurantId":"r","items":[]}`)
+	rec := do(t, db, http.MethodPost, "/orders", validBody("o1"))
 	wantStatus(t, rec, http.StatusInternalServerError)
+	wantContentTypeJSON(t, rec)
 	if strings.Contains(rec.Body.String(), "disk full") {
 		t.Errorf("internal error text leaked to the client: %s", rec.Body.String())
 	}
+}
+
+func TestCreateOrderBodyTooLarge(t *testing.T) {
+	db := newFakeDB()
+	body := `{"id":"o1","customerId":"` + strings.Repeat("a", maxBodyBytes+10) + `"}`
+	rec := do(t, db, http.MethodPost, "/orders", body)
+	wantStatus(t, rec, http.StatusRequestEntityTooLarge)
+	wantContentTypeJSON(t, rec)
+	wantErrorContains(t, rec, "too large")
+	if len(db.orders) != 0 {
+		t.Errorf("an oversized request must not store anything, got %d", len(db.orders))
+	}
+}
+
+func TestCreateOrderContentType(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		want        int
+	}{
+		{"application/json", "application/json", http.StatusCreated},
+		{"with charset", "application/json; charset=utf-8", http.StatusCreated},
+		{"different case", "Application/JSON", http.StatusCreated},
+		{"text/plain", "text/plain", http.StatusUnsupportedMediaType},
+		{"form encoded", "application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
+		{"only a prefix match", "application/jsonx", http.StatusUnsupportedMediaType},
+		{"missing", "", http.StatusUnsupportedMediaType},
+		{"unparseable", ";;;", http.StatusUnsupportedMediaType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newFakeDB()
+			rec := doWith(t, db, http.MethodPost, "/orders", validBody("o1"), tt.contentType)
+			wantStatus(t, rec, tt.want)
+			if tt.want == http.StatusUnsupportedMediaType {
+				wantContentTypeJSON(t, rec)
+				wantErrorContains(t, rec, "application/json")
+				if len(db.orders) != 0 {
+					t.Error("a rejected request must not store anything")
+				}
+			}
+		})
+	}
+}
+
+func TestBodilessPostsSkipTheContentTypeCheck(t *testing.T) {
+	// The lifecycle endpoints are POSTs with no body and no Content-Type.
+	db := newFakeDB()
+	db.seed("o1", domain.OrderPaid)
+	rec := doWith(t, db, http.MethodPost, "/orders/o1/accept", "", "")
+	wantStatus(t, rec, http.StatusOK)
 }
 
 // ---------------------------------------------------------------------------
@@ -770,8 +937,7 @@ func TestPayFailureModes(t *testing.T) {
 
 func TestFullLifecycle(t *testing.T) {
 	db := newFakeDB()
-	wantStatus(t, do(t, db, http.MethodPost, "/orders",
-		`{"id":"o1","customerId":"c","restaurantId":"r","items":[]}`), http.StatusCreated)
+	wantStatus(t, do(t, db, http.MethodPost, "/orders", validBody("o1")), http.StatusCreated)
 
 	steps := []struct {
 		path      string

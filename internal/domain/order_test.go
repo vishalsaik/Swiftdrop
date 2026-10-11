@@ -53,6 +53,43 @@ func TestOrderStateValues(t *testing.T) {
 	}
 }
 
+func TestPaymentTypeValid(t *testing.T) {
+	tests := []struct {
+		in   PaymentType
+		want bool
+	}{
+		{PaymentCard, true},
+		{PaymentCash, true},
+		{PaymentWallet, true},
+		{"", false},
+		{"bitcoin", false},
+		{"Card", false},
+		{" card", false},
+	}
+	for _, tt := range tests {
+		if got := tt.in.Valid(); got != tt.want {
+			t.Errorf("PaymentType(%q).Valid() = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+// Every listed type must be valid, and the stored strings are an API and
+// database contract, so they are pinned too.
+func TestPaymentTypesAreTheAcceptedSet(t *testing.T) {
+	want := []string{"card", "cash", "wallet"}
+	if len(PaymentTypes) != len(want) {
+		t.Fatalf("PaymentTypes has %d entries, want %d", len(PaymentTypes), len(want))
+	}
+	for i, p := range PaymentTypes {
+		if string(p) != want[i] {
+			t.Errorf("PaymentTypes[%d] = %q, want %q", i, p, want[i])
+		}
+		if !p.Valid() {
+			t.Errorf("%q is listed but not Valid()", p)
+		}
+	}
+}
+
 func TestOrderJSONUsesCamelCaseKeys(t *testing.T) {
 	o := Order{
 		ID:               "o-1",

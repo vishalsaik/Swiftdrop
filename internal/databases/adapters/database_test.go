@@ -2,11 +2,13 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 )
 
@@ -43,7 +45,7 @@ func newRow(t *testing.T, db *DBAdapter, id string, state domain.OrderState) dom
 		_, _ = db.Pool.Exec(context.Background(), "DELETE FROM orders WHERE id = $1", id)
 	})
 	o, err := db.CreateOrder(ctx, domain.Order{
-		ID: id, CustomerID: "cust", RestaurantID: "rest", State: state,
+		ID: id, PaymentType: domain.PaymentWallet, CustomerID: "cust", RestaurantID: "rest", State: state,
 		Items: []domain.OrderItem{{SKU: "S1", Name: "Burger", Quantity: 2, UnitPriceCents: 599}},
 	})
 	if err != nil {
@@ -52,11 +54,15 @@ func newRow(t *testing.T, db *DBAdapter, id string, state domain.OrderState) dom
 	return o
 }
 
+// wantNotFound checks the contract the HTTP layer relies on: a missing order
+// is reported as ports.ErrOrderNotFound, not as driver-specific text.
 func wantNotFound(t *testing.T, err error) {
 	t.Helper()
-	// The HTTP layer decides 404 vs 500 by matching this text, so it is a contract.
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf(`error = %v, want one containing "not found"`, err)
+	if !errors.Is(err, ports.ErrOrderNotFound) {
+		t.Fatalf("error = %v, want one wrapping ports.ErrOrderNotFound", err)
+	}
+	if strings.Contains(err.Error(), "no rows") {
+		t.Errorf("driver text leaked through the sentinel: %v", err)
 	}
 }
 
@@ -132,14 +138,52 @@ func TestCreateOrderIgnoresServerOwnedFields(t *testing.T) {
 	}
 }
 
-func TestCreateDuplicateIDFails(t *testing.T) {
+func TestCreateDuplicateIDIsReportedAsErrOrderExists(t *testing.T) {
 	db := testAdapter(t)
 	newRow(t, db, "it-dup", domain.OrderCreated)
 	_, err := db.CreateOrder(context.Background(), domain.Order{
-		ID: "it-dup", CustomerID: "c", RestaurantID: "r", State: domain.OrderCreated, Items: []domain.OrderItem{},
+		ID: "it-dup", CustomerID: "other", RestaurantID: "r", State: domain.OrderCreated, Items: []domain.OrderItem{},
 	})
-	if err == nil {
-		t.Fatal("expected a duplicate key error")
+	if !errors.Is(err, ports.ErrOrderExists) {
+		t.Fatalf("error = %v, want one wrapping ports.ErrOrderExists", err)
+	}
+	if !strings.Contains(err.Error(), "it-dup") {
+		t.Errorf("the error should name the order id: %v", err)
+	}
+
+	// The original must be untouched by the rejected insert.
+	stored, err := db.GetOrderbyId(context.Background(), "it-dup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CustomerID != "cust" {
+		t.Errorf("duplicate insert overwrote the original: %+v", stored)
+	}
+}
+
+func TestPaymentTypeIsStoredAndReturnedByEveryQuery(t *testing.T) {
+	db := testAdapter(t)
+	ctx := context.Background()
+	created := newRow(t, db, "it-payment", domain.OrderPaid)
+	if created.PaymentType != domain.PaymentWallet {
+		t.Fatalf("CreateOrder returned paymentType %q, want wallet", created.PaymentType)
+	}
+
+	got, err := db.GetOrderbyId(ctx, "it-payment")
+	if err != nil || got.PaymentType != domain.PaymentWallet {
+		t.Errorf("GetOrderbyId: paymentType = %q, err = %v", got.PaymentType, err)
+	}
+	updated, err := db.UpdateOrderState(ctx, "it-payment", string(domain.OrderPreparing))
+	if err != nil || updated.PaymentType != domain.PaymentWallet {
+		t.Errorf("UpdateOrderState: paymentType = %q, err = %v", updated.PaymentType, err)
+	}
+	ready, err := db.SetFoodReady(ctx, "it-payment")
+	if err != nil || ready.PaymentType != domain.PaymentWallet {
+		t.Errorf("SetFoodReady: paymentType = %q, err = %v", ready.PaymentType, err)
+	}
+	accepted, err := db.AcceptOrder(ctx, "it-payment", "d1", string(domain.OrderPreparing))
+	if err != nil || accepted.PaymentType != domain.PaymentWallet {
+		t.Errorf("AcceptOrder: paymentType = %q, err = %v", accepted.PaymentType, err)
 	}
 }
 
