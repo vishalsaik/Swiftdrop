@@ -111,6 +111,182 @@ func TestRequireJSON(t *testing.T) {
 	}
 }
 
+// TestCORSPreflight checks the full preflight flow: CORS must answer 204
+// itself and not call next, so the router never sees the OPTIONS request.
+func TestCORSPreflight(t *testing.T) {
+	origins := []string{"http://localhost:3000"}
+	p := &probe{}
+	h := CORS(origins)(p.handler())
+
+	req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if p.called {
+		t.Error("preflight must not reach the next handler")
+	}
+	wantStatus(t, rec, http.StatusNoContent)
+	for header, want := range map[string]string{
+		"Access-Control-Allow-Origin":  "http://localhost:3000",
+		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+		"Access-Control-Allow-Headers": "Content-Type",
+		"Vary":                         "Origin",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+// TestCORSHeaders checks per-origin behaviour for normal (non-preflight) requests.
+func TestCORSHeaders(t *testing.T) {
+	origins := []string{"http://localhost:3000"}
+	tests := []struct {
+		name       string
+		origin     string
+		wantHeader bool
+	}{
+		{"allowed origin gets header", "http://localhost:3000", true},
+		{"disallowed origin gets no header", "http://evil.com", false},
+		{"no origin gets no header", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &probe{}
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			rec := httptest.NewRecorder()
+			CORS(origins)(p.handler()).ServeHTTP(rec, req)
+
+			if !p.called {
+				t.Error("non-preflight must always reach the next handler")
+			}
+			// Vary: Origin is unconditional, so caches never mix up responses
+			// that differ only by the Origin of the caller.
+			if got := rec.Header().Get("Vary"); got != "Origin" {
+				t.Errorf("Vary = %q, want %q", got, "Origin")
+			}
+			got := rec.Header().Get("Access-Control-Allow-Origin")
+			if tt.wantHeader && got != tt.origin {
+				t.Errorf("Allow-Origin = %q, want %q", got, tt.origin)
+			}
+			if !tt.wantHeader && got != "" {
+				t.Errorf("Allow-Origin = %q, want empty", got)
+			}
+		})
+	}
+}
+
+// TestCORSHeadersPresentOnErrorResponse is the proof that CORS must be the
+// outermost link: even a 415 from RequireJSON must carry the CORS headers so
+// the browser can read the error body. If CORS were inside Router.Use this
+// test would fail.
+func TestCORSHeadersPresentOnErrorResponse(t *testing.T) {
+	origins := []string{"http://localhost:3000"}
+	p := &probe{}
+	h := CORS(origins)(RequireJSON(p.handler()))
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{}`))
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Content-Type", "text/plain") // triggers 415
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	wantStatus(t, rec, http.StatusUnsupportedMediaType)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Errorf("Allow-Origin = %q on a 415; CORS headers must be present even on error responses", got)
+	}
+}
+
+// A preflight from an origin that isn't on the list gets no CORS answer at
+// all: no 204 and no Allow-* headers, so the browser blocks the real request.
+func TestCORSPreflightFromDisallowedOrigin(t *testing.T) {
+	p := &probe{}
+	h := CORS([]string{"http://localhost:3000"})(p.handler())
+
+	req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
+	req.Header.Set("Origin", "http://evil.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// The probe answers 204 itself, so "did CORS answer?" is p.called == false.
+	if !p.called {
+		t.Error("CORS must not answer a disallowed origin's preflight itself")
+	}
+	for _, header := range []string{
+		"Access-Control-Allow-Origin",
+		"Access-Control-Allow-Methods",
+		"Access-Control-Allow-Headers",
+	} {
+		if got := rec.Header().Get(header); got != "" {
+			t.Errorf("%s = %q, want empty", header, got)
+		}
+	}
+}
+
+// The wiring test: CORS has to wrap the whole router. Through Router alone a
+// preflight is a 405 (mux never matches OPTIONS on a POST-only route, so no
+// middleware runs); through Handler() it is answered with 204.
+func TestHandlerWrapsTheWholeRouter(t *testing.T) {
+	s := NewServer(newFakeDB())
+	preflight := func() *http.Request {
+		req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		return req
+	}
+
+	bare := httptest.NewRecorder()
+	s.Router.ServeHTTP(bare, preflight())
+	wantStatus(t, bare, http.StatusMethodNotAllowed)
+
+	wrapped := httptest.NewRecorder()
+	s.Handler().ServeHTTP(wrapped, preflight())
+	wantStatus(t, wrapped, http.StatusNoContent)
+	if got := wrapped.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Errorf("Allow-Origin = %q, want the request origin", got)
+	}
+}
+
+// End to end through the real chain: a 415 from RequireJSON, a 422 from the
+// validator and a 404 from a handler all carry the CORS header.
+func TestHandlerErrorResponsesCarryCORS(t *testing.T) {
+	s := NewServer(newFakeDB())
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		body        string
+		contentType string
+		want        int
+	}{
+		{"415 wrong content type", http.MethodPost, "/orders", `{}`, "text/plain", http.StatusUnsupportedMediaType},
+		{"422 validation failure", http.MethodPost, "/orders", `{}`, "application/json", http.StatusUnprocessableEntity},
+		{"404 missing order", http.MethodGet, "/orders/nope", "", "", http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Origin", "http://localhost:5173")
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+
+			wantStatus(t, rec, tt.want)
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+				t.Errorf("Allow-Origin = %q, want the request origin", got)
+			}
+		})
+	}
+}
+
 // Links run in registration order: an earlier link that answers stops the
 // later ones from ever running.
 func TestChainStopsAtTheFirstAnsweringLink(t *testing.T) {
