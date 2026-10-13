@@ -26,6 +26,20 @@ type Server struct {
 // maxBodyBytes caps every request body.
 const maxBodyBytes = 1 << 20 // 1 MB
 
+// allowedOrigins is the CORS allow-list. Only these origins may read our
+// responses in a browser. Extend this list when deploying to a real domain.
+var allowedOrigins = []string{
+	"http://localhost:3000",
+	"http://localhost:5173",
+}
+
+// Handler returns the root http.Handler for the server: CORS wraps the whole
+// router so that even 413/415/422 error responses carry the CORS headers, and
+// so that OPTIONS preflights reach the CORS link before mux can 405 them.
+func (s *Server) Handler() http.Handler {
+	return CORS(allowedOrigins)(s.Router)
+}
+
 // NewServer builds the router and wires every route to its handler.
 func NewServer(db ports.IDatabase) *Server {
 	s := &Server{

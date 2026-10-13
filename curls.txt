@@ -180,3 +180,37 @@ curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/accept
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/ready
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/pickup
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/deliver
+
+
+# ---------------------------------------------------------------------------
+# CORS. Allowed origins: http://localhost:3000 and http://localhost:5173.
+# curl is not a browser, so it never enforces CORS; these show the headers
+# a browser would act on. Look for Access-Control-* and Vary in the output.
+# ---------------------------------------------------------------------------
+
+## Preflight from an allowed origin — 204 with Allow-Origin/Methods/Headers/Max-Age
+curl -i -X OPTIONS http://127.0.0.1:8080/orders \
+  -H "Origin: http://localhost:3000" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: Content-Type"
+
+
+## Preflight from an origin that is not allowed — 405, no Access-Control-* headers
+curl -i -X OPTIONS http://127.0.0.1:8080/orders \
+  -H "Origin: http://evil.com" \
+  -H "Access-Control-Request-Method: POST"
+
+
+## Normal request from an allowed origin — response carries Access-Control-Allow-Origin
+curl -i http://127.0.0.1:8080/orders/life-1 -H "Origin: http://localhost:5173"
+
+
+## Error responses carry it too (415 here), so a browser can read the message
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Origin: http://localhost:5173" \
+  -H "Content-Type: text/plain" \
+  -d '{}'
+
+
+## No Origin header (curl, server-to-server) — no Allow-Origin, but Vary: Origin is still set
+curl -i http://127.0.0.1:8080/health

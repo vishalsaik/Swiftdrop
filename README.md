@@ -12,9 +12,10 @@ Early stage. Working today:
 - Order state machine (`internal/order`) — a `legalTransitions` table + `CanTransition`/`Apply` that decide which order-state changes are legal. `Order.State` is a short linear chain (`Created → PaymentPending → Paid → Preparing → PickedUp → Delivered`, plus `Cancelled` from any pre-`PickedUp` state); food-ready and driver-assignment are tracked as independent fields (`FoodReady`, `AssignedDriverID`) rather than states, since either can become true before the other
 
 - Request validation on `POST /orders` as two Chain-of-Responsibility pipelines: an HTTP middleware chain (body size limit, `Content-Type` check) and a validator chain of field rules (`internal/validation`) that stops at the first failure. Orders always start as `created`, and the payment type (`card`, `cash`, `wallet`) is required and stored
+- CORS (`CORS` in `cmd/handlers/middleware.go`) as the outermost link: it wraps the whole router via `Server.Handler()` so preflights and error responses are covered. Allowed origins are an explicit list (`allowedOrigins` in `handlers.go`); methods `GET, POST, OPTIONS`, header `Content-Type`, `Vary: Origin` on every response. Browsers enforce it, so it protects a user's logged-in session from other sites, not the API from direct callers
 - Storage errors cross the `IDatabase` boundary as sentinels (`ports.ErrOrderNotFound`, `ports.ErrOrderExists`), so handlers never see driver-specific errors
 
-Stand-ins for now: `/pay` is a mock (no payment provider, no idempotency key yet) and `/accept` assigns a random UUID as the driver. Not built yet: real payment processing, a real driver registry and dispatch, CORS, and compare-and-set on state writes.
+Stand-ins for now: `/pay` is a mock (no payment provider, no idempotency key yet) and `/accept` assigns a random UUID as the driver. Not built yet: real payment processing, a real driver registry and dispatch, authentication, and compare-and-set on state writes.
 
 ## Tech stack
 
