@@ -10,6 +10,7 @@ import (
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/order"
+	"swiftdrop/internal/payment"
 	"swiftdrop/internal/validation"
 
 	"github.com/google/uuid"
@@ -19,8 +20,9 @@ import (
 // Server holds everything a handler might need. Handlers are methods on
 // it so they all share the same DB pool and router without any globals.
 type Server struct {
-	Router *mux.Router
-	DB     ports.IDatabase
+	Router  *mux.Router
+	DB      ports.IDatabase
+	Payment *payment.Router
 }
 
 // maxBodyBytes caps every request body.
@@ -41,10 +43,11 @@ func (s *Server) Handler() http.Handler {
 }
 
 // NewServer builds the router and wires every route to its handler.
-func NewServer(db ports.IDatabase) *Server {
+func NewServer(db ports.IDatabase, pay *payment.Router) *Server {
 	s := &Server{
-		Router: mux.NewRouter(),
-		DB:     db,
+		Router:  mux.NewRouter(),
+		DB:      db,
+		Payment: pay,
 	}
 	// The middleware chain: links run in this order for every route.
 	s.Router.Use(MaxBody(maxBodyBytes))
@@ -257,19 +260,26 @@ func (s *Server) AcceptOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
-// PayOrder is a MOCK payment: it moves created -> payment_pending -> paid
-// without calling any provider. The real flow will authorize the payment
-// between those two moves (and carry an idempotency key); the hop that
-// makes this a two-step move is deliberately kept so that code slots in
-// between them.
 func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 	o, ok := s.loadOrder(w, r)
 	if !ok {
 		return
 	}
-	// Only a freshly created order can start paying.
 	if !order.CanTransition(o.State, domain.OrderPaymentPending) {
 		writeIllegalTransition(w, o, domain.OrderPaid)
+		return
+	}
+	// Strategy pattern: pick the provider from the order's payment type, then
+	// delegate; the handler never knows which gateway runs. This lookup can
+	// fail, so it runs before any state is saved: a failure leaves the order
+	// untouched (still "created") instead of stranding it in payment_pending.
+	provider, err := s.Payment.For(o.PaymentType)
+	if err != nil {
+		// Our stored data, not this request, named a type we can't handle
+		// (e.g. an order created before the payment_type column existed), so
+		// this is a 500, and the real cause goes to the log, not the client.
+		log.Printf("no payment provider for order %s (payment type %q): %v", o.ID, o.PaymentType, err)
+		writeError(w, http.StatusInternalServerError, "Payment is not available for this order")
 		return
 	}
 	if _, err := s.DB.UpdateOrderState(r.Context(), o.ID, string(domain.OrderPaymentPending)); err != nil {
@@ -277,6 +287,47 @@ func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to start payment due to an internal server error")
 		return
 	}
-	// <-- the real payment provider call goes here.
+
+	var body struct {
+		PaymentMethodID string `json:"paymentMethodId"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	req := domain.PaymentRequest{
+		OrderID:         o.ID,
+		IdempotencyKey:  r.Header.Get("Idempotency-Key"),
+		AmountCents:     o.TotalCents(),
+		Currency:        "USD",
+		PaymentMethodID: body.PaymentMethodID,
+	}
+	result, err := provider.Authorize(r.Context(), req)
+	if err != nil {
+		log.Printf("payment authorisation error for %s: %v", o.ID, err)
+		writeError(w, http.StatusInternalServerError, "Payment authorisation failed")
+		return
+	}
+	// A provider that returns neither a result nor an error broke its contract.
+	// We don't know what happened, so treat it like an error, not a decline.
+	if result == nil {
+		log.Printf("payment provider returned no result and no error for %s", o.ID)
+		writeError(w, http.StatusInternalServerError, "Payment authorisation failed")
+		return
+	}
+	// A decline is a normal answer, not an error: the order ends in a final
+	// state (cancelled) and the client gets the reason.
+	if result.Status == domain.PaymentDeclined {
+		if _, err := s.DB.UpdateOrderState(r.Context(), o.ID, string(domain.OrderCancelled)); err != nil {
+			log.Printf("database update error for %s: %v", o.ID, err)
+			writeError(w, http.StatusInternalServerError, "Failed to update payment state to cancelled due to an internal server error")
+			return
+		}
+		reason := result.Reason
+		if reason == "" {
+			reason = "payment declined"
+		}
+		writeError(w, http.StatusPaymentRequired, reason)
+		return
+	}
+
 	s.saveState(w, r, o.ID, domain.OrderPaid)
 }
