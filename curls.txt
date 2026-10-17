@@ -113,7 +113,7 @@ curl -i -X POST http://127.0.0.1:8080/orders \
 
 # ---------------------------------------------------------------------------
 # Full order lifecycle through the real endpoints:
-#   create -> pay (mock) -> accept (assigns a stub driver) -> ready -> pickup -> deliver
+#   create -> pay (fake gateway) -> accept (assigns a stub driver) -> ready -> pickup -> deliver
 # ---------------------------------------------------------------------------
 
 ## 1. Create the order (starts as "created")
@@ -126,7 +126,7 @@ curl -i -X POST http://127.0.0.1:8080/orders \
 curl -i -X POST http://127.0.0.1:8080/orders/life-1/accept
 
 
-## 3. Pay (mock) — 200, state "paid"
+## 3. Pay (the fake gateway approves 599 cents) — 200, state "paid"
 curl -i -X POST http://127.0.0.1:8080/orders/life-1/pay
 
 
@@ -180,6 +180,76 @@ curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/accept
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/ready
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/pickup
 curl -i -X POST http://127.0.0.1:8080/orders/does-not-exist/deliver
+
+
+# ---------------------------------------------------------------------------
+# Payments. With no STRIPE_KEY the app uses a fake gateway: card declines over
+# 50,000 cents, wallet over 10,000, cash never declines. Order ids must be new
+# each time you run these.
+# ---------------------------------------------------------------------------
+
+## Card order under the limit — pay: 200, state "paid"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"pay-1","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":2000}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/pay-1/pay
+
+
+## Card order over the limit (50,001) — pay: 402 with the reason, order is now "cancelled"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"pay-2","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Feast","quantity":1,"unitPriceCents":50001}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
+curl -i http://127.0.0.1:8080/orders/pay-2
+
+
+## Pay the declined order again — 409 (cancelled is terminal)
+curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
+
+
+## Wallet at exactly its limit (10,000) — 200, then 1 cent over (10,001) — 402
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"pay-3","customerId":"c","restaurantId":"r","paymentType":"wallet","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":10000}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/pay-3/pay
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"pay-4","customerId":"c","restaurantId":"r","paymentType":"wallet","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":10001}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/pay-4/pay
+
+
+## Cash never reaches a gateway, so a huge total is still 200
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"pay-5","customerId":"c","restaurantId":"r","paymentType":"cash","items":[{"sku":"S","name":"Banquet","quantity":10,"unitPriceCents":1000000}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/pay-5/pay
+
+
+# ---------------------------------------------------------------------------
+# Real Stripe, TEST MODE ONLY. Start the server with STRIPE_KEY set to a
+# test-mode secret key (never a live key, never commit it), then send one of
+# Stripe's documented test payment methods in the body. pm_card_visa succeeds;
+# pm_card_visa_chargeDeclined is a generic decline. Anything Stripe rejects
+# that is not a card decline (bad key, rate limit, ...) is a 500 and the order
+# stays "payment_pending".
+# ---------------------------------------------------------------------------
+
+## Stripe test card that succeeds — 200, state "paid"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"stripe-1","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":2000}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/stripe-1/pay \
+  -H "Content-Type: application/json" \
+  -d '{"paymentMethodId":"pm_card_visa"}'
+
+
+## Stripe test card that is declined — 402 "Your card was declined.", order "cancelled"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"stripe-2","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":2000}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/stripe-2/pay \
+  -H "Content-Type: application/json" \
+  -d '{"paymentMethodId":"pm_card_visa_chargeDeclined"}'
 
 
 # ---------------------------------------------------------------------------

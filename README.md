@@ -7,22 +7,25 @@ A food-delivery and driver-dispatch backend, built from scratch in Go as a hands
 Early stage. Working today:
 
 - Domain model: `Order`, `Driver`, `Payment`, `Event` types (`internal/domain`)
-- HTTP API on top of [gorilla/mux](https://github.com/gorilla/mux): health check, create order, get order by ID, and the full order lifecycle: pay (mock) → accept → ready → pickup → deliver, plus cancel
+- HTTP API on top of [gorilla/mux](https://github.com/gorilla/mux): health check, create order, get order by ID, and the full order lifecycle: pay → accept → ready → pickup → deliver, plus cancel
 - Postgres-backed persistence via [pgx](https://github.com/jackc/pgx), behind a `ports.IDatabase` interface so the storage backend is swappable
 - Order state machine (`internal/order`) — a `legalTransitions` table + `CanTransition`/`Apply` that decide which order-state changes are legal. `Order.State` is a short linear chain (`Created → PaymentPending → Paid → Preparing → PickedUp → Delivered`, plus `Cancelled` from any pre-`PickedUp` state); food-ready and driver-assignment are tracked as independent fields (`FoodReady`, `AssignedDriverID`) rather than states, since either can become true before the other
 
 - Request validation on `POST /orders` as two Chain-of-Responsibility pipelines: an HTTP middleware chain (body size limit, `Content-Type` check) and a validator chain of field rules (`internal/validation`) that stops at the first failure. Orders always start as `created`, and the payment type (`card`, `cash`, `wallet`) is required and stored
 - CORS (`CORS` in `cmd/handlers/middleware.go`) as the outermost link: it wraps the whole router via `Server.Handler()` so preflights and error responses are covered. Allowed origins are an explicit list (`allowedOrigins` in `handlers.go`); methods `GET, POST, OPTIONS`, header `Content-Type`, `Vary: Origin` on every response. Browsers enforce it, so it protects a user's logged-in session from other sites, not the API from direct callers
 - Storage errors cross the `IDatabase` boundary as sentinels (`ports.ErrOrderNotFound`, `ports.ErrOrderExists`), so handlers never see driver-specific errors
+- Payments (`internal/payment`) as Strategy + Adapter + Factory: a `PaymentProvider` per payment type (card, wallet, cash in `providers/`), a `Gateway` seam that card and wallet delegate to (`StripeGateway`, `FakeGateway`, and a test-only `MockGateway`), and a `Router` that is the factory (payment type in, provider out). `Server` receives the router through `NewServer`, so the handler asks per order instead of being wired to one provider. A decline is a definite no (`payment_pending → cancelled`, `402`); a provider error means the outcome is unknown, so the order stays `payment_pending` (`500`) and the cause goes to the log, not the client
+- `StripeGateway` tells a decline from an error by reading the HTTP status first: only a `402` card error (or a recorded decline on the PaymentIntent) is a decline; a wrong key, a rate limit, a bad request, an outage, or a payment still `processing` is an error
+- `main.go` picks the gateway once at startup: Stripe when `STRIPE_KEY` is set, otherwise `FakeGateway`, which declines card amounts over 50,000 cents and wallet amounts over 10,000, so a decline is reproducible with no network
 
-Stand-ins for now: `/pay` is a mock (no payment provider, no idempotency key yet) and `/accept` assigns a random UUID as the driver. Not built yet: real payment processing, a real driver registry and dispatch, authentication, and compare-and-set on state writes.
+Stand-ins for now: wallet payments go to the same Stripe gateway as cards, the idempotency key is read from an `Idempotency-Key` header as a placeholder (its design is undecided), and `/accept` assigns a random UUID as the driver. Not built yet: a payment record, so an authorised payment whose `paid` write fails is not left in `payment_pending`; the idempotency design; a real driver registry and dispatch; authentication; and compare-and-set on state writes.
 
 ## Tech stack
 
 - Go 1.25
 - [gorilla/mux](https://github.com/gorilla/mux) for HTTP routing
 - [pgx](https://github.com/jackc/pgx) for Postgres access
-- [google/uuid](https://github.com/google/uuid) for the stand-in driver IDs
+- [google/uuid](https://github.com/google/uuid) for the stand-in driver IDs and the fake payment IDs
 - PostgreSQL 16 (via Docker for local dev)
 
 ## Project layout
@@ -34,6 +37,9 @@ cmd/
 internal/
   domain/         plain data types: Order, Driver, Payment, Event
   order/          legal order-state transitions (CanTransition/Apply)
+  payment/        PaymentProvider (strategy), Gateway (adapter seam), Router (factory), FakeGateway, MockGateway
+    providers/    card, wallet and cash providers
+    gateways/     StripeGateway, the real HTTP adapter to Stripe
   validation/     the field rules for a new order and the chain that runs them
   databases/
     ports/        IDatabase — the storage interface handlers depend on
@@ -64,7 +70,7 @@ curls.txt         example curl commands for manual API testing
    go run ./cmd/api
    ```
 
-   The server listens on `127.0.0.1:8080`.
+   The server listens on `127.0.0.1:8080`. With no `STRIPE_KEY` set it uses the fake payment gateway and never touches the network. To try real Stripe, set `STRIPE_KEY` to a Stripe **test-mode** secret key and send a test payment method in the `/pay` body (`{"paymentMethodId": "pm_..."}`). Never use a live key while developing, and never commit a key.
 
 4. Try it — see [curls.txt](curls.txt) for ready-to-use examples, or:
 
@@ -78,7 +84,7 @@ curls.txt         example curl commands for manual API testing
 go test ./...
 ```
 
-The state-machine, domain and HTTP handler tests need nothing but Go: the handlers are driven through the real router against an in-memory fake of `ports.IDatabase`.
+The state-machine, domain, payment and HTTP handler tests need nothing but Go: the handlers are driven through the real router against an in-memory fake of `ports.IDatabase`, and `StripeGateway` is tested against a local `httptest` server that plays Stripe, so no key or network is involved.
 
 The Postgres adapter tests need a database and are skipped unless `SWIFTDROP_TEST_DSN` is set. Use a separate database so your dev data is never touched:
 
@@ -100,7 +106,7 @@ SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?s
 | GET    | `/health`              | Health check                                                                               |
 | POST   | `/orders`              | Create an order (always starts `created`); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing)                                                      |
-| POST   | `/orders/{id}/pay`     | Mock payment: `created → payment_pending → paid`; `409` from any other state              |
+| POST   | `/orders/{id}/pay`     | Authorize through the order's payment provider: `created → payment_pending → paid`; a decline moves it to `cancelled` and answers `402` with the reason; `409` from any other state; `500` if the provider errors (order stays `payment_pending`) or the stored payment type has no provider |
 | POST   | `/orders/{id}/accept`  | Restaurant accepts: `paid → preparing` and a stub driver is assigned; `409` otherwise       |
 | POST   | `/orders/{id}/cancel`  | Cancel an order (`409` if its current state can't be cancelled)                            |
 | POST   | `/orders/{id}/ready`   | Mark the food ready; only while `preparing`, otherwise `409`. State stays `preparing`      |
