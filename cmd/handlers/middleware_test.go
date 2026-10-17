@@ -233,7 +233,7 @@ func TestCORSPreflightFromDisallowedOrigin(t *testing.T) {
 // preflight is a 405 (mux never matches OPTIONS on a POST-only route, so no
 // middleware runs); through Handler() it is answered with 204.
 func TestHandlerWrapsTheWholeRouter(t *testing.T) {
-	s := NewServer(newFakeDB())
+	s := NewServer(newFakeDB(), testPayRouter())
 	preflight := func() *http.Request {
 		req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
 		req.Header.Set("Origin", "http://localhost:3000")
@@ -256,7 +256,7 @@ func TestHandlerWrapsTheWholeRouter(t *testing.T) {
 // End to end through the real chain: a 415 from RequireJSON, a 422 from the
 // validator and a 404 from a handler all carry the CORS header.
 func TestHandlerErrorResponsesCarryCORS(t *testing.T) {
-	s := NewServer(newFakeDB())
+	s := NewServer(newFakeDB(), testPayRouter())
 	tests := []struct {
 		name        string
 		method      string

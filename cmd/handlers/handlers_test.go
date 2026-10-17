@@ -17,6 +17,8 @@ import (
 
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
+	"swiftdrop/internal/payment"
+	"swiftdrop/internal/payment/providers"
 )
 
 // ---------------------------------------------------------------------------
@@ -125,6 +127,7 @@ func (f *fakeDB) seed(id string, state domain.OrderState) domain.Order {
 	o := domain.Order{
 		ID: id, CustomerID: "cust", RestaurantID: "rest",
 		Items: []domain.OrderItem{}, State: state,
+		PaymentType: domain.PaymentCash,
 	}
 	f.orders[id] = o
 	return o
@@ -151,6 +154,17 @@ var allStates = []domain.OrderState{
 	domain.OrderCancelled,
 }
 
+// testPayRouter returns a payment.Router wired with a MockGateway so handler
+// tests don't need a real Stripe key or wallet service.
+func testPayRouter() *payment.Router {
+	mock := &payment.MockGateway{}
+	return payment.NewRouter(
+		&providers.CardProvider{Gateway: mock},
+		&providers.CashProvider{},
+		&providers.WalletProvider{Gateway: mock},
+	)
+}
+
 // do sends a request through the real router. A request with a body is sent
 // as application/json, like a well-behaved client.
 func do(t *testing.T, db *fakeDB, method, path, body string) *httptest.ResponseRecorder {
@@ -170,7 +184,7 @@ func doWith(t *testing.T, db *fakeDB, method, path, body, contentType string) *h
 		req.Header.Set("Content-Type", contentType)
 	}
 	rec := httptest.NewRecorder()
-	NewServer(db).Router.ServeHTTP(rec, req)
+	NewServer(db, testPayRouter()).Router.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -297,7 +311,7 @@ func TestRouting(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadOrderMissingIDParam(t *testing.T) {
-	s := NewServer(newFakeDB())
+	s := NewServer(newFakeDB(), testPayRouter())
 	rec := httptest.NewRecorder()
 	// Not routed through mux, so there is no {id} variable at all.
 	_, ok := s.loadOrder(rec, httptest.NewRequest(http.MethodGet, "/orders/", nil))
@@ -868,7 +882,7 @@ func TestAcceptMissingAndFailing(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /orders/{id}/pay (mock)
+// POST /orders/{id}/pay
 // ---------------------------------------------------------------------------
 
 func TestPayOnlyFromCreated(t *testing.T) {
@@ -918,8 +932,9 @@ func TestPayFailureModes(t *testing.T) {
 			t.Errorf("state = %s, want created", got)
 		}
 	})
-	// Documents a known limitation of the mock: the two hops are separate
-	// writes, so a failure in the second leaves the order in payment_pending.
+	// Documents a known gap: the payment was authorised but saving "paid"
+	// failed, so the order is left in payment_pending while the provider may
+	// already hold the money. Closing it needs a payment record (the claim).
 	t.Run("second hop fails: order is left in payment_pending", func(t *testing.T) {
 		db := newFakeDB()
 		db.seed("o1", domain.OrderCreated)
@@ -929,6 +944,250 @@ func TestPayFailureModes(t *testing.T) {
 			t.Errorf("state = %s, want payment_pending", got)
 		}
 	})
+}
+
+// ---- pay: provider outcomes -------------------------------------------------
+
+// recordingGateway is a payment.Gateway that returns what the test gave it
+// and remembers every request it was asked to charge.
+type recordingGateway struct {
+	result *domain.PaymentResult
+	err    error
+	calls  []domain.PaymentRequest
+}
+
+func (g *recordingGateway) Charge(_ context.Context, req domain.PaymentRequest) (*domain.PaymentResult, error) {
+	g.calls = append(g.calls, req)
+	return g.result, g.err
+}
+
+func approving() *recordingGateway {
+	return &recordingGateway{result: &domain.PaymentResult{PaymentID: "p1", Status: domain.PaymentAuthorized}}
+}
+
+func declining(reason string) *recordingGateway {
+	return &recordingGateway{result: &domain.PaymentResult{PaymentID: "p1", Status: domain.PaymentDeclined, Reason: reason}}
+}
+
+func routerOf(card, wallet payment.Gateway) *payment.Router {
+	return payment.NewRouter(
+		&providers.CardProvider{Gateway: card},
+		&providers.CashProvider{},
+		&providers.WalletProvider{Gateway: wallet},
+	)
+}
+
+// seedPayable stores a created order of the given payment type whose items add
+// up to totalCents.
+func seedPayable(db *fakeDB, id string, pt domain.PaymentType, totalCents int64) {
+	db.seedWith(id, domain.OrderCreated, func(o *domain.Order) {
+		o.PaymentType = pt
+		o.Items = []domain.OrderItem{{SKU: "S1", Name: "Item", Quantity: 1, UnitPriceCents: totalCents}}
+	})
+}
+
+// payWith posts /pay through a server built on the given payment router.
+func payWith(t *testing.T, db *fakeDB, router *payment.Router, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	NewServer(db, router).Router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders/"+id+"/pay", nil))
+	return rec
+}
+
+func wantWrites(t *testing.T, db *fakeDB, want ...domain.OrderState) {
+	t.Helper()
+	if !slices.Equal(db.stateWrites, want) {
+		t.Errorf("state writes = %v, want %v", db.stateWrites, want)
+	}
+}
+
+func TestPayUsesTheProviderOfTheOrdersPaymentType(t *testing.T) {
+	tests := []struct {
+		pt                   domain.PaymentType
+		wantCard, wantWallet int
+	}{
+		{domain.PaymentCard, 1, 0},
+		{domain.PaymentWallet, 0, 1},
+		{domain.PaymentCash, 0, 0}, // cash never reaches a gateway
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.pt), func(t *testing.T) {
+			card, wallet := approving(), approving()
+			db := newFakeDB()
+			seedPayable(db, "o1", tt.pt, 1000)
+			wantStatus(t, payWith(t, db, routerOf(card, wallet), "o1"), http.StatusOK)
+			if len(card.calls) != tt.wantCard || len(wallet.calls) != tt.wantWallet {
+				t.Errorf("gateway calls: card=%d wallet=%d, want card=%d wallet=%d",
+					len(card.calls), len(wallet.calls), tt.wantCard, tt.wantWallet)
+			}
+		})
+	}
+}
+
+func TestPayCashIsPaidEvenIfEveryGatewayDeclines(t *testing.T) {
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCash, 1_000_000)
+	g := declining("no")
+	wantStatus(t, payWith(t, db, routerOf(g, g), "o1"), http.StatusOK)
+	if got := db.orders["o1"].State; got != domain.OrderPaid {
+		t.Errorf("state = %s, want paid", got)
+	}
+}
+
+func TestPaySendsTheOrderFactsToTheGateway(t *testing.T) {
+	g := approving()
+	db := newFakeDB()
+	db.seedWith("o1", domain.OrderCreated, func(o *domain.Order) {
+		o.PaymentType = domain.PaymentCard
+		o.Items = []domain.OrderItem{
+			{SKU: "A", Name: "Burger", Quantity: 2, UnitPriceCents: 599},
+			{SKU: "B", Name: "Fries", Quantity: 1, UnitPriceCents: 249},
+		}
+	})
+	wantStatus(t, payWith(t, db, routerOf(g, g), "o1"), http.StatusOK)
+	if len(g.calls) != 1 {
+		t.Fatalf("gateway called %d times, want 1", len(g.calls))
+	}
+	got := g.calls[0]
+	if got.OrderID != "o1" || got.AmountCents != 1447 || got.Currency != "USD" {
+		t.Errorf("request = %+v, want order o1, 1447 cents, USD", got)
+	}
+}
+
+func TestPayDeclineCancelsTheOrder(t *testing.T) {
+	for _, pt := range []domain.PaymentType{domain.PaymentCard, domain.PaymentWallet} {
+		t.Run(string(pt), func(t *testing.T) {
+			g := declining("insufficient funds")
+			db := newFakeDB()
+			seedPayable(db, "o1", pt, 1198)
+			router := routerOf(g, g)
+
+			rec := payWith(t, db, router, "o1")
+			wantStatus(t, rec, http.StatusPaymentRequired)
+			wantErrorContains(t, rec, "insufficient funds")
+			wantWrites(t, db, domain.OrderPaymentPending, domain.OrderCancelled)
+			if got := db.orders["o1"].State; got != domain.OrderCancelled {
+				t.Errorf("state = %s, want cancelled", got)
+			}
+
+			// cancelled is terminal: paying again is refused, not retried
+			wantStatus(t, payWith(t, db, router, "o1"), http.StatusConflict)
+			if len(g.calls) != 1 {
+				t.Errorf("gateway called %d times, want 1", len(g.calls))
+			}
+		})
+	}
+}
+
+func TestPayDeclineWithoutAReasonGetsAFallback(t *testing.T) {
+	g := declining("")
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusPaymentRequired)
+	if got := errorFrom(t, rec); got != "payment declined" {
+		t.Errorf("error = %q, want the fallback %q", got, "payment declined")
+	}
+}
+
+// The provider said no, but we could not record it: the client must not be
+// told "declined" as if all were well, and the order must not claim cancelled.
+func TestPayDeclineThatCannotBeSavedIsAServerError(t *testing.T) {
+	g := declining("insufficient funds")
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.updateErr, db.updateErrOn = errors.New("db down"), domain.OrderCancelled
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusInternalServerError)
+	wantErrorContains(t, rec, "cancelled")
+	if got := db.orders["o1"].State; got != domain.OrderPaymentPending {
+		t.Errorf("state = %s, want payment_pending", got)
+	}
+}
+
+// An error is not a decline: we do not know what happened, so the order is
+// left in payment_pending and the cause stays in the log, not the response.
+func TestPayProviderErrorLeavesTheOrderPending(t *testing.T) {
+	g := &recordingGateway{err: errors.New("gateway timeout to 10.0.0.7")}
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusInternalServerError)
+	wantErrorContains(t, rec, "authorisation failed")
+	if strings.Contains(rec.Body.String(), "10.0.0.7") {
+		t.Errorf("the internal cause leaked to the client: %s", rec.Body.String())
+	}
+	wantWrites(t, db, domain.OrderPaymentPending)
+	if got := db.orders["o1"].State; got != domain.OrderPaymentPending {
+		t.Errorf("state = %s, want payment_pending", got)
+	}
+}
+
+func TestPayProviderReturningNothingIsAnError(t *testing.T) {
+	g := &recordingGateway{} // nil result and nil error
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusInternalServerError)
+	if got := db.orders["o1"].State; got != domain.OrderPaymentPending {
+		t.Errorf("state = %s, want payment_pending", got)
+	}
+}
+
+// The lookup runs before any write, so an order we cannot pay for stays
+// "created" instead of being stranded in payment_pending.
+func TestPayUnknownPaymentTypeChangesNothing(t *testing.T) {
+	for _, pt := range []domain.PaymentType{"crypto", ""} { // "" is a row from before the column existed
+		t.Run("type "+string(pt), func(t *testing.T) {
+			g := approving()
+			db := newFakeDB()
+			seedPayable(db, "o1", pt, 1000)
+
+			rec := payWith(t, db, routerOf(g, g), "o1")
+			wantStatus(t, rec, http.StatusInternalServerError)
+			wantErrorContains(t, rec, "not available")
+			if pt != "" && strings.Contains(rec.Body.String(), string(pt)) {
+				t.Errorf("the stored type leaked to the client: %s", rec.Body.String())
+			}
+			wantWrites(t, db)
+			if got := db.orders["o1"].State; got != domain.OrderCreated {
+				t.Errorf("state = %s, want created", got)
+			}
+			if len(g.calls) != 0 {
+				t.Errorf("gateway was called %d times for an unpayable order", len(g.calls))
+			}
+		})
+	}
+}
+
+// Handler and FakeGateway together: the limits that main.go wires in.
+func TestPayWithTheFakeGatewayLimits(t *testing.T) {
+	router := routerOf(&payment.FakeGateway{LimitCents: 50_000}, &payment.FakeGateway{LimitCents: 10_000})
+	tests := []struct {
+		pt        domain.PaymentType
+		cents     int64
+		want      int
+		wantState domain.OrderState
+	}{
+		{domain.PaymentCard, 50_000, http.StatusOK, domain.OrderPaid},
+		{domain.PaymentCard, 50_001, http.StatusPaymentRequired, domain.OrderCancelled},
+		{domain.PaymentWallet, 10_000, http.StatusOK, domain.OrderPaid},
+		{domain.PaymentWallet, 10_001, http.StatusPaymentRequired, domain.OrderCancelled},
+		{domain.PaymentCash, 999_999_999, http.StatusOK, domain.OrderPaid},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s %d", tt.pt, tt.cents), func(t *testing.T) {
+			db := newFakeDB()
+			seedPayable(db, "o1", tt.pt, tt.cents)
+			wantStatus(t, payWith(t, db, router, "o1"), tt.want)
+			if got := db.orders["o1"].State; got != tt.wantState {
+				t.Errorf("state = %s, want %s", got, tt.wantState)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
