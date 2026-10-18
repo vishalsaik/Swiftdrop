@@ -175,15 +175,22 @@ func TestFiftySimultaneousPaysChargeExactlyOnce(t *testing.T) {
 	codes := make([]int, racers)
 	fireTogether(racers, func(i int) { codes[i] = post(s, "/orders/o1/pay") })
 
+	// A request that arrives while the payment is still processing gets a 409
+	// ("in progress"); one that arrives after it finished gets a replay (a 200
+	// with the order). How the 50 split depends on timing, so the test pins
+	// what must hold whatever the timing: one charge, no failures, one winner.
 	ok, conflict, other := tally(codes)
-	if ok != 1 || conflict != racers-1 || other != 0 {
-		t.Errorf("200s=%d 409s=%d other=%d, want exactly one 200 and %d 409s", ok, conflict, other, racers-1)
+	if other != 0 || ok < 1 || ok+conflict != racers {
+		t.Errorf("200s=%d 409s=%d other=%d, want at least one 200 and nothing but 200s and 409s", ok, conflict, other)
 	}
 	if len(g.calls) != 1 {
 		t.Errorf("the provider was charged %d times, want exactly 1", len(g.calls))
 	}
 	if got := db.orders["o1"].State; got != domain.OrderPaid {
 		t.Errorf("state = %s, want paid", got)
+	}
+	if got := db.payments["o1"].Status; got != domain.PaymentAuthorized {
+		t.Errorf("payment status = %s, want authorized", got)
 	}
 	wantWrites(t, db, domain.OrderPaymentPending, domain.OrderPaid)
 }
