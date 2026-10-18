@@ -121,7 +121,7 @@ func (s *Server) transition(w http.ResponseWriter, r *http.Request, to domain.Or
 		writeIllegalTransition(w, o, to)
 		return
 	}
-	s.saveState(w, r, o.ID, to)
+	s.saveState(w, r, o.ID, o.State, to)
 }
 
 // writeIllegalTransition writes the 409 for a move the state machine forbids.
@@ -129,16 +129,34 @@ func writeIllegalTransition(w http.ResponseWriter, o domain.Order, to domain.Ord
 	writeError(w, http.StatusConflict, fmt.Sprintf("order %s cannot be %s from state %s", o.ID, to, o.State))
 }
 
-// saveState persists the new state and writes the updated order. The
-// caller must already have checked that the move is allowed.
-func (s *Server) saveState(w http.ResponseWriter, r *http.Request, id string, to domain.OrderState) {
-	updated, err := s.DB.UpdateOrderState(r.Context(), id, string(to))
+// saveState persists the move from `from` to `to` and writes the updated
+// order. The caller must already have checked that the move is allowed, and
+// `from` is the state it read: the write only happens if the order is still in
+// it, so a request that lost a race gets a 409 instead of overwriting the
+// winner.
+func (s *Server) saveState(w http.ResponseWriter, r *http.Request, id string, from, to domain.OrderState) {
+	updated, err := s.DB.UpdateOrderState(r.Context(), id, string(from), string(to))
 	if err != nil {
 		log.Printf("database update error for %s: %v", id, err)
-		writeError(w, http.StatusInternalServerError, "Failed to update order due to an internal server error")
+		writeWriteError(w, id, err, "Failed to update order due to an internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// writeWriteError answers a failed state write. A lost race is the caller's to
+// retry (409, with the read-then-write it was part of now out of date), an
+// order that vanished in between is a 404, and anything else is a 500 with the
+// caller's generic message (the real cause is already in the log).
+func writeWriteError(w http.ResponseWriter, id string, err error, internalMsg string) {
+	switch {
+	case errors.Is(err, ports.ErrStateConflict):
+		writeError(w, http.StatusConflict, fmt.Sprintf("order %s changed while this request was running, read it again", id))
+	case errors.Is(err, ports.ErrOrderNotFound):
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Order %s could not be found", id))
+	default:
+		writeError(w, http.StatusInternalServerError, internalMsg)
+	}
 }
 
 func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +256,7 @@ func (s *Server) PickupOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("No driver was assigned to this order %s", o.ID))
 		return
 	}
-	s.saveState(w, r, o.ID, domain.OrderPickedUp)
+	s.saveState(w, r, o.ID, o.State, domain.OrderPickedUp)
 }
 func (s *Server) AcceptOrder(w http.ResponseWriter, r *http.Request) {
 	o, ok := s.loadOrder(w, r)
@@ -251,10 +269,10 @@ func (s *Server) AcceptOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	// TODO: stand-in for real dispatch. Replace once the driver/dispatch feature exists.
 	driverID := uuid.New().String()
-	updated, err := s.DB.AcceptOrder(r.Context(), o.ID, driverID, string(domain.OrderPreparing))
+	updated, err := s.DB.AcceptOrder(r.Context(), o.ID, driverID, string(o.State), string(domain.OrderPreparing))
 	if err != nil {
 		log.Printf("database update error for %s: %v", o.ID, err)
-		writeError(w, http.StatusInternalServerError, "Failed to accept order due to an internal server error")
+		writeWriteError(w, o.ID, err, "Failed to accept order due to an internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -282,9 +300,12 @@ func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Payment is not available for this order")
 		return
 	}
-	if _, err := s.DB.UpdateOrderState(r.Context(), o.ID, string(domain.OrderPaymentPending)); err != nil {
+	// This write is the claim on the payment: it only succeeds while the order
+	// is still in the state we read, so when two requests race to pay, exactly
+	// one gets past here. The other gets a 409 and never reaches the provider.
+	if _, err := s.DB.UpdateOrderState(r.Context(), o.ID, string(o.State), string(domain.OrderPaymentPending)); err != nil {
 		log.Printf("database update error for %s: %v", o.ID, err)
-		writeError(w, http.StatusInternalServerError, "Failed to start payment due to an internal server error")
+		writeWriteError(w, o.ID, err, "Failed to start payment due to an internal server error")
 		return
 	}
 
@@ -316,9 +337,9 @@ func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 	// A decline is a normal answer, not an error: the order ends in a final
 	// state (cancelled) and the client gets the reason.
 	if result.Status == domain.PaymentDeclined {
-		if _, err := s.DB.UpdateOrderState(r.Context(), o.ID, string(domain.OrderCancelled)); err != nil {
+		if _, err := s.DB.UpdateOrderState(r.Context(), o.ID, string(domain.OrderPaymentPending), string(domain.OrderCancelled)); err != nil {
 			log.Printf("database update error for %s: %v", o.ID, err)
-			writeError(w, http.StatusInternalServerError, "Failed to update payment state to cancelled due to an internal server error")
+			writeWriteError(w, o.ID, err, "Failed to update payment state to cancelled due to an internal server error")
 			return
 		}
 		reason := result.Reason
@@ -329,5 +350,5 @@ func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.saveState(w, r, o.ID, domain.OrderPaid)
+	s.saveState(w, r, o.ID, domain.OrderPaymentPending, domain.OrderPaid)
 }
