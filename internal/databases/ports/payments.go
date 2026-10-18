@@ -49,4 +49,30 @@ type PaymentStore interface {
 	// it again. Of several simultaneous takers exactly one gets ok = true.
 	// ErrPaymentNotFound if there is no such payment.
 	TakeOverPayment(ctx context.Context, id string, lease time.Duration) (payment domain.Payment, ok bool, err error)
+
+	// StartPayment claims the payment (like ClaimPayment) AND moves its order
+	// from orderFrom to orderTo (compare-and-set, like UpdateOrderState), in one
+	// transaction: either both happen or neither does, so there is never a
+	// payment row for an order that did not move, or the reverse. claimed =
+	// false means the order already has a payment: nothing was written and the
+	// existing payment is returned. ErrStateConflict if the order was no longer
+	// in orderFrom (the claim is rolled back); ErrOrderNotFound if there is no
+	// such order.
+	StartPayment(ctx context.Context, p domain.Payment, lease time.Duration, orderFrom, orderTo string) (payment domain.Payment, claimed bool, err error)
+
+	// FinishPayment records the outcome of a processing payment (like
+	// CompletePayment) AND moves its order from orderFrom to orderTo, in one
+	// transaction, and returns the updated order. If either half cannot be
+	// done neither is: ErrPaymentNotProcessing if the payment was already
+	// completed, ErrStateConflict if the order was no longer in orderFrom,
+	// ErrPaymentNotFound if there is no such payment.
+	FinishPayment(ctx context.Context, paymentID string, status domain.PaymentStatus, providerPaymentID, reason, orderFrom, orderTo string) (domain.Order, error)
+}
+
+// Store is everything the handlers need from storage: orders and payments.
+// One value (the Postgres adapter) implements both, which is what lets a
+// payment and its order change in a single transaction.
+type Store interface {
+	IDatabase
+	PaymentStore
 }
