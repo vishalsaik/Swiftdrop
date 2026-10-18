@@ -17,8 +17,11 @@ Early stage. Working today:
 - Payments (`internal/payment`) as Strategy + Adapter + Factory: a `PaymentProvider` per payment type (card, wallet, cash in `providers/`), a `Gateway` seam that card and wallet delegate to (`StripeGateway`, `FakeGateway`, and a test-only `MockGateway`), and a `Router` that is the factory (payment type in, provider out). `Server` receives the router through `NewServer`, so the handler asks per order instead of being wired to one provider. A decline is a definite no (`payment_pending → cancelled`, `402`); a provider error means the outcome is unknown, so the order stays `payment_pending` (`500`) and the cause goes to the log, not the client
 - `StripeGateway` tells a decline from an error by reading the HTTP status first: only a `402` card error (or a recorded decline on the PaymentIntent) is a decline; a wrong key, a rate limit, a bad request, an outage, or a payment still `processing` is an error
 - `main.go` picks the gateway once at startup: Stripe when `STRIPE_KEY` is set, otherwise `FakeGateway`, which declines card amounts over 50,000 cents and wallet amounts over 10,000, so a decline is reproducible with no network
+- Every order state write is a compare-and-set (`UPDATE orders SET state = $to WHERE id = $id AND state = $from`), so of two requests that read the same state exactly one write lands; the loser gets a `409` and changes nothing (`ports.ErrStateConflict`)
+- `/pay` is idempotent, built on a `payments` table (one row per order, `UNIQUE (order_id)`) and a `ports.PaymentStore`. The claim comes **before** the provider call: `StartPayment` inserts the payment row and moves the order to `payment_pending` in one transaction, so of any number of simultaneous requests exactly one reaches the provider. The payment's own uuid is the provider's idempotency key, and `FinishPayment` records the outcome and moves the order to `paid` or `cancelled` in one transaction. A retry replays a finished outcome without charging again; while another request holds the payment (a 60 second lease, timed by the database clock) it is a `409`; after the lease expires a retry takes the payment over and asks the provider again with the **same** payment id
+- Concurrency is tested for real: 50 goroutines paying, cancelling or accepting one order, and 20 goroutines racing every `PaymentStore` operation against Postgres, all under `go test -race`
 
-Stand-ins for now: wallet payments go to the same Stripe gateway as cards, the idempotency key is read from an `Idempotency-Key` header as a placeholder (its design is undecided), and `/accept` assigns a random UUID as the driver. Not built yet: a payment record, so an authorised payment whose `paid` write fails is not left in `payment_pending`; the idempotency design; a real driver registry and dispatch; authentication; and compare-and-set on state writes.
+Stand-ins for now: wallet payments go to the same Stripe gateway as cards, `PaymentMethodID` is read from the `/pay` body without validation, and `/accept` assigns a random UUID as the driver. Not built yet: a way out for a payment stuck in `processing` forever (it should eventually be flagged for review); refunds, so a cancel that lands while a payment is in flight can leave an order that was charged but cancelled (the log says `NEEDS REVIEW` when a finished payment cannot be recorded); `SetFoodReady` is still check-then-write; a cache in front of the payment lookup; a real driver registry and dispatch; and authentication.
 
 ## Tech stack
 
@@ -64,6 +67,8 @@ curls.txt         example curl commands for manual API testing
    docker exec -i postgres psql -U postgres -d swiftdrop < schema.sql
    ```
 
+   Re-run it whenever you pull changes: it is safe to repeat and upgrades an existing database in place (for example it adds the `payments` table). Do the same for the test database below.
+
 3. Run the API:
 
    ```bash
@@ -106,7 +111,7 @@ SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?s
 | GET    | `/health`              | Health check                                                                               |
 | POST   | `/orders`              | Create an order (always starts `created`); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing)                                                      |
-| POST   | `/orders/{id}/pay`     | Authorize through the order's payment provider: `created → payment_pending → paid`; a decline moves it to `cancelled` and answers `402` with the reason; `409` from any other state; `500` if the provider errors (order stays `payment_pending`) or the stored payment type has no provider |
+| POST   | `/orders/{id}/pay`     | Idempotent. A new payment is claimed (`created → payment_pending` plus a `payments` row), authorized through the order's provider, then recorded: `paid`, or `cancelled` with a `402` and the reason on a decline. A retry replays the finished outcome (`200` with the order, or the same `402`) without charging again; `409` "still being processed" while another request holds the payment, or if the order moved on meanwhile; `409` for an order that cannot be paid from its state; `500` if the provider errors (the payment stays `processing`; a retry after its 60 s lease takes it over) or the stored payment type has no provider |
 | POST   | `/orders/{id}/accept`  | Restaurant accepts: `paid → preparing` and a stub driver is assigned; `409` otherwise       |
 | POST   | `/orders/{id}/cancel`  | Cancel an order (`409` if its current state can't be cancelled)                            |
 | POST   | `/orders/{id}/ready`   | Mark the food ready; only while `preparing`, otherwise `409`. State stays `preparing`      |

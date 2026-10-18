@@ -130,7 +130,7 @@ curl -i -X POST http://127.0.0.1:8080/orders/life-1/accept
 curl -i -X POST http://127.0.0.1:8080/orders/life-1/pay
 
 
-## 4. Pay again — 409 (already paid)
+## 4. Pay again — 200, a REPLAY of the first payment: the provider is not charged again
 curl -i -X POST http://127.0.0.1:8080/orders/life-1/pay
 
 
@@ -170,7 +170,8 @@ curl -i -X POST http://127.0.0.1:8080/orders/life-2/pay
 curl -i -X POST http://127.0.0.1:8080/orders/life-2/cancel
 
 
-## Paying a cancelled order — 409
+## Paying an order that was paid and then cancelled — 200, the first payment is replayed
+## (the body shows state "cancelled"; refunds are not built yet)
 curl -i -X POST http://127.0.0.1:8080/orders/life-2/pay
 
 
@@ -203,7 +204,7 @@ curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
 curl -i http://127.0.0.1:8080/orders/pay-2
 
 
-## Pay the declined order again — 409 (cancelled is terminal)
+## Pay the declined order again — 402, the same decline is replayed (the provider is not asked again)
 curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
 
 
@@ -250,6 +251,39 @@ curl -i -X POST http://127.0.0.1:8080/orders \
 curl -i -X POST http://127.0.0.1:8080/orders/stripe-2/pay \
   -H "Content-Type: application/json" \
   -d '{"paymentMethodId":"pm_card_visa_chargeDeclined"}'
+
+
+# ---------------------------------------------------------------------------
+# Idempotent retries. /pay never charges twice for one order. These simulate the
+# two states a retry can find a payment in, by writing the rows straight into
+# Postgres (run them against the dev database; the ids must be new each time).
+# A real payment gets its uuid at the claim; these use readable ids.
+# ---------------------------------------------------------------------------
+
+## Another request is working on the payment (a LIVE lease, one hour) — 409 "still being processed"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"idem-live","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":4000}]}'
+docker exec postgres psql -U postgres -d swiftdrop -c "BEGIN; UPDATE orders SET state='payment_pending' WHERE id='idem-live'; INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at) VALUES ('live-pay', 'idem-live', 'processing', 4000, now() + interval '1 hour'); COMMIT;"
+curl -i -X POST http://127.0.0.1:8080/orders/idem-live/pay
+
+
+## The owner crashed (an EXPIRED lease): the retry takes the payment over and asks the
+## provider again with the SAME payment id ("crashed-pay") — 200, state "paid"
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"idem-crash","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":3000}]}'
+docker exec postgres psql -U postgres -d swiftdrop -c "BEGIN; UPDATE orders SET state='payment_pending' WHERE id='idem-crash'; INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at) VALUES ('crashed-pay', 'idem-crash', 'processing', 3000, now() - interval '1 minute'); COMMIT;"
+curl -i -X POST http://127.0.0.1:8080/orders/idem-crash/pay
+docker exec postgres psql -U postgres -d swiftdrop -c "SELECT id, status, provider_payment_id FROM payments WHERE order_id='idem-crash';"
+
+
+## Twenty simultaneous payments for one order: one payment row, one charge
+## (bash; the late arrivals replay with 200, any that arrive mid-payment get 409)
+curl -s -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"idem-race","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":2000}]}' > /dev/null
+for i in $(seq 1 20); do curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8080/orders/idem-race/pay & done; wait
+docker exec postgres psql -U postgres -d swiftdrop -c "SELECT count(*) AS payment_rows FROM payments WHERE order_id='idem-race';"
 
 
 # ---------------------------------------------------------------------------
