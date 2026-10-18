@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,7 +31,15 @@ import (
 var _ ports.IDatabase = (*fakeDB)(nil)
 
 type fakeDB struct {
+	// mu makes the fake safe for the concurrent-request tests, and makes each
+	// method atomic the way a single SQL statement is.
+	mu     sync.Mutex
 	orders map[string]domain.Order
+
+	// beforeWrite, if set, runs inside a state write just before its
+	// compare-and-set check (with mu held). Tests use it to simulate another
+	// request changing the order after this request read it.
+	beforeWrite func(f *fakeDB, id string)
 
 	getErr    error
 	createErr error
@@ -52,6 +61,8 @@ func newFakeDB() *fakeDB { return &fakeDB{orders: map[string]domain.Order{}} }
 func notFound(id string) error { return fmt.Errorf("%w: %s", ports.ErrOrderNotFound, id) }
 
 func (f *fakeDB) CreateOrder(_ context.Context, o domain.Order) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.createErr != nil {
 		return domain.Order{}, f.createErr
 	}
@@ -67,6 +78,8 @@ func (f *fakeDB) CreateOrder(_ context.Context, o domain.Order) (domain.Order, e
 }
 
 func (f *fakeDB) GetOrderbyId(_ context.Context, id string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.getErr != nil {
 		return domain.Order{}, f.getErr
 	}
@@ -77,21 +90,35 @@ func (f *fakeDB) GetOrderbyId(_ context.Context, id string) (domain.Order, error
 	return o, nil
 }
 
-func (f *fakeDB) UpdateOrderState(_ context.Context, id string, state string) (domain.Order, error) {
-	if f.updateErr != nil && (f.updateErrOn == "" || string(f.updateErrOn) == state) {
+// stateConflict is what the real adapter returns when the order is no longer
+// in the state the caller expected.
+func stateConflict(id string) error { return fmt.Errorf("%w: %s", ports.ErrStateConflict, id) }
+
+func (f *fakeDB) UpdateOrderState(_ context.Context, id string, from, to string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeWrite != nil {
+		f.beforeWrite(f, id)
+	}
+	if f.updateErr != nil && (f.updateErrOn == "" || string(f.updateErrOn) == to) {
 		return domain.Order{}, f.updateErr
 	}
 	o, ok := f.orders[id]
 	if !ok {
 		return domain.Order{}, notFound(id)
 	}
-	o.State = domain.OrderState(state)
+	if string(o.State) != from { // the compare of compare-and-set
+		return domain.Order{}, stateConflict(id)
+	}
+	o.State = domain.OrderState(to)
 	f.orders[id] = o
 	f.stateWrites = append(f.stateWrites, o.State)
 	return o, nil
 }
 
 func (f *fakeDB) SetFoodReady(_ context.Context, id string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.readyErr != nil {
 		return domain.Order{}, f.readyErr
 	}
@@ -107,7 +134,12 @@ func (f *fakeDB) SetFoodReady(_ context.Context, id string) (domain.Order, error
 	return o, nil
 }
 
-func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, state string) (domain.Order, error) {
+func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, from, to string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeWrite != nil {
+		f.beforeWrite(f, id)
+	}
 	if f.acceptErr != nil {
 		return domain.Order{}, f.acceptErr
 	}
@@ -115,7 +147,10 @@ func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, state string) (dom
 	if !ok {
 		return domain.Order{}, notFound(id)
 	}
-	o.State = domain.OrderState(state)
+	if string(o.State) != from {
+		return domain.Order{}, stateConflict(id)
+	}
+	o.State = domain.OrderState(to)
 	o.AssignedDriverID = driverID
 	f.orders[id] = o
 	f.acceptDriverIDs = append(f.acceptDriverIDs, driverID)
@@ -951,12 +986,15 @@ func TestPayFailureModes(t *testing.T) {
 // recordingGateway is a payment.Gateway that returns what the test gave it
 // and remembers every request it was asked to charge.
 type recordingGateway struct {
+	mu     sync.Mutex // the concurrent-request tests call Charge from many goroutines
 	result *domain.PaymentResult
 	err    error
 	calls  []domain.PaymentRequest
 }
 
 func (g *recordingGateway) Charge(_ context.Context, req domain.PaymentRequest) (*domain.PaymentResult, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.calls = append(g.calls, req)
 	return g.result, g.err
 }
