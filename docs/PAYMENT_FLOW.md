@@ -71,7 +71,8 @@ stateDiagram-v2
   created --> payment_pending: pay claimed
   created --> cancelled
   payment_pending --> paid: payment authorized
-  payment_pending --> cancelled: declined, or cancelled
+  payment_pending --> created: declined, attempts left
+  payment_pending --> cancelled: cancelled, or the last attempt declined
   paid --> preparing: accept
   paid --> cancelled
   preparing --> picked_up: pickup
@@ -86,8 +87,9 @@ readiness and the assigned driver are separate facts, not states.
 
 ### The payment and its refund
 
-One row per order in `payments` (a `UNIQUE (order_id)` constraint is what makes the
-claim atomic). It has two independent dimensions:
+A row in `payments` per attempt. An order can have several after declines, but only
+one that is not declined: a partial unique index is what makes the claim atomic. A
+payment has two independent dimensions:
 
 ```mermaid
 stateDiagram-v2
@@ -156,7 +158,8 @@ payment and a retry.
 |---|---|
 | no payment | a new payment: claim, charge, record |
 | `authorized` | **replay**: `200` with the current order, no charge |
-| `declined` | **replay**: `402` with the same reason, no charge |
+| `declined`, and the order is open again (`created`) | a **new attempt**: a new payment with its own key |
+| `declined`, and the order is closed (`cancelled`) | **replay**: `402` with the same reason, no charge |
 | `processing`, lease still live | someone is working on it: `409`, try again shortly |
 | `processing`, lease expired | its owner probably died: **take it over** (compare-and-set on the expired lease), then ask Stripe again with the **same** payment id |
 
@@ -167,6 +170,15 @@ prevents.
 
 A retry is always the **customer's** decision. No code re-sends a charge on its
 own, because that could charge someone who walked away.
+
+**A decline can be retried with another method.** A decline is a definite no (no
+money moved), so it does not close the order: the order returns to `created`, the
+payment stays `declined` as a record, and paying again starts a **new attempt**: a
+new payment row (attempt 2, 3) with its own idempotency key, so the provider cannot
+replay the earlier decline. The answer says `canRetry` and `attemptsLeft`. After
+three attempts (`domain.MaxPaymentAttempts`) the last decline cancels the order
+instead, and from then on a decline is replayed. Each attempt keeps its own history
+in the ledger.
 
 ## 6. When the reply is lost: the webhook
 
@@ -278,6 +290,7 @@ order and its payment, so it cannot go out of date:
 | `refund_pending` | charged, order cancelled, refund not done | "Your order was cancelled. Your money is on its way back and will be credited soon." |
 | `refunded` | the provider accepted the refund | "Your refund has been sent." |
 | `refund_failed` | the job gave up | "Please contact support and quote the order id." |
+| `declined` | the latest payment was refused (order open again, or cancelled after the last attempt) | "Your payment was declined. You were not charged. You can try another card (2 attempts left)." |
 | *(absent)* | nothing to say, and always for cash | |
 
 The dashboard shows these as a message in the order drawer and a pop-up when an
@@ -286,8 +299,9 @@ order's issue changes while someone is watching. Nothing is sent to a customer y
 ## 10. Guarantees
 
 1. A payment is **claimed before** the provider is called.
-2. An order is **charged at most once**: one payment row per order, the payment id
-   is the idempotency key, and every retry reuses it.
+2. An order is **charged at most once**: one live (not declined) payment per order,
+   the payment id is the idempotency key, and a retry of a payment reuses it. A new
+   attempt after a decline is a different payment with its own key.
 3. A payment and its order **change in one transaction**, or neither does.
 4. Every state write is a **compare-and-set** on the state the caller read, so a
    lost race answers `409` and changes nothing.

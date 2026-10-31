@@ -196,7 +196,8 @@ curl -i -X POST http://127.0.0.1:8080/orders \
 curl -i -X POST http://127.0.0.1:8080/orders/pay-1/pay
 
 
-## Card order over the limit (50,001) — pay: 402 with the reason, order is now "cancelled"
+## Card order over the limit (50,001) — pay: 402 with the reason, canRetry true, attemptsLeft 2;
+## the order is back to "created" (open for another attempt)
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
   -d '{"id":"pay-2","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Feast","quantity":1,"unitPriceCents":50001}]}'
@@ -204,8 +205,12 @@ curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
 curl -i http://127.0.0.1:8080/orders/pay-2
 
 
-## Pay the declined order again — 402, the same decline is replayed (the provider is not asked again)
+## Pay it again — a NEW attempt (attempt 2): 402, attemptsLeft 1. A third time cancels the order
+## (402, canRetry false, state "cancelled") and a fourth replays that decline without asking the provider
 curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
+curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
+curl -i -X POST http://127.0.0.1:8080/orders/pay-2/pay
+curl -s http://127.0.0.1:8080/orders/pay-2/payment-history
 
 
 ## Wallet at exactly its limit (10,000) — 200, then 1 cent over (10,001) — 402
@@ -244,7 +249,7 @@ curl -i -X POST http://127.0.0.1:8080/orders/stripe-1/pay \
   -d '{"paymentMethodId":"pm_card_visa"}'
 
 
-## Stripe test card that is declined — 402 "Your card was declined.", order "cancelled"
+## Stripe test card that is declined — 402 "Your card was declined.", the order is open for another attempt
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
   -d '{"id":"stripe-2","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":2000}]}'
