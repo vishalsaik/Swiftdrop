@@ -327,6 +327,49 @@ curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: applicat
 
 
 # ---------------------------------------------------------------------------
+# The board and refunds. GET /orders lists the newest orders, each with its
+# payment summary and a paymentIssue. A charged order that is cancelled is
+# refunded by a background job (every REFUND_INTERVAL, default 30s; start the
+# server with REFUND_INTERVAL=3s to watch it). The dashboard shows all of this
+# at http://127.0.0.1:8080/
+# ---------------------------------------------------------------------------
+
+## The newest five orders — 200 {"orders":[...]}; ?limit must be 1 to 200 (else 400)
+curl -s "http://127.0.0.1:8080/orders?limit=5"
+curl -i "http://127.0.0.1:8080/orders?limit=0"
+
+## Pay, then cancel: the customer was charged, so a refund is due
+curl -s -o /dev/null -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"refund-1","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":2500}]}'
+curl -s -o /dev/null -w "pay    %{http_code}\n" -X POST http://127.0.0.1:8080/orders/refund-1/pay
+curl -s -o /dev/null -w "cancel %{http_code}\n" -X POST http://127.0.0.1:8080/orders/refund-1/cancel
+
+## Right after the cancel: "paymentIssue":"refund_pending". A few seconds later the job
+## has refunded it: "paymentIssue":"refunded" and "refundStatus":"refunded"
+curl -s http://127.0.0.1:8080/orders/refund-1
+sleep 4
+curl -s http://127.0.0.1:8080/orders/refund-1
+docker exec postgres psql -U postgres -d swiftdrop -c "SELECT status, refund_status, refund_id, refund_attempts FROM payments WHERE order_id='refund-1';"
+
+## Cash is never refunded (no money moved through us): paymentIssue stays absent
+curl -s -o /dev/null -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"refund-cash","customerId":"c","restaurantId":"r","paymentType":"cash","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":1800}]}'
+curl -s -o /dev/null -X POST http://127.0.0.1:8080/orders/refund-cash/pay
+curl -s -X POST http://127.0.0.1:8080/orders/refund-cash/cancel
+
+## A /pay body that is not JSON — 400, nothing is claimed (a retry of an order that is already
+## paid is only a replay and never reads the body, so this uses a new order)
+curl -s -o /dev/null -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"refund-bad-body","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":900}]}'
+curl -i -X POST http://127.0.0.1:8080/orders/refund-bad-body/pay -H "Content-Type: application/json" -d '{"paymentMethodId":'
+curl -s http://127.0.0.1:8080/orders/refund-bad-body
+
+## With STRIPE_KEY set, a card order with no payment method — 422 "paymentMethodId is required"
+## (the fake gateway has no such rule), and the order is still "created", never stuck pending
+curl -i -X POST http://127.0.0.1:8080/orders/some-card-order/pay
+
+
+# ---------------------------------------------------------------------------
 # CORS. Allowed origins: http://localhost:3000 and http://localhost:5173.
 # curl is not a browser, so it never enforces CORS; these show the headers
 # a browser would act on. Look for Access-Control-* and Vary in the output.
