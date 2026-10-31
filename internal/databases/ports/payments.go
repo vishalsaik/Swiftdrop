@@ -41,6 +41,11 @@ type PaymentStore interface {
 	// by the order, so this is how an event finds its payment.
 	GetPayment(ctx context.Context, id string) (domain.Payment, error)
 
+	// ListPaymentEvents returns the history of every payment of the order, oldest
+	// first (empty if there is none). It is the ledger the database keeps by
+	// itself: see payment_events in schema.sql.
+	ListPaymentEvents(ctx context.Context, orderID string) ([]domain.PaymentEvent, error)
+
 	// CompletePayment records the outcome (authorized or declined) of a
 	// payment, but only while it is still processing, so a late or duplicate
 	// writer cannot overwrite the result. ErrPaymentNotProcessing if it was

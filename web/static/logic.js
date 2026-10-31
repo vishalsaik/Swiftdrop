@@ -167,6 +167,33 @@ export function noticeFor(order) {
   return null;
 }
 
+const EVENT_LABELS = {
+  claimed: 'Payment started',
+  taken_over: 'A retry took the payment over',
+  authorized: 'Money taken',
+  declined: 'Payment declined',
+  refund_started: 'Refund started',
+  refund_attempt_failed: 'Refund attempt failed',
+  refunded: 'Refund sent',
+  refund_failed: 'Refund given up, needs a person',
+};
+
+// describeEvent turns a ledger line into words for the history list. The ledger's
+// detail is "key=value" or free text; the value is what a person wants to read.
+export function describeEvent(event) {
+  const kind = String(event.kind || '');
+  const detail = String(event.detail || '');
+  const label = EVENT_LABELS[kind] || kind.replace(/_/g, ' ') || 'Something happened';
+  let note = detail;
+  const eq = detail.indexOf('=');
+  if (eq > 0 && /^[a-z_]+$/.test(detail.slice(0, eq))) {
+    const key = detail.slice(0, eq);
+    const value = detail.slice(eq + 1);
+    note = key === 'amount_cents' && /^\d+$/.test(value) ? money(Number(value)) : value;
+  }
+  return { label, note };
+}
+
 // stats are the headline numbers over the orders on the board.
 export function stats(orders) {
   const out = { active: 0, onTheRoad: 0, takenCents: 0, refundsPending: 0, attention: 0 };

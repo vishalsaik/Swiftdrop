@@ -259,3 +259,27 @@ func (db *DBAdapter) FinishPayment(ctx context.Context, paymentID string, status
 	}
 	return o, nil
 }
+
+func (db *DBAdapter) ListPaymentEvents(ctx context.Context, orderID string) ([]domain.PaymentEvent, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT e.id, e.payment_id, e.at, e.kind, e.detail
+		FROM payment_events e JOIN payments p ON p.id = e.payment_id
+		WHERE p.order_id = $1
+		ORDER BY e.id`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list payment events: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.PaymentEvent{}
+	for rows.Next() {
+		var e domain.PaymentEvent
+		if err := rows.Scan(&e.ID, &e.PaymentID, &e.At, &e.Kind, &e.Detail); err != nil {
+			return nil, fmt.Errorf("failed to list payment events: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list payment events: %w", err)
+	}
+	return out, nil
+}

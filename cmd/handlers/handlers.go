@@ -76,6 +76,7 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/orders/{id}/pickup", s.PickupOrder).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/accept", s.AcceptOrder).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/pay", s.PayOrder).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/payment-history", s.PaymentHistory).Methods("GET")
 	s.Router.HandleFunc("/webhooks/stripe", s.PaymentWebhook).Methods("POST")
 	s.dashboardRoutes()
 }

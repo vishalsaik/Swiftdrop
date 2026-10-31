@@ -122,3 +122,17 @@ type RefundRequest struct {
 type RefundResult struct {
 	RefundID string `json:"refundId"`
 }
+
+// PaymentEvent is one line of a payment's history: something that happened to it
+// and when. The history is append-only and written by the database itself in the
+// same transaction as the change it describes, so it cannot disagree with it.
+type PaymentEvent struct {
+	ID        int64     `json:"id"`
+	PaymentID string    `json:"paymentId"`
+	At        time.Time `json:"at"`
+	// Kind is what happened: claimed, taken_over, authorized, declined,
+	// refund_started, refund_attempt_failed, refunded or refund_failed.
+	Kind string `json:"kind"`
+	// Detail is a short fact about it (an amount, a provider id, a reason).
+	Detail string `json:"detail"`
+}
