@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -64,6 +65,63 @@ func TestStateWriteThatLosesTheRaceAnswers409AndChangesNothing(t *testing.T) {
 				t.Errorf("the losing accept left driver %q on the order", db.orders["o1"].AssignedDriverID)
 			}
 		})
+	}
+}
+
+// The kitchen's /ready lands just after the order was cancelled: the order must
+// not come back with food ready.
+func TestReadyThatLosesTheRaceToACancelAnswers409AndSetsNothing(t *testing.T) {
+	db := newFakeDB()
+	db.seed("o1", domain.OrderPreparing)
+	db.beforeWrite = flipTo(domain.OrderCancelled)
+
+	rec := do(t, db, http.MethodPost, "/orders/o1/ready", "")
+	wantStatus(t, rec, http.StatusConflict)
+	wantErrorContains(t, rec, "changed while this request was running")
+	if db.orders["o1"].FoodReady != nil {
+		t.Error("a lost race must not set foodReady")
+	}
+	if got := db.orders["o1"].State; got != domain.OrderCancelled {
+		t.Errorf("state = %s, want the cancel left alone", got)
+	}
+}
+
+// An order that vanishes between the read and the write is a 404, not a 500.
+func TestReadyOnAnOrderThatVanishesIsA404(t *testing.T) {
+	db := newFakeDB()
+	db.seed("o1", domain.OrderPreparing)
+	db.beforeWrite = func(f *fakeDB, id string) { delete(f.orders, id) }
+
+	wantStatus(t, do(t, db, http.MethodPost, "/orders/o1/ready", ""), http.StatusNotFound)
+}
+
+func TestFiftySimultaneousReadiesSetOneTimestamp(t *testing.T) {
+	db := newFakeDB()
+	db.seed("o1", domain.OrderPreparing)
+	s := NewServer(db, testPayRouter())
+
+	stamps := make([]string, racers)
+	fireTogether(racers, func(i int) {
+		rec := httptest.NewRecorder()
+		s.Router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders/o1/ready", nil))
+		if rec.Code == http.StatusOK {
+			var o domain.Order
+			if err := json.NewDecoder(rec.Body).Decode(&o); err == nil && o.FoodReady != nil {
+				stamps[i] = o.FoodReady.String()
+			}
+		}
+	})
+	first := ""
+	for i, st := range stamps {
+		if st == "" {
+			t.Fatalf("request %d did not get a foodReady back", i)
+		}
+		if first == "" {
+			first = st
+		}
+		if st != first {
+			t.Errorf("request %d saw timestamp %s, want the first one %s", i, st, first)
+		}
 	}
 }
 
