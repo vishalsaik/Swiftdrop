@@ -370,6 +370,23 @@ curl -i -X POST http://127.0.0.1:8080/orders/some-card-order/pay
 
 
 # ---------------------------------------------------------------------------
+# The ledger. Every payment has an append-only history, written by a trigger in
+# the database in the same transaction as the change. After the refund section
+# above, this shows everything that happened to refund-1.
+# ---------------------------------------------------------------------------
+
+## Oldest first: claimed, authorized, refund_started, refunded. Each line has "at", "kind", "detail"
+curl -s http://127.0.0.1:8080/orders/refund-1/payment-history
+
+## The history cannot be rewritten (the database refuses) or its payment deleted
+docker exec postgres psql -U postgres -d swiftdrop -c "UPDATE payment_events SET kind = 'forged' WHERE id = (SELECT min(id) FROM payment_events);"
+
+## An order with no payment has an empty history — 200 {"events":[]}; an unknown order — 404
+curl -s http://127.0.0.1:8080/orders/refund-bad-body/payment-history
+curl -i http://127.0.0.1:8080/orders/no-such-order/payment-history
+
+
+# ---------------------------------------------------------------------------
 # CORS. Allowed origins: http://localhost:3000 and http://localhost:5173.
 # curl is not a browser, so it never enforces CORS; these show the headers
 # a browser would act on. Look for Access-Control-* and Vary in the output.
