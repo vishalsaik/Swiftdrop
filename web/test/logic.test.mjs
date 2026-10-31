@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COLUMNS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline, noticeFor,
-  stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo,
+  stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent,
 } from '../static/logic.js';
 
 const order = (over = {}) => ({
@@ -166,6 +166,27 @@ test('there is no notice when there is nothing to say', () => {
 test('the notice amount falls back to the order total without a payment', () => {
   const n = noticeFor(order({ state: 'cancelled', paymentIssue: 'refund_pending' }));
   assert.match(n.body, /\$11\.98/);
+});
+
+test('ledger lines are described in words', () => {
+  const d = (kind, detail = '') => describeEvent({ kind, detail });
+  assert.deepEqual(d('claimed', 'amount_cents=1447'), { label: 'Payment started', note: '$14.47' });
+  assert.deepEqual(d('authorized', 'provider_payment_id=pi_123'), { label: 'Money taken', note: 'pi_123' });
+  assert.deepEqual(d('declined', 'Your card was declined.'), { label: 'Payment declined', note: 'Your card was declined.' });
+  assert.deepEqual(d('taken_over'), { label: 'A retry took the payment over', note: '' });
+  assert.deepEqual(d('refund_started', 'attempt 2'), { label: 'Refund started', note: 'attempt 2' });
+  assert.deepEqual(d('refund_attempt_failed', 'stripe: HTTP 500'), { label: 'Refund attempt failed', note: 'stripe: HTTP 500' });
+  assert.deepEqual(d('refunded', 'refund_id=re_9'), { label: 'Refund sent', note: 're_9' });
+  assert.equal(d('refund_failed', 'no such charge').label, 'Refund given up, needs a person');
+});
+
+test('an unknown ledger kind or odd detail still reads sensibly', () => {
+  assert.equal(describeEvent({ kind: 'needs_review' }).label, 'needs review');
+  assert.equal(describeEvent({}).label, 'Something happened');
+  // a short lower-case word before "=" is read as a key, so only its value is shown
+  assert.equal(describeEvent({ kind: 'declined', detail: 'a=b is not a key' }).note, 'b is not a key');
+  assert.equal(describeEvent({ kind: 'claimed', detail: 'amount_cents=abc' }).note, 'abc');
+  assert.equal(describeEvent({ kind: 'declined', detail: 'Card = declined' }).note, 'Card = declined');
 });
 
 test('stats count what matters', () => {
