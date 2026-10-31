@@ -287,6 +287,46 @@ docker exec postgres psql -U postgres -d swiftdrop -c "SELECT count(*) AS paymen
 
 
 # ---------------------------------------------------------------------------
+# Stripe webhook. If a charge goes through but the reply is lost, the payment
+# stays "processing". Stripe then pushes the outcome to POST /webhooks/stripe,
+# signed with the endpoint's secret. Start the server with the secret set:
+#   STRIPE_WEBHOOK_SECRET=whsec_dev go run ./cmd/api      (PowerShell: $env:STRIPE_WEBHOOK_SECRET = "whsec_dev")
+# Without it the route answers 404. Against real Stripe in test mode, forward
+# events with `stripe listen --forward-to localhost:8080/webhooks/stripe` and use
+# the whsec_ value it prints. These requests sign the event themselves (bash +
+# openssl). The payment is found through request.idempotency_key, which Stripe
+# fills from the Idempotency-Key header of our charge: our payment id.
+# ---------------------------------------------------------------------------
+
+## A charge whose reply was lost: payment "lost-pay" is still processing
+curl -s -o /dev/null -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"hook-1","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":4000}]}'
+docker exec postgres psql -U postgres -d swiftdrop -c "BEGIN; UPDATE orders SET state='payment_pending' WHERE id='hook-1'; INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at) VALUES ('lost-pay', 'hook-1', 'processing', 4000, now() + interval '1 hour'); COMMIT;"
+
+## Stripe reports it succeeded — 200 {"status":"recorded"}; the payment is authorized and the order paid
+SECRET=whsec_dev
+BODY='{"id":"evt_1","type":"payment_intent.succeeded","data":{"object":{"id":"pi_demo"}},"request":{"id":"req_1","idempotency_key":"lost-pay"}}'
+TS=$(date +%s)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG" --data-binary "$BODY"
+docker exec postgres psql -U postgres -d swiftdrop -c "SELECT p.status, p.provider_payment_id, o.state FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id='lost-pay';"
+
+## The same event delivered again — 200 {"status":"already recorded"}, nothing changes
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG" --data-binary "$BODY"
+
+## The customer retries /pay — 200, the payment is replayed and Stripe is not charged again
+curl -i -X POST http://127.0.0.1:8080/orders/hook-1/pay
+
+## A wrong signature — 400 "webhook could not be verified", nothing is recorded
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=0000000000000000000000000000000000000000000000000000000000000000" --data-binary "$BODY"
+
+## An event type we do not act on — 200 {"status":"ignored"}
+BODY2='{"id":"evt_2","type":"charge.succeeded","data":{"object":{"id":"ch_demo"}},"request":{"id":"req_2","idempotency_key":"lost-pay"}}'
+SIG2=$(printf '%s.%s' "$TS" "$BODY2" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG2" --data-binary "$BODY2"
+
+
+# ---------------------------------------------------------------------------
 # CORS. Allowed origins: http://localhost:3000 and http://localhost:5173.
 # curl is not a browser, so it never enforces CORS; these show the headers
 # a browser would act on. Look for Access-Control-* and Vary in the output.

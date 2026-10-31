@@ -20,8 +20,9 @@ Early stage. Working today:
 - Every order state write is a compare-and-set (`UPDATE orders SET state = $to WHERE id = $id AND state = $from`), so of two requests that read the same state exactly one write lands; the loser gets a `409` and changes nothing (`ports.ErrStateConflict`)
 - `/pay` is idempotent, built on a `payments` table (one row per order, `UNIQUE (order_id)`) and a `ports.PaymentStore`. The claim comes **before** the provider call: `StartPayment` inserts the payment row and moves the order to `payment_pending` in one transaction, so of any number of simultaneous requests exactly one reaches the provider. The payment's own uuid is the provider's idempotency key, and `FinishPayment` records the outcome and moves the order to `paid` or `cancelled` in one transaction. A retry replays a finished outcome without charging again; while another request holds the payment (a 60 second lease, timed by the database clock) it is a `409`; after the lease expires a retry takes the payment over and asks the provider again with the **same** payment id
 - Concurrency is tested for real: 50 goroutines paying, cancelling or accepting one order, and 20 goroutines racing every `PaymentStore` operation against Postgres, all under `go test -race`
+- A Stripe webhook (`POST /webhooks/stripe`) is the second way a payment outcome reaches us. If Stripe charges the card but the reply to our call is lost, the payment would stay `processing`; Stripe instead pushes `payment_intent.succeeded` or `payment_intent.payment_failed` to us on its own, and the handler records it with the same `FinishPayment` that `/pay` uses. Whichever of the two arrives first wins and the other finds the payment finished and changes nothing, so a duplicate delivery is harmless. `StripeWebhook` (`internal/payment/gateways`) verifies the `Stripe-Signature` header (HMAC-SHA256 over the timestamp and the raw body, 5 minute tolerance) and finds our payment through `event.request.idempotency_key`, which Stripe copies from our charge's `Idempotency-Key` header (our payment id), so no metadata is sent. It answers `2xx` for anything a retry cannot improve, `400` for a request that fails verification, and `5xx` only when our storage fails so Stripe retries. It is switched on by `STRIPE_WEBHOOK_SECRET`; without it the route answers `404`
 
-Stand-ins for now: wallet payments go to the same Stripe gateway as cards, `PaymentMethodID` is read from the `/pay` body without validation, and `/accept` assigns a random UUID as the driver. Not built yet: a way out for a payment stuck in `processing` forever (it should eventually be flagged for review); refunds, so a cancel that lands while a payment is in flight can leave an order that was charged but cancelled (the log says `NEEDS REVIEW` when a finished payment cannot be recorded); `SetFoodReady` is still check-then-write; a cache in front of the payment lookup; a real driver registry and dispatch; and authentication.
+Stand-ins for now: wallet payments go to the same Stripe gateway as cards, `PaymentMethodID` is read from the `/pay` body without validation, and `/accept` assigns a random UUID as the driver. Not built yet: a way out for a payment stuck in `processing` when no webhook event ever arrives (the request never reached Stripe, or the event was lost after Stripe's retries ended; see [KNOWN_ISSUES.md](KNOWN_ISSUES.md)); refunds, so a cancel that lands while a payment is in flight can leave an order that was charged but cancelled (the log says `NEEDS REVIEW` when a finished payment cannot be recorded); `SetFoodReady` is still check-then-write; a cache in front of the payment lookup; a real driver registry and dispatch; and authentication.
 
 ## Tech stack
 
@@ -40,15 +41,16 @@ cmd/
 internal/
   domain/         plain data types: Order, Driver, Payment, Event
   order/          legal order-state transitions (CanTransition/Apply)
-  payment/        PaymentProvider (strategy), Gateway (adapter seam), Router (factory), FakeGateway, MockGateway
+  payment/        PaymentProvider (strategy), Gateway (adapter seam), Router (factory), EventParser (webhook seam), FakeGateway, MockGateway
     providers/    card, wallet and cash providers
-    gateways/     StripeGateway, the real HTTP adapter to Stripe
+    gateways/     StripeGateway (the real HTTP adapter to Stripe) and StripeWebhook (verifies and translates Stripe's events)
   validation/     the field rules for a new order and the chain that runs them
   databases/
     ports/        IDatabase — the storage interface handlers depend on
     adapters/     Postgres implementation of IDatabase
 schema.sql        database schema
 curls.txt         example curl commands for manual API testing
+KNOWN_ISSUES.md   what we chose not to build yet, and the production problems that leaves
 ```
 
 ## Getting started
@@ -77,6 +79,8 @@ curls.txt         example curl commands for manual API testing
 
    The server listens on `127.0.0.1:8080`. With no `STRIPE_KEY` set it uses the fake payment gateway and never touches the network. To try real Stripe, set `STRIPE_KEY` to a Stripe **test-mode** secret key and send a test payment method in the `/pay` body (`{"paymentMethodId": "pm_..."}`). Never use a live key while developing, and never commit a key.
 
+   To receive Stripe's webhook as well, set `STRIPE_WEBHOOK_SECRET` to the endpoint's signing secret (the `whsec_` value). In development run `stripe listen --forward-to localhost:8080/webhooks/stripe` with the [Stripe CLI](https://docs.stripe.com/stripe-cli); it prints the secret to use. It works with the fake gateway too, so you can try it with events you sign yourself (see [curls.txt](curls.txt)).
+
 4. Try it — see [curls.txt](curls.txt) for ready-to-use examples, or:
 
    ```bash
@@ -89,7 +93,7 @@ curls.txt         example curl commands for manual API testing
 go test ./...
 ```
 
-The state-machine, domain, payment and HTTP handler tests need nothing but Go: the handlers are driven through the real router against an in-memory fake of `ports.IDatabase`, and `StripeGateway` is tested against a local `httptest` server that plays Stripe, so no key or network is involved.
+The state-machine, domain, payment and HTTP handler tests need nothing but Go: the handlers are driven through the real router against an in-memory fake of `ports.IDatabase`, and `StripeGateway` is tested against a local `httptest` server that plays Stripe, so no key or network is involved. The webhook is tested the same way: the tests sign their own events with a test secret.
 
 The Postgres adapter tests need a database and are skipped unless `SWIFTDROP_TEST_DSN` is set. Use a separate database so your dev data is never touched:
 
@@ -111,7 +115,8 @@ SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?s
 | GET    | `/health`              | Health check                                                                               |
 | POST   | `/orders`              | Create an order (always starts `created`); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing)                                                      |
-| POST   | `/orders/{id}/pay`     | Idempotent. A new payment is claimed (`created → payment_pending` plus a `payments` row), authorized through the order's provider, then recorded: `paid`, or `cancelled` with a `402` and the reason on a decline. A retry replays the finished outcome (`200` with the order, or the same `402`) without charging again; `409` "still being processed" while another request holds the payment, or if the order moved on meanwhile; `409` for an order that cannot be paid from its state; `500` if the provider errors (the payment stays `processing`; a retry after its 60 s lease takes it over) or the stored payment type has no provider |
+| POST   | `/orders/{id}/pay`     | Idempotent. A new payment is claimed (`created → payment_pending` plus a `payments` row), authorized through the order's provider, then recorded: `paid`, or `cancelled` with a `402` and the reason on a decline. A retry replays the finished outcome (`200` with the order, or the same `402`) without charging again; `409` "still being processed" while another request holds the payment, or if the order moved on meanwhile; `409` for an order that cannot be paid from its state; `500` if the provider errors (the payment stays `processing`; the webhook records the outcome if Stripe took the charge, or a retry after its 60 s lease takes it over) or the stored payment type has no provider |
+| POST   | `/webhooks/stripe`     | Stripe's push of a payment outcome (`payment_intent.succeeded` or `.payment_failed`), signed with `STRIPE_WEBHOOK_SECRET`. Not for browsers or clients. `200` with `recorded`, `already recorded`, `order moved on`, `unknown payment` or `ignored`; `400` if the signature, timestamp or body fails verification; `404` while no secret is configured; `500` only if our storage fails, so Stripe retries |
 | POST   | `/orders/{id}/accept`  | Restaurant accepts: `paid → preparing` and a stub driver is assigned; `409` otherwise       |
 | POST   | `/orders/{id}/cancel`  | Cancel an order (`409` if its current state can't be cancelled)                            |
 | POST   | `/orders/{id}/ready`   | Mark the food ready; only while `preparing`, otherwise `409`. State stays `preparing`      |
