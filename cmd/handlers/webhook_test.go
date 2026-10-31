@@ -577,3 +577,20 @@ func TestTheWebhookRouteOnlyAcceptsPost(t *testing.T) {
 		}
 	}
 }
+
+// Someone else recorded the same outcome between our read and our write: the
+// delivery is still acknowledged, and nobody is asked to review anything.
+func TestAChargeForAnOrderThatMovedOnThatSomeoneElseRecordedIsAcknowledged(t *testing.T) {
+	logs := captureLog(t)
+	db := newFakeDB()
+	seedProcessing(db, "o1", "pay-1", 1000, time.Minute)
+	o := db.orders["o1"]
+	o.State = domain.OrderCancelled
+	db.orders["o1"] = o
+	db.completeErr = fmt.Errorf("%w: pay-1", ports.ErrPaymentNotProcessing)
+
+	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentAuthorized)), `{}`), "order moved on")
+	if strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("an outcome someone else recorded was flagged for review:\n%s", logs)
+	}
+}

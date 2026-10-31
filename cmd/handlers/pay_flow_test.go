@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 )
 
@@ -682,5 +684,27 @@ func TestOrderThatIsNotCreatedCannotStartAPayment(t *testing.T) {
 	wantErrorContains(t, rec, "cannot be paid")
 	if _, ok := db.payments["o1"]; ok {
 		t.Error("a refused payment left a record")
+	}
+}
+
+// The same for /pay: another writer recorded the answer first, so the request
+// still tells the customer the truth and nobody is asked to review anything.
+func TestACancelledOrdersChargeThatSomeoneElseRecordedIsStillAnswered(t *testing.T) {
+	logs := captureLog(t)
+	g := approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.beforeWrite = func(f *fakeDB, orderID string) {
+		if f.payments[orderID].ID != "" {
+			flipTo(domain.OrderCancelled)(f, orderID)
+		}
+	}
+	db.completeErr = fmt.Errorf("%w: pay", ports.ErrPaymentNotProcessing)
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusConflict)
+	wantErrorContains(t, rec, "cancelled", "refunded")
+	if strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("an outcome someone else recorded was flagged for review:\n%s", logs)
 	}
 }
