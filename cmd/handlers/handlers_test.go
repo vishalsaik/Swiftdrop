@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,10 +28,36 @@ import (
 // writes) and can be told to fail, so handlers are tested without Postgres.
 // ---------------------------------------------------------------------------
 
-var _ ports.IDatabase = (*fakeDB)(nil)
+var _ ports.Store = (*fakeDB)(nil)
 
 type fakeDB struct {
+	// mu makes the fake safe for the concurrent-request tests, and makes each
+	// method atomic the way a single SQL statement (or transaction) is.
+	mu     sync.Mutex
 	orders map[string]domain.Order
+	// payments holds each order's payment, keyed by ORDER id: one payment per
+	// order, like the UNIQUE constraint on payments.order_id.
+	payments map[string]domain.Payment
+
+	// beforeWrite, if set, runs inside a state write (UpdateOrderState,
+	// AcceptOrder, StartPayment, FinishPayment) just before its compare-and-set
+	// check, with mu held and the ORDER id. Tests use it to simulate another
+	// request changing things after this request read them.
+	beforeWrite func(f *fakeDB, orderID string)
+	// beforeTakeOver is the same for TakeOverPayment.
+	beforeTakeOver func(f *fakeDB)
+
+	// Failure injection for the payment side. payGetErr is returned by
+	// GetPaymentByOrder, on call number payGetFailOnCall (1-based) or, if that
+	// is 0, on every call.
+	payGetErr        error
+	payGetFailOnCall int
+	payGetCalls      int
+	takeOverErr      error
+	// getFailOnCall makes GetOrderbyId fail on that call (1-based; 0 = never),
+	// to reach the read that follows loadOrder.
+	getFailOnCall int
+	getCalls      int
 
 	getErr    error
 	createErr error
@@ -44,7 +71,9 @@ type fakeDB struct {
 	acceptDriverIDs []string
 }
 
-func newFakeDB() *fakeDB { return &fakeDB{orders: map[string]domain.Order{}} }
+func newFakeDB() *fakeDB {
+	return &fakeDB{orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
+}
 
 // notFound and the duplicate error below use the same ports sentinels as the
 // real adapter, wrapped with the id, so handlers are tested against the real
@@ -52,6 +81,8 @@ func newFakeDB() *fakeDB { return &fakeDB{orders: map[string]domain.Order{}} }
 func notFound(id string) error { return fmt.Errorf("%w: %s", ports.ErrOrderNotFound, id) }
 
 func (f *fakeDB) CreateOrder(_ context.Context, o domain.Order) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.createErr != nil {
 		return domain.Order{}, f.createErr
 	}
@@ -67,6 +98,12 @@ func (f *fakeDB) CreateOrder(_ context.Context, o domain.Order) (domain.Order, e
 }
 
 func (f *fakeDB) GetOrderbyId(_ context.Context, id string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getCalls++
+	if f.getFailOnCall > 0 && f.getCalls == f.getFailOnCall {
+		return domain.Order{}, errors.New("db down")
+	}
 	if f.getErr != nil {
 		return domain.Order{}, f.getErr
 	}
@@ -77,21 +114,35 @@ func (f *fakeDB) GetOrderbyId(_ context.Context, id string) (domain.Order, error
 	return o, nil
 }
 
-func (f *fakeDB) UpdateOrderState(_ context.Context, id string, state string) (domain.Order, error) {
-	if f.updateErr != nil && (f.updateErrOn == "" || string(f.updateErrOn) == state) {
+// stateConflict is what the real adapter returns when the order is no longer
+// in the state the caller expected.
+func stateConflict(id string) error { return fmt.Errorf("%w: %s", ports.ErrStateConflict, id) }
+
+func (f *fakeDB) UpdateOrderState(_ context.Context, id string, from, to string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeWrite != nil {
+		f.beforeWrite(f, id)
+	}
+	if f.updateErr != nil && (f.updateErrOn == "" || string(f.updateErrOn) == to) {
 		return domain.Order{}, f.updateErr
 	}
 	o, ok := f.orders[id]
 	if !ok {
 		return domain.Order{}, notFound(id)
 	}
-	o.State = domain.OrderState(state)
+	if string(o.State) != from { // the compare of compare-and-set
+		return domain.Order{}, stateConflict(id)
+	}
+	o.State = domain.OrderState(to)
 	f.orders[id] = o
 	f.stateWrites = append(f.stateWrites, o.State)
 	return o, nil
 }
 
 func (f *fakeDB) SetFoodReady(_ context.Context, id string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.readyErr != nil {
 		return domain.Order{}, f.readyErr
 	}
@@ -107,7 +158,12 @@ func (f *fakeDB) SetFoodReady(_ context.Context, id string) (domain.Order, error
 	return o, nil
 }
 
-func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, state string) (domain.Order, error) {
+func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, from, to string) (domain.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeWrite != nil {
+		f.beforeWrite(f, id)
+	}
 	if f.acceptErr != nil {
 		return domain.Order{}, f.acceptErr
 	}
@@ -115,7 +171,10 @@ func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, state string) (dom
 	if !ok {
 		return domain.Order{}, notFound(id)
 	}
-	o.State = domain.OrderState(state)
+	if string(o.State) != from {
+		return domain.Order{}, stateConflict(id)
+	}
+	o.State = domain.OrderState(to)
 	o.AssignedDriverID = driverID
 	f.orders[id] = o
 	f.acceptDriverIDs = append(f.acceptDriverIDs, driverID)
@@ -951,12 +1010,15 @@ func TestPayFailureModes(t *testing.T) {
 // recordingGateway is a payment.Gateway that returns what the test gave it
 // and remembers every request it was asked to charge.
 type recordingGateway struct {
+	mu     sync.Mutex // the concurrent-request tests call Charge from many goroutines
 	result *domain.PaymentResult
 	err    error
 	calls  []domain.PaymentRequest
 }
 
 func (g *recordingGateway) Charge(_ context.Context, req domain.PaymentRequest) (*domain.PaymentResult, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.calls = append(g.calls, req)
 	return g.result, g.err
 }
@@ -1070,8 +1132,11 @@ func TestPayDeclineCancelsTheOrder(t *testing.T) {
 				t.Errorf("state = %s, want cancelled", got)
 			}
 
-			// cancelled is terminal: paying again is refused, not retried
-			wantStatus(t, payWith(t, db, router, "o1"), http.StatusConflict)
+			// paying again is a retry of the same payment: the decline is
+			// replayed, and the provider is not asked a second time
+			again := payWith(t, db, router, "o1")
+			wantStatus(t, again, http.StatusPaymentRequired)
+			wantErrorContains(t, again, "insufficient funds")
 			if len(g.calls) != 1 {
 				t.Errorf("gateway called %d times, want 1", len(g.calls))
 			}
@@ -1091,7 +1156,8 @@ func TestPayDeclineWithoutAReasonGetsAFallback(t *testing.T) {
 }
 
 // The provider said no, but we could not record it: the client must not be
-// told "declined" as if all were well, and the order must not claim cancelled.
+// told "declined" as if all were well, the order must not claim cancelled, and
+// the payment must stay processing so a retry can finish the job.
 func TestPayDeclineThatCannotBeSavedIsAServerError(t *testing.T) {
 	g := declining("insufficient funds")
 	db := newFakeDB()
@@ -1100,9 +1166,12 @@ func TestPayDeclineThatCannotBeSavedIsAServerError(t *testing.T) {
 
 	rec := payWith(t, db, routerOf(g, g), "o1")
 	wantStatus(t, rec, http.StatusInternalServerError)
-	wantErrorContains(t, rec, "cancelled")
+	wantErrorContains(t, rec, "record the payment")
 	if got := db.orders["o1"].State; got != domain.OrderPaymentPending {
 		t.Errorf("state = %s, want payment_pending", got)
+	}
+	if got := db.payments["o1"].Status; got != domain.PaymentProcessing {
+		t.Errorf("payment status = %s, want it still processing", got)
 	}
 }
 
@@ -1205,7 +1274,7 @@ func TestFullLifecycle(t *testing.T) {
 	}{
 		{"/orders/o1/accept", http.StatusConflict, domain.OrderCreated}, // cannot skip paying
 		{"/orders/o1/pay", http.StatusOK, domain.OrderPaid},
-		{"/orders/o1/pay", http.StatusConflict, domain.OrderPaid}, // cannot pay twice
+		{"/orders/o1/pay", http.StatusOK, domain.OrderPaid}, // paying twice replays the first payment, it does not charge again
 		{"/orders/o1/accept", http.StatusOK, domain.OrderPreparing},
 		{"/orders/o1/pickup", http.StatusConflict, domain.OrderPreparing}, // food not ready
 		{"/orders/o1/ready", http.StatusOK, domain.OrderPreparing},

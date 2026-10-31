@@ -101,15 +101,36 @@ func (db *DBAdapter) GetOrderbyId(ctx context.Context, id string) (domain.Order,
 	return o, nil
 }
 
-func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, state string) (domain.Order, error) {
+// translateStateWrite is translate for a compare-and-set write. Zero rows
+// back means one of two things the caller must tell apart: there is no such
+// order (ErrOrderNotFound), or there is one but it was no longer in the state
+// the caller expected (ErrStateConflict). A second query separates them; the
+// write itself already decided the race, so this is only for the error.
+func (db *DBAdapter) translateStateWrite(ctx context.Context, err error, id, doing string) error {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return translate(err, id, doing)
+	}
+	var exists bool
+	if qerr := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM orders WHERE id = $1)`, id).Scan(&exists); qerr != nil {
+		return fmt.Errorf("%s: %w", doing, qerr)
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s", ports.ErrOrderNotFound, id)
+	}
+	return fmt.Errorf("%w: %s", ports.ErrStateConflict, id)
+}
+
+func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, from, to string) (domain.Order, error) {
+	// Compare-and-set: the row only matches while it is still in `from`, so
+	// when two requests race, the database lets exactly one of them through.
 	query := `
 		UPDATE orders
 		SET state = $1
-		WHERE id = $2
+		WHERE id = $2 AND state = $3
 		RETURNING ` + orderColumns
-	o, err := scanOrder(db.Pool.QueryRow(ctx, query, state, id))
+	o, err := scanOrder(db.Pool.QueryRow(ctx, query, to, id, from))
 	if err != nil {
-		return domain.Order{}, translate(err, id, "failed to update order state")
+		return domain.Order{}, db.translateStateWrite(ctx, err, id, "failed to update order state")
 	}
 	return o, nil
 }
@@ -127,15 +148,17 @@ func (db *DBAdapter) SetFoodReady(ctx context.Context, id string) (domain.Order,
 	return o, nil
 }
 
-func (db *DBAdapter) AcceptOrder(ctx context.Context, id string, driverID string, state string) (domain.Order, error) {
+func (db *DBAdapter) AcceptOrder(ctx context.Context, id string, driverID string, from, to string) (domain.Order, error) {
+	// The state and the driver are written together, and only if the order is
+	// still in `from`: a request that lost the race assigns no driver at all.
 	query := `
 		UPDATE orders
 		SET state = $1, assigned_driver_id = $2
-		WHERE id = $3
+		WHERE id = $3 AND state = $4
 		RETURNING ` + orderColumns
-	o, err := scanOrder(db.Pool.QueryRow(ctx, query, state, driverID, id))
+	o, err := scanOrder(db.Pool.QueryRow(ctx, query, to, driverID, id, from))
 	if err != nil {
-		return domain.Order{}, translate(err, id, "failed to accept order")
+		return domain.Order{}, db.translateStateWrite(ctx, err, id, "failed to accept order")
 	}
 	return o, nil
 }
