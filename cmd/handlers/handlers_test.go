@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -63,6 +64,7 @@ type fakeDB struct {
 	getCalls      int
 
 	getErr    error
+	listErr   error
 	createErr error
 	readyErr  error
 	acceptErr error
@@ -115,6 +117,38 @@ func (f *fakeDB) GetOrderbyId(_ context.Context, id string) (domain.Order, error
 		return domain.Order{}, notFound(id)
 	}
 	return o, nil
+}
+
+// ListOrders follows the real query: newest first (by CreatedAt, then id), each
+// order with its payment, at most limit of them.
+func (f *fakeDB) ListOrders(_ context.Context, limit int) ([]domain.OrderWithPayment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	all := make([]domain.Order, 0, len(f.orders))
+	for _, o := range f.orders {
+		all = append(all, o)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		}
+		return all[i].ID < all[j].ID
+	})
+	out := []domain.OrderWithPayment{}
+	for _, o := range all {
+		if len(out) == limit {
+			break
+		}
+		ow := domain.OrderWithPayment{Order: o}
+		if p, ok := f.payments[o.ID]; ok {
+			ow.Payment = &p
+		}
+		out = append(out, ow)
+	}
+	return out, nil
 }
 
 // stateConflict is what the real adapter returns when the order is no longer
@@ -362,7 +396,8 @@ func TestRouting(t *testing.T) {
 	}{
 		{"unknown path", http.MethodGet, "/nope", http.StatusNotFound},
 		{"lifecycle verbs are POST only", http.MethodGet, "/orders/x/pay", http.StatusMethodNotAllowed},
-		{"order is not listable", http.MethodGet, "/orders", http.StatusMethodNotAllowed},
+		{"the order collection cannot be replaced", http.MethodPut, "/orders", http.StatusMethodNotAllowed},
+		{"the order collection cannot be deleted", http.MethodDelete, "/orders", http.StatusMethodNotAllowed},
 		{"health is GET only", http.MethodPost, "/health", http.StatusMethodNotAllowed},
 		{"get is not POST", http.MethodPost, "/orders/x", http.StatusMethodNotAllowed},
 		{"old route shape is gone", http.MethodPost, "/x/ready", http.StatusNotFound},
