@@ -88,7 +88,7 @@ KNOWN_ISSUES.md   what we chose not to build yet, and the production problems th
 
    To receive Stripe's webhook as well, set `STRIPE_WEBHOOK_SECRET` to the endpoint's signing secret (the `whsec_` value). In development run `stripe listen --forward-to localhost:8080/webhooks/stripe` with the [Stripe CLI](https://docs.stripe.com/stripe-cli); it prints the secret to use. It works with the fake gateway too, so you can try it with events you sign yourself (see [curls.txt](curls.txt)).
 
-   Open <http://127.0.0.1:8080/> for the dashboard. The refund job looks for due refunds every 30 seconds; set `REFUND_INTERVAL` (for example `5s`) to watch a refund happen faster.
+   Open <http://127.0.0.1:8080/> for the dashboard. The refund job looks for due refunds every 30 seconds; set `REFUND_INTERVAL` (for example `5s`) to watch a refund happen faster. Set `DATABASE_URL` to use another database, for example a throwaway one to demo the dashboard without your test orders.
 
 4. Try it — see [curls.txt](curls.txt) for ready-to-use examples, or:
 

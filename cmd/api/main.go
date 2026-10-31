@@ -23,7 +23,12 @@ import (
 const defaultRefundInterval = 30 * time.Second
 
 func main() {
+	// The local development database, unless DATABASE_URL names another (for
+	// example a throwaway one to demo the dashboard without the test orders).
 	connStr := "postgres://postgres:postgres@127.0.0.1:5434/swiftdrop?sslmode=disable"
+	if v := os.Getenv("DATABASE_URL"); v != "" {
+		connStr = v
+	}
 	dbConn, err := adapters.NewDatabaseConnection(connStr)
 	if err != nil {
 		panic(fmt.Sprintf("error creating database connection: %s", err))

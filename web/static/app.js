@@ -112,11 +112,11 @@ function buildTicket(order) {
   const el = h('button', { class: 'ticket', type: 'button', dataset: { id: order.id, sig: signature(order) }, 'aria-label': `Order ${order.id}, ${STATE_LABELS[order.state] || order.state}` },
     h('span', { class: 'top' }, h('span', { class: 'no', text: order.id }), h('span', { class: 'age', text: timeAgo(order.createdAt) })),
     h('p', { class: 'items', text: itemsSummary(order) || 'No items' }),
+    stamp ? h('span', { class: `stamp ${stamp.cls}`, text: stamp.text }) : null,
     h('span', { class: 'foot' },
       h('span', { class: 'sum', text: money(totalCents(order)) }),
       h('span', { class: 'chip', text: order.paymentType }),
-      order.state === 'payment_pending' ? h('span', { class: 'chip', text: 'confirming' }) : null),
-    stamp ? h('span', { class: `stamp ${stamp.cls}`, text: stamp.text }) : null);
+      order.state === 'payment_pending' ? h('span', { class: 'chip', text: 'confirming' }) : null));
   el.addEventListener('click', () => openDrawer(order.id, el));
   return el;
 }
