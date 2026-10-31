@@ -21,7 +21,7 @@ const uniqueViolation = "23505"
 
 // orderColumns is the one column list every query returns. It must stay in
 // the same order as the Scan in scanOrder.
-const orderColumns = `id, payment_type, customer_id, restaurant_id, items, state, food_ready, assigned_driver_id`
+const orderColumns = `id, payment_type, customer_id, restaurant_id, items, state, food_ready, assigned_driver_id, created_at, updated_at`
 
 // scanOrder reads one row shaped like orderColumns into an Order.
 func scanOrder(row pgx.Row) (domain.Order, error) {
@@ -35,6 +35,8 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 		&o.State,
 		&o.FoodReady,
 		&o.AssignedDriverID,
+		&o.CreatedAt,
+		&o.UpdatedAt,
 	)
 	return o, err
 }
@@ -125,7 +127,7 @@ func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, from, to s
 	// when two requests race, the database lets exactly one of them through.
 	query := `
 		UPDATE orders
-		SET state = $1
+		SET state = $1, updated_at = now()
 		WHERE id = $2 AND state = $3
 		RETURNING ` + orderColumns
 	o, err := scanOrder(db.Pool.QueryRow(ctx, query, to, id, from))
@@ -135,15 +137,18 @@ func (db *DBAdapter) UpdateOrderState(ctx context.Context, id string, from, to s
 	return o, nil
 }
 
-func (db *DBAdapter) SetFoodReady(ctx context.Context, id string) (domain.Order, error) {
+func (db *DBAdapter) SetFoodReady(ctx context.Context, id string, from string) (domain.Order, error) {
+	// Compare-and-set like the other writes: an order that was cancelled while
+	// the kitchen was finishing must not come back with food ready. COALESCE
+	// keeps the first timestamp when the call is repeated.
 	query := `
 		UPDATE orders
-		SET food_ready = COALESCE(food_ready, now())
-		WHERE id = $1
+		SET food_ready = COALESCE(food_ready, now()), updated_at = now()
+		WHERE id = $1 AND state = $2
 		RETURNING ` + orderColumns
-	o, err := scanOrder(db.Pool.QueryRow(ctx, query, id))
+	o, err := scanOrder(db.Pool.QueryRow(ctx, query, id, from))
 	if err != nil {
-		return domain.Order{}, translate(err, id, "failed to set food ready")
+		return domain.Order{}, db.translateStateWrite(ctx, err, id, "failed to set food ready")
 	}
 	return o, nil
 }
@@ -153,7 +158,7 @@ func (db *DBAdapter) AcceptOrder(ctx context.Context, id string, driverID string
 	// still in `from`: a request that lost the race assigns no driver at all.
 	query := `
 		UPDATE orders
-		SET state = $1, assigned_driver_id = $2
+		SET state = $1, assigned_driver_id = $2, updated_at = now()
 		WHERE id = $3 AND state = $4
 		RETURNING ` + orderColumns
 	o, err := scanOrder(db.Pool.QueryRow(ctx, query, to, driverID, id, from))

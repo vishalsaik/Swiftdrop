@@ -15,11 +15,16 @@ CREATE TABLE IF NOT EXISTS orders (
     items              JSONB NOT NULL,
     state              TEXT NOT NULL,
     food_ready         TIMESTAMPTZ,                -- NULL until the kitchen (or its stand-in) marks it ready
-    assigned_driver_id TEXT NOT NULL DEFAULT ''
+    assigned_driver_id TEXT NOT NULL DEFAULT '',
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()   -- set again by every write
 );
 
--- Upgrades for databases created before a column existed.
+-- Upgrades for databases created before a column existed. (Orders that already
+-- exist get the time of the upgrade, the best we can know.)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- One row per payment attempt. The UNIQUE constraint on order_id is what makes
 -- claiming a payment atomic: of two requests inserting at once, the database

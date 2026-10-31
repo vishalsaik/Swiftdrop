@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swiftdrop/internal/domain"
+	"swiftdrop/internal/payment"
 )
 
 const (
@@ -36,6 +37,24 @@ func NewStripeGateway(apiKey string) *StripeGateway {
 		client:  &http.Client{Timeout: 30 * time.Second},
 		baseURL: stripeBaseURL,
 	}
+}
+
+// maxPaymentMethodIDLength is a generous bound on a Stripe payment method id
+// (real ones are about 30 characters), so a huge value never reaches the API.
+const maxPaymentMethodIDLength = 255
+
+// Check refuses a request Stripe could never charge, before anything is claimed
+// or sent: it needs a payment method token from the client (Stripe.js makes the
+// pm_... id). It makes no network call.
+func (g *StripeGateway) Check(req domain.PaymentRequest) error {
+	id := req.PaymentMethodID
+	switch {
+	case id == "":
+		return fmt.Errorf("%w: paymentMethodId is required", payment.ErrInvalidRequest)
+	case !strings.HasPrefix(id, "pm_"), len(id) > maxPaymentMethodIDLength, strings.ContainsAny(id, " \t\r\n"):
+		return fmt.Errorf("%w: paymentMethodId must be a Stripe payment method id (pm_...)", payment.ErrInvalidRequest)
+	}
+	return nil
 }
 
 // stripeIntent is the subset of Stripe's PaymentIntent object we care about.

@@ -29,7 +29,12 @@ type IDatabase interface {
 	// it is not (or ErrOrderNotFound if there is no such order). Of two
 	// requests that both read the same state, exactly one write succeeds.
 	UpdateOrderState(ctx context.Context, id string, from, to string) (domain.Order, error)
-	SetFoodReady(ctx context.Context, id string) (domain.Order, error)
+
+	// SetFoodReady records when the kitchen finished, but only while the order
+	// is still in `from` (a compare-and-set, like UpdateOrderState): ErrStateConflict
+	// if it is not, ErrOrderNotFound if there is no such order. Calling it again
+	// keeps the first timestamp. The order's state does not change.
+	SetFoodReady(ctx context.Context, id string, from string) (domain.Order, error)
 
 	// AcceptOrder moves the order from `from` to `to` and assigns the driver
 	// in one write, with the same compare-and-set rule as UpdateOrderState.

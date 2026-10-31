@@ -211,7 +211,7 @@ func (db *DBAdapter) StartPayment(ctx context.Context, p domain.Payment, lease t
 	// We own the payment, so now move the order, compare-and-set, in the same
 	// transaction. If the order is no longer in orderFrom, the rollback also
 	// removes the payment row we just inserted.
-	tag, err := tx.Exec(ctx, `UPDATE orders SET state = $1 WHERE id = $2 AND state = $3`, orderTo, p.OrderID, orderFrom)
+	tag, err := tx.Exec(ctx, `UPDATE orders SET state = $1, updated_at = now() WHERE id = $2 AND state = $3`, orderTo, p.OrderID, orderFrom)
 	if err != nil {
 		return domain.Payment{}, false, fmt.Errorf("failed to start payment: %w", err)
 	}
@@ -237,7 +237,7 @@ func (db *DBAdapter) FinishPayment(ctx context.Context, paymentID string, status
 	}
 	query := `
 		UPDATE orders
-		SET state = $1
+		SET state = $1, updated_at = now()
 		WHERE id = $2 AND state = $3
 		RETURNING ` + orderColumns
 	o, err := scanOrder(tx.QueryRow(ctx, query, orderTo, p.OrderID, orderFrom))
