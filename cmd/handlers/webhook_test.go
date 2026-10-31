@@ -106,7 +106,7 @@ func TestASucceededEventAuthorizesThePaymentAndPaysTheOrder(t *testing.T) {
 	wantWrites(t, db, domain.OrderPaid)
 }
 
-func TestADeclinedEventDeclinesThePaymentAndCancelsTheOrder(t *testing.T) {
+func TestADeclinedEventDeclinesThePaymentAndReopensTheOrder(t *testing.T) {
 	db := newFakeDB()
 	seedProcessing(db, "o1", "pay-1", 1000, time.Minute)
 
@@ -116,6 +116,20 @@ func TestADeclinedEventDeclinesThePaymentAndCancelsTheOrder(t *testing.T) {
 	if p.Status != domain.PaymentDeclined || p.Reason != "Your card was declined." || p.ProviderPaymentID != "pi_event" {
 		t.Errorf("payment = %+v, want declined with the reason", p)
 	}
+	if got := db.orders["o1"].State; got != domain.OrderCreated {
+		t.Errorf("order state = %s, want created (open for another attempt)", got)
+	}
+}
+
+// The last allowed attempt cancels the order, as it does through /pay.
+func TestADeclinedEventForTheLastAttemptCancelsTheOrder(t *testing.T) {
+	db := newFakeDB()
+	seedProcessing(db, "o1", "pay-3", 1000, time.Minute)
+	p := db.payments["o1"]
+	p.Attempt = domain.MaxPaymentAttempts
+	db.payments["o1"] = p
+
+	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-3", domain.PaymentDeclined)), `{}`), "recorded")
 	if got := db.orders["o1"].State; got != domain.OrderCancelled {
 		t.Errorf("order state = %s, want cancelled", got)
 	}
@@ -422,7 +436,7 @@ func TestALostReplyIsRecoveredByTheWebhookAndTheRetryReplaysIt(t *testing.T) {
 	}
 }
 
-func TestALostReplyThenADeclineWebhookReplaysTheDecline(t *testing.T) {
+func TestALostReplyThenADeclineWebhookLeavesTheOrderOpenForANewAttempt(t *testing.T) {
 	db := newFakeDB()
 	lost := &recordingGateway{err: errors.New("connection reset by peer")}
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
@@ -430,12 +444,19 @@ func TestALostReplyThenADeclineWebhookReplaysTheDecline(t *testing.T) {
 	id := db.payments["o1"].ID
 
 	wantAck(t, postWebhook(webhookServer(db, eventFor(id, domain.PaymentDeclined)), `{}`), "recorded")
+	if got := db.orders["o1"].State; got != domain.OrderCreated {
+		t.Fatalf("order state = %s, want created", got)
+	}
 
-	retry := payWith(t, db, routerOf(lost, lost), "o1")
-	wantStatus(t, retry, http.StatusPaymentRequired)
-	wantErrorContains(t, retry, "Your card was declined.")
-	if len(lost.calls) != 1 {
-		t.Errorf("the provider was called %d times, want the retry to replay", len(lost.calls))
+	// The customer tries another card: a NEW payment, with its own key.
+	ok := approving()
+	retry := payWith(t, db, routerOf(ok, ok), "o1")
+	wantStatus(t, retry, http.StatusOK)
+	if p := db.payments["o1"]; p.ID == id || p.Attempt != 2 || p.Status != domain.PaymentAuthorized {
+		t.Errorf("payment = %+v, want a new authorized payment on attempt 2", p)
+	}
+	if len(lost.calls) != 1 || len(ok.calls) != 1 || ok.calls[0].IdempotencyKey == id {
+		t.Errorf("lost calls %d, ok calls %+v, want one each and a different key", len(lost.calls), ok.calls)
 	}
 }
 
@@ -494,7 +515,7 @@ func TestContradictoryEventsLeaveThePaymentAndOrderConsistent(t *testing.T) {
 	p, o := db.payments["o1"], db.orders["o1"]
 	switch {
 	case p.Status == domain.PaymentAuthorized && o.State == domain.OrderPaid:
-	case p.Status == domain.PaymentDeclined && o.State == domain.OrderCancelled:
+	case p.Status == domain.PaymentDeclined && o.State == domain.OrderCreated:
 	default:
 		t.Errorf("payment %s with order %s is not a consistent outcome", p.Status, o.State)
 	}

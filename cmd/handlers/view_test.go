@@ -78,8 +78,22 @@ func TestADeclinedPaymentShowsItsReason(t *testing.T) {
 	if pay["status"] != "declined" || pay["reason"] != "Your card was declined." {
 		t.Errorf("payment = %v, want the decline and its reason", pay)
 	}
-	if issueOf(m) != "" {
-		t.Errorf("paymentIssue = %q, a decline is not an issue", issueOf(m))
+	if issueOf(m) != "declined" {
+		t.Errorf("paymentIssue = %q, want declined (the customer may try again)", issueOf(m))
+	}
+	if pay["attempt"] != float64(1) || pay["maxAttempts"] != float64(domain.MaxPaymentAttempts) {
+		t.Errorf("payment = %v, want attempt 1 of %d", pay, domain.MaxPaymentAttempts)
+	}
+}
+
+// A payment written before attempts were numbered has none stored: it is attempt 1.
+func TestAPaymentWithNoStoredAttemptIsAttemptOne(t *testing.T) {
+	db := newFakeDB()
+	seedProcessing(db, "o1", "pay-1", 1000, time.Minute) // Attempt is left at its zero value
+
+	pay, _ := getView(t, db, "o1")["payment"].(map[string]any)
+	if pay["attempt"] != float64(1) {
+		t.Errorf("attempt = %v, want 1", pay["attempt"])
 	}
 }
 

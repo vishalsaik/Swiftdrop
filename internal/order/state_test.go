@@ -26,6 +26,7 @@ var legalMoves = [][2]domain.OrderState{
 	{domain.OrderCreated, domain.OrderCancelled},
 	{domain.OrderPaymentPending, domain.OrderPaid},
 	{domain.OrderPaymentPending, domain.OrderCancelled},
+	{domain.OrderPaymentPending, domain.OrderCreated}, // a declined payment reopens the order
 	{domain.OrderPaid, domain.OrderPreparing},
 	{domain.OrderPaid, domain.OrderCancelled},
 	{domain.OrderPreparing, domain.OrderPickedUp},

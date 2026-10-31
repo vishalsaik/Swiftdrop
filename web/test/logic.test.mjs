@@ -149,18 +149,44 @@ test('the customer is told where their money is', () => {
 });
 
 test('a declined payment is explained and says nothing was charged', () => {
-  const n = noticeFor(order({ state: 'cancelled', payment: { status: 'declined', reason: 'Your card was declined.' } }));
+  const pay = (over = {}) => ({ status: 'declined', reason: 'Your card was declined.', attempt: 3, maxAttempts: 3, ...over });
+  const n = noticeFor(order({ state: 'cancelled', paymentIssue: 'declined', payment: pay() }));
   assert.equal(n.issue, 'declined');
   assert.match(n.body, /Your card was declined\./);
   assert.match(n.body, /not charged/);
-  const bare = noticeFor(order({ state: 'cancelled', payment: { status: 'declined', reason: '' } }));
+  assert.match(n.body, /order was cancelled/);
+  const bare = noticeFor(order({ state: 'cancelled', paymentIssue: 'declined', payment: pay({ reason: '' }) }));
   assert.match(bare.body, /declined/);
+});
+
+test('a decline that leaves the order open says how many attempts remain', () => {
+  const pay = (attempt) => ({ status: 'declined', reason: 'Insufficient funds.', attempt, maxAttempts: 3 });
+  const one = noticeFor(order({ state: 'created', paymentIssue: 'declined', payment: pay(1) }));
+  assert.match(one.body, /try another card/);
+  assert.match(one.body, /2 attempts left/);
+  assert.doesNotMatch(one.body, /cancelled/);
+  assert.match(noticeFor(order({ state: 'created', paymentIssue: 'declined', payment: pay(2) })).body, /1 attempt left/);
+});
+
+test('a declined payment shown without the server saying so gets no notice', () => {
+  // the screen never works out issues for itself: it only repeats the server's
+  assert.equal(noticeFor(order({ state: 'cancelled', payment: { status: 'declined', reason: 'x' } })), null);
+});
+
+test('after a decline the payment action offers another attempt', () => {
+  const declined = order({ state: 'created', payment: { status: 'declined', attempt: 1, maxAttempts: 3 } });
+  const [pay] = actionsFor(declined);
+  assert.equal(pay.label, 'Try payment again');
+  assert.match(pay.note, /Attempt 2 of 3/);
+  assert.match(pay.note, /last decline cancels/);
+  assert.equal(pay.enabled, true);
+  assert.equal(actionsFor(order({ state: 'created' }))[0].label, 'Take payment');
+  assert.equal(actionsFor(order({ state: 'created', payment: { status: 'processing' } }))[0].label, 'Take payment');
 });
 
 test('there is no notice when there is nothing to say', () => {
   assert.equal(noticeFor(order({ state: 'paid', payment: { status: 'authorized', amountCents: 100 } })), null);
   assert.equal(noticeFor(order()), null);
-  assert.equal(noticeFor(order({ state: 'created', payment: { status: 'declined' } })), null);
 });
 
 test('the notice amount falls back to the order total without a payment', () => {
