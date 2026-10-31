@@ -97,15 +97,19 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 		// Another writer finished it between our read and our write.
 		writeWebhookAck(w, "already recorded")
 	case errors.Is(err, ports.ErrStateConflict):
-		// The order moved on (for example it was cancelled) while the payment was
-		// in flight. Nothing was recorded. Retrying cannot change that, so
-		// acknowledge, and flag it when the money did move.
+		// The order moved on (it was cancelled) while the payment was in flight.
+		// The order stays as it is, but the answer is kept, so an authorized
+		// payment on a cancelled order is found by the refund job. If we cannot
+		// keep it, answer 5xx so the provider delivers it again.
+		if keepErr := s.recordOrphanedOutcome(r.Context(), p, event.Status, event.ProviderPaymentID, event.Reason); keepErr != nil {
+			log.Printf("NEEDS REVIEW: webhook %s says payment %s for order %s was %s after the order moved on (%v), and the answer could not be recorded: %v",
+				event.ID, p.ID, p.OrderID, event.Status, err, keepErr)
+			writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
+			return
+		}
 		if event.Status == domain.PaymentAuthorized {
-			log.Printf("NEEDS REVIEW: webhook %s says payment %s for order %s was authorized but the order is no longer %s: %v",
-				event.ID, p.ID, p.OrderID, domain.OrderPaymentPending, err)
-		} else {
-			log.Printf("webhook %s: payment %s was declined but order %s is no longer %s: %v",
-				event.ID, p.ID, p.OrderID, domain.OrderPaymentPending, err)
+			log.Printf("REFUND DUE: webhook %s says payment %s for order %s was authorized after the order moved on: %v",
+				event.ID, p.ID, p.OrderID, err)
 		}
 		writeWebhookAck(w, "order moved on")
 	default:

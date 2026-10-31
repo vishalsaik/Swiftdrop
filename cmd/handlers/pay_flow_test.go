@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 )
 
@@ -400,9 +402,11 @@ func TestFinishingAfterAnotherRequestAlreadyRecordedTheOutcomeReplaysIt(t *testi
 	}
 }
 
-// The provider answered, but the order moved on (for example it was cancelled)
-// while it was working. Nothing may be half-recorded, and a human is told.
-func TestOrderThatMovedOnWhileTheProviderWorkedNeedsReview(t *testing.T) {
+// The provider answered, but the order was cancelled while it was working. The
+// order stays cancelled, the money the provider took is kept on record as an
+// authorized payment (that is what the refund job looks for), and the customer
+// is told it will be refunded.
+func TestOrderThatWasCancelledWhileTheProviderWorkedKeepsTheChargeForARefund(t *testing.T) {
 	logs := captureLog(t)
 	g := approving()
 	db := newFakeDB()
@@ -419,14 +423,89 @@ func TestOrderThatMovedOnWhileTheProviderWorkedNeedsReview(t *testing.T) {
 
 	rec := payWith(t, db, routerOf(g, g), "o1")
 	wantStatus(t, rec, http.StatusConflict)
-	if got := db.payments["o1"].Status; got != domain.PaymentProcessing {
-		t.Errorf("payment status = %s, want it left processing", got)
+	wantErrorContains(t, rec, "o1", "cancelled", "refunded")
+	if p := db.payments["o1"]; p.Status != domain.PaymentAuthorized || p.ProviderPaymentID != "p1" {
+		t.Errorf("payment = %+v, want the charge kept: authorized with the provider's id", p)
 	}
 	if got := db.orders["o1"].State; got != domain.OrderCancelled {
 		t.Errorf("order state = %s, want the cancel left alone", got)
 	}
+	if !strings.Contains(logs.String(), "REFUND DUE") {
+		t.Errorf("the log does not say a refund is due:\n%s", logs)
+	}
+	if strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("a recorded charge must not ask for a human:\n%s", logs)
+	}
+}
+
+// If the charge cannot even be written down, money may have moved with no
+// record: a human is told and the request fails.
+func TestACancelledOrderWhoseChargeCannotBeRecordedNeedsReview(t *testing.T) {
+	logs := captureLog(t)
+	g := approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.beforeWrite = func(f *fakeDB, orderID string) {
+		if f.payments[orderID].ID != "" {
+			flipTo(domain.OrderCancelled)(f, orderID)
+		}
+	}
+	db.completeErr = errors.New("connection refused")
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusInternalServerError)
+	if strings.Contains(rec.Body.String(), "connection refused") {
+		t.Errorf("the cause leaked to the client: %s", rec.Body)
+	}
 	if !strings.Contains(logs.String(), "NEEDS REVIEW") {
-		t.Errorf("the log does not flag the charged-but-cancelled order:\n%s", logs)
+		t.Errorf("the log does not flag the unrecorded charge:\n%s", logs)
+	}
+	if got := db.payments["o1"].Status; got != domain.PaymentProcessing {
+		t.Errorf("payment status = %s, want it left processing", got)
+	}
+}
+
+// A decline moved no money, so it is recorded quietly and nothing is due.
+func TestADeclineForACancelledOrderIsRecordedWithoutARefund(t *testing.T) {
+	logs := captureLog(t)
+	g := declining("no funds")
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.beforeWrite = func(f *fakeDB, orderID string) {
+		if f.payments[orderID].ID != "" {
+			flipTo(domain.OrderCancelled)(f, orderID)
+		}
+	}
+
+	wantStatus(t, payWith(t, db, routerOf(g, g), "o1"), http.StatusConflict)
+	if p := db.payments["o1"]; p.Status != domain.PaymentDeclined || p.Reason != "no funds" {
+		t.Errorf("payment = %+v, want the decline recorded", p)
+	}
+	if strings.Contains(logs.String(), "REFUND DUE") || strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("a decline must not raise a refund or a review:\n%s", logs)
+	}
+}
+
+// When the order moved on in some other way than a cancel, the customer is told
+// only that it changed.
+func TestAnAuthorizedPaymentForAnOrderThatChangedInSomeOtherWayIsStillKept(t *testing.T) {
+	g := approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.beforeWrite = func(f *fakeDB, orderID string) {
+		if f.payments[orderID].ID != "" {
+			flipTo(domain.OrderDelivered)(f, orderID)
+		}
+	}
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusConflict)
+	wantErrorContains(t, rec, "changed while the payment was being processed")
+	if strings.Contains(errorFrom(t, rec), "refunded") {
+		t.Errorf("a refund was promised for an order that was not cancelled: %s", rec.Body)
+	}
+	if got := db.payments["o1"].Status; got != domain.PaymentAuthorized {
+		t.Errorf("payment status = %s, want the charge kept", got)
 	}
 }
 
@@ -605,5 +684,27 @@ func TestOrderThatIsNotCreatedCannotStartAPayment(t *testing.T) {
 	wantErrorContains(t, rec, "cannot be paid")
 	if _, ok := db.payments["o1"]; ok {
 		t.Error("a refused payment left a record")
+	}
+}
+
+// The same for /pay: another writer recorded the answer first, so the request
+// still tells the customer the truth and nobody is asked to review anything.
+func TestACancelledOrdersChargeThatSomeoneElseRecordedIsStillAnswered(t *testing.T) {
+	logs := captureLog(t)
+	g := approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.beforeWrite = func(f *fakeDB, orderID string) {
+		if f.payments[orderID].ID != "" {
+			flipTo(domain.OrderCancelled)(f, orderID)
+		}
+	}
+	db.completeErr = fmt.Errorf("%w: pay", ports.ErrPaymentNotProcessing)
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusConflict)
+	wantErrorContains(t, rec, "cancelled", "refunded")
+	if strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("an outcome someone else recorded was flagged for review:\n%s", logs)
 	}
 }

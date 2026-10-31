@@ -312,9 +312,10 @@ func TestAPaymentThatDisappearsBeforeItIsRecordedIsAnAcknowledgement(t *testing.
 	wantAck(t, postWebhook(webhookServer(store, eventFor("pay-1", domain.PaymentAuthorized)), `{}`), "already recorded")
 }
 
-// Money moved but the order was cancelled meanwhile. Retrying cannot fix that,
-// so it is acknowledged, but a person is told, and nothing is half-recorded.
-func TestAnAuthorizedPaymentForAnOrderThatMovedOnNeedsReview(t *testing.T) {
+// Money moved but the order was cancelled meanwhile. The order stays cancelled,
+// the charge is kept on record (authorized, with the provider's id) so the
+// refund job can find it, and the delivery is acknowledged.
+func TestAnAuthorizedPaymentForAnOrderThatMovedOnIsKeptForARefund(t *testing.T) {
 	logs := captureLog(t)
 	db := newFakeDB()
 	seedProcessing(db, "o1", "pay-1", 1000, time.Minute)
@@ -323,19 +324,26 @@ func TestAnAuthorizedPaymentForAnOrderThatMovedOnNeedsReview(t *testing.T) {
 	db.orders["o1"] = o
 
 	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentAuthorized)), `{}`), "order moved on")
-	if got := db.payments["o1"].Status; got != domain.PaymentProcessing {
-		t.Errorf("payment status = %s, want it left processing", got)
+	if p := db.payments["o1"]; p.Status != domain.PaymentAuthorized || p.ProviderPaymentID != "pi_event" {
+		t.Errorf("payment = %+v, want authorized with the provider's id kept", p)
 	}
 	if got := db.orders["o1"].State; got != domain.OrderCancelled {
 		t.Errorf("order state = %s, want the cancel left alone", got)
 	}
-	if !strings.Contains(logs.String(), "NEEDS REVIEW") {
-		t.Errorf("the charged-but-cancelled order was not flagged:\n%s", logs)
+	wantWrites(t, db)
+	if !strings.Contains(logs.String(), "REFUND DUE") {
+		t.Errorf("the log does not say a refund is due:\n%s", logs)
 	}
+	if strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("a recorded charge must not ask for a human:\n%s", logs)
+	}
+
+	// Stripe delivers it again: nothing changes.
+	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentAuthorized)), `{}`), "already recorded")
 }
 
-// No money moved, so there is nothing for a person to chase.
-func TestADeclinedPaymentForAnOrderThatMovedOnIsNotFlagged(t *testing.T) {
+// No money moved: the decline is recorded and nothing is due.
+func TestADeclinedPaymentForAnOrderThatMovedOnIsRecordedWithoutARefund(t *testing.T) {
 	logs := captureLog(t)
 	db := newFakeDB()
 	seedProcessing(db, "o1", "pay-1", 1000, time.Minute)
@@ -344,8 +352,39 @@ func TestADeclinedPaymentForAnOrderThatMovedOnIsNotFlagged(t *testing.T) {
 	db.orders["o1"] = o
 
 	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentDeclined)), `{}`), "order moved on")
-	if strings.Contains(logs.String(), "NEEDS REVIEW") {
-		t.Errorf("a decline was flagged for review:\n%s", logs)
+	if p := db.payments["o1"]; p.Status != domain.PaymentDeclined || p.Reason != "Your card was declined." {
+		t.Errorf("payment = %+v, want the decline recorded", p)
+	}
+	if strings.Contains(logs.String(), "REFUND DUE") || strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("a decline raised a refund or a review:\n%s", logs)
+	}
+}
+
+// If the charge cannot be written down the delivery is NOT acknowledged, so
+// Stripe sends it again, and a person is told in the meantime.
+func TestAChargeForAnOrderThatMovedOnThatCannotBeRecordedIsRetriedByTheProvider(t *testing.T) {
+	logs := captureLog(t)
+	db := newFakeDB()
+	seedProcessing(db, "o1", "pay-1", 1000, time.Minute)
+	o := db.orders["o1"]
+	o.State = domain.OrderCancelled
+	db.orders["o1"] = o
+	db.completeErr = errors.New("connection refused")
+
+	rec := postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentAuthorized)), `{}`)
+	wantStatus(t, rec, http.StatusInternalServerError)
+	if strings.Contains(rec.Body.String(), "connection refused") {
+		t.Errorf("the cause leaked to the caller: %s", rec.Body)
+	}
+	if !strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("the unrecorded charge was not flagged:\n%s", logs)
+	}
+
+	// The store is back; the redelivery is recorded.
+	db.completeErr = nil
+	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentAuthorized)), `{}`), "order moved on")
+	if got := db.payments["o1"].Status; got != domain.PaymentAuthorized {
+		t.Errorf("payment status = %s, want the charge kept on the redelivery", got)
 	}
 }
 
@@ -536,5 +575,22 @@ func TestTheWebhookRouteOnlyAcceptsPost(t *testing.T) {
 		if got := serve(s, req).Code; got != http.StatusMethodNotAllowed {
 			t.Errorf("%s /webhooks/stripe = %d, want 405", method, got)
 		}
+	}
+}
+
+// Someone else recorded the same outcome between our read and our write: the
+// delivery is still acknowledged, and nobody is asked to review anything.
+func TestAChargeForAnOrderThatMovedOnThatSomeoneElseRecordedIsAcknowledged(t *testing.T) {
+	logs := captureLog(t)
+	db := newFakeDB()
+	seedProcessing(db, "o1", "pay-1", 1000, time.Minute)
+	o := db.orders["o1"]
+	o.State = domain.OrderCancelled
+	db.orders["o1"] = o
+	db.completeErr = fmt.Errorf("%w: pay-1", ports.ErrPaymentNotProcessing)
+
+	wantAck(t, postWebhook(webhookServer(db, eventFor("pay-1", domain.PaymentAuthorized)), `{}`), "order moved on")
+	if strings.Contains(logs.String(), "NEEDS REVIEW") {
+		t.Errorf("an outcome someone else recorded was flagged for review:\n%s", logs)
 	}
 }

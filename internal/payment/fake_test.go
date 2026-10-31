@@ -10,6 +10,41 @@ import (
 	"swiftdrop/internal/payment"
 )
 
+func TestFakeGatewayRefundsEverythingAndRepeatsItsAnswerForTheSameKey(t *testing.T) {
+	g := &payment.FakeGateway{LimitCents: 100}
+	req := domain.RefundRequest{PaymentID: "p1", ProviderPaymentID: "fake-1", AmountCents: 999_999, IdempotencyKey: "refund-p1"}
+
+	first, err := g.Refund(context.Background(), req)
+	if err != nil || first.RefundID == "" {
+		t.Fatalf("Refund = %+v, %v, want an accepted refund with an id", first, err)
+	}
+	again, err := g.Refund(context.Background(), req)
+	if err != nil || again.RefundID != first.RefundID {
+		t.Errorf("same key gave %+v, %v, want the same refund id %q", again, err, first.RefundID)
+	}
+	other, _ := g.Refund(context.Background(), domain.RefundRequest{IdempotencyKey: "refund-p2"})
+	if other.RefundID == first.RefundID {
+		t.Error("different keys must give different refund ids")
+	}
+}
+
+func TestFakeGatewayRefundWithoutAKeyGetsAFreshId(t *testing.T) {
+	g := &payment.FakeGateway{}
+	a, _ := g.Refund(context.Background(), domain.RefundRequest{})
+	b, _ := g.Refund(context.Background(), domain.RefundRequest{})
+	if a.RefundID == "" || a.RefundID == b.RefundID {
+		t.Errorf("ids %q and %q, want two different non-empty ids", a.RefundID, b.RefundID)
+	}
+}
+
+func TestFakeGatewayRefundStopsWhenTheCallerGivesUp(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, err := (&payment.FakeGateway{}).Refund(ctx, domain.RefundRequest{}); err == nil || got != nil {
+		t.Errorf("got %+v, %v, want the context error", got, err)
+	}
+}
+
 func TestFakeGatewayDeclinesByAmount(t *testing.T) {
 	tests := []struct {
 		name   string

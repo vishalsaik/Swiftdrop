@@ -213,8 +213,12 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) GetOrderByID(w http.ResponseWriter, r *http.Request) {
-	if o, ok := s.loadOrder(w, r); ok {
-		writeJSON(w, http.StatusOK, o)
+	o, ok := s.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	if view, ok := s.loadView(w, r, o); ok {
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 
@@ -548,12 +552,11 @@ func (s *Server) finishPayment(w http.ResponseWriter, r *http.Request, p domain.
 		}
 		s.replayPayment(w, r, latest)
 	case errors.Is(err, ports.ErrStateConflict):
-		// The provider has answered but the order moved on while it was
-		// working (for example it was cancelled). Nothing was recorded, so the
-		// payment stays processing. This needs a human or a refund, so say so.
-		log.Printf("NEEDS REVIEW: payment %s for order %s was answered %q but the order is no longer %s: %v",
-			p.ID, p.OrderID, status, domain.OrderPaymentPending, err)
-		writeWriteError(w, p.OrderID, err, "Failed to record the payment due to an internal server error")
+		// The provider has answered but the order moved on while it was working
+		// (it was cancelled). The order stays as it is, but the provider's answer
+		// is a fact about money, so it is kept: an authorized payment on a
+		// cancelled order is what the refund job looks for.
+		s.keepOutcome(w, r, p, status, providerPaymentID, reason, err)
 	default:
 		log.Printf("database error recording payment %s for %s: %v", p.ID, p.OrderID, err)
 		writeWriteError(w, p.OrderID, err, "Failed to record the payment due to an internal server error")

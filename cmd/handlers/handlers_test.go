@@ -54,6 +54,9 @@ type fakeDB struct {
 	payGetFailOnCall int
 	payGetCalls      int
 	takeOverErr      error
+	// completeErr is returned by CompletePayment, which keeps a provider's
+	// answer for an order that moved on.
+	completeErr error
 	// getFailOnCall makes GetOrderbyId fail on that call (1-based; 0 = never),
 	// to reach the read that follows loadOrder.
 	getFailOnCall int
