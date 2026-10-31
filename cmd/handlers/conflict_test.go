@@ -167,6 +167,14 @@ func TestPayFinalWriteThatLosesTheRaceDoesNotOverwrite(t *testing.T) {
 				t.Errorf("state = %s, want the other request's delivered left alone", got)
 			}
 			wantWrites(t, db, domain.OrderPaymentPending)
+			// The provider's answer is kept even though the order is not touched.
+			wantPayment := domain.PaymentAuthorized
+			if tt.name == "declined" {
+				wantPayment = domain.PaymentDeclined
+			}
+			if got := db.payments["o1"].Status; got != wantPayment {
+				t.Errorf("payment status = %s, want the provider's answer %s kept", got, wantPayment)
+			}
 		})
 	}
 }
