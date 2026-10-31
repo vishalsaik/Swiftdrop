@@ -303,6 +303,7 @@ function moneyList(order, pay) {
     ['Pays by', order.paymentType],
     ['Payment', pay ? pay.status : 'not started'],
     pay ? ['Amount', money(pay.amountCents)] : null,
+    pay && (pay.attempt > 1 || pay.status === 'declined') ? ['Attempt', `${pay.attempt} of ${pay.maxAttempts}`] : null,
     pay && pay.reason ? ['Decline reason', pay.reason] : null,
     refund ? ['Refund', refund] : null,
     order.assignedDriverId ? ['Driver', order.assignedDriverId.slice(0, 8)] : null,
@@ -379,8 +380,15 @@ async function onAction(order, action) {
     result = await api('POST', `/orders/${encodeURIComponent(order.id)}/${ENDPOINTS[action.key]}`);
   }
   state.busy = false; state.payOpen = false;
-  if (result.ok) toast(`${order.id}: ${DONE[action.key]}`, 'ok');
-  else toast(`${order.id}: ${errorMessage(result.status, result.data)}`, 'bad');
+  if (result.ok) {
+    toast(`${order.id}: ${DONE[action.key]}`, 'ok');
+  } else {
+    // a decline says whether the customer can try another method
+    const d = result.data;
+    const more = result.status === 402 && d && d.canRetry
+      ? ` Try another method (${d.attemptsLeft} ${d.attemptsLeft === 1 ? 'attempt' : 'attempts'} left).` : '';
+    toast(`${order.id}: ${errorMessage(result.status, d)}${more}`, 'bad');
+  }
   await refresh();
 }
 

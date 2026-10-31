@@ -320,6 +320,11 @@ func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.DB.GetPaymentByOrder(r.Context(), o.ID)
 	switch {
+	case err == nil && p.Status == domain.PaymentDeclined && o.State == domain.OrderCreated:
+		// The last attempt was declined and the order is open again (a decline
+		// returns it to created while attempts are left), so this request is a NEW
+		// attempt with a new payment, not a retry of the declined one.
+		s.startPayment(w, r, o)
 	case err == nil:
 		s.continuePayment(w, r, o, p)
 	case errors.Is(err, ports.ErrPaymentNotFound):
@@ -445,7 +450,10 @@ func (s *Server) replayPayment(w http.ResponseWriter, r *http.Request, p domain.
 		}
 		writeJSON(w, http.StatusOK, current)
 	case domain.PaymentDeclined:
-		writeError(w, http.StatusPaymentRequired, declineReason(p.Reason))
+		// Only a payment on an order that is no longer open is replayed (a
+		// declined payment on an open order starts a new attempt instead), so
+		// there is nothing left to retry.
+		writeDecline(w, declineReason(p.Reason), false, 0)
 	default:
 		log.Printf("payment %s for order %s cannot be replayed from status %q", p.ID, p.OrderID, p.Status)
 		writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
@@ -523,9 +531,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, p domain.Paym
 	case domain.PaymentAuthorized:
 		s.finishPayment(w, r, p, domain.PaymentAuthorized, result.PaymentID, "", domain.OrderPaid)
 	case domain.PaymentDeclined:
-		// A decline is a normal answer, not an error: the order ends in a final
-		// state (cancelled) and the client gets the reason.
-		s.finishPayment(w, r, p, domain.PaymentDeclined, result.PaymentID, declineReason(result.Reason), domain.OrderCancelled)
+		// A decline is a normal answer, not an error. The order goes back to
+		// created so the customer can try another method, until the attempts run
+		// out and it is cancelled. The client gets the reason either way.
+		s.finishPayment(w, r, p, domain.PaymentDeclined, result.PaymentID, declineReason(result.Reason), declineTarget(p))
 	default:
 		log.Printf("payment provider answered %q for %s, which is neither authorized nor declined", result.Status, p.OrderID)
 		writeError(w, http.StatusInternalServerError, "Payment authorisation failed")
@@ -540,7 +549,7 @@ func (s *Server) finishPayment(w http.ResponseWriter, r *http.Request, p domain.
 	switch {
 	case err == nil:
 		if status == domain.PaymentDeclined {
-			writeError(w, http.StatusPaymentRequired, reason)
+			writeDecline(w, reason, to == domain.OrderCreated, max(domain.MaxPaymentAttempts-p.Attempt, 0))
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
@@ -564,6 +573,23 @@ func (s *Server) finishPayment(w http.ResponseWriter, r *http.Request, p domain.
 		log.Printf("database error recording payment %s for %s: %v", p.ID, p.OrderID, err)
 		writeWriteError(w, p.OrderID, err, "Failed to record the payment due to an internal server error")
 	}
+}
+
+// declineTarget is where a declined payment leaves its order: back to created,
+// so the customer can try another method, unless this was the last attempt.
+func declineTarget(p domain.Payment) domain.OrderState {
+	if p.Attempt >= domain.MaxPaymentAttempts {
+		return domain.OrderCancelled
+	}
+	return domain.OrderCreated
+}
+
+// writeDecline answers a payment that was declined: 402 with the reason, and
+// whether the customer can try again and how many attempts are left.
+func writeDecline(w http.ResponseWriter, reason string, canRetry bool, attemptsLeft int) {
+	writeJSON(w, http.StatusPaymentRequired, map[string]any{
+		"error": reason, "canRetry": canRetry, "attemptsLeft": attemptsLeft,
+	})
 }
 
 // declineReason is what the client is told when a payment was declined and the

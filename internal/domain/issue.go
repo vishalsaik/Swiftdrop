@@ -21,6 +21,10 @@ const (
 	// IssueRefundFailed: the refund could not be made automatically. Support has
 	// to step in.
 	IssueRefundFailed PaymentIssue = "refund_failed"
+	// IssueDeclined: the payment was refused and no money moved. While attempts are
+	// left the order is open again (created) and the customer can try another
+	// method; after the last one it is cancelled.
+	IssueDeclined PaymentIssue = "declined"
 )
 
 // IssueFor derives the PaymentIssue of an order from its payment (nil when it
@@ -32,6 +36,8 @@ func IssueFor(o Order, p *Payment) PaymentIssue {
 	switch {
 	case p.Status == PaymentProcessing && (o.State == OrderPaymentPending || o.State == OrderCancelled):
 		return IssueConfirming
+	case p.Status == PaymentDeclined && (o.State == OrderCreated || o.State == OrderCancelled):
+		return IssueDeclined
 	case p.Status == PaymentAuthorized && o.State == OrderCancelled:
 		switch p.RefundStatus {
 		case RefundDone:

@@ -14,7 +14,7 @@ import (
 type nullablePayment struct {
 	id, orderID, status, providerID, reason, refundStatus, refundID, refundError *string
 	amount                                                                       *int64
-	attempts                                                                     *int
+	attempts, attempt                                                            *int
 	lease, created, updated, refundLease                                         *time.Time
 }
 
@@ -29,6 +29,9 @@ func (n nullablePayment) toPayment() *domain.Payment {
 		AmountCents: derefInt64(n.amount), ProviderPaymentID: deref(n.providerID), Reason: deref(n.reason),
 		RefundStatus: domain.RefundStatus(deref(n.refundStatus)), RefundID: deref(n.refundID),
 		RefundError: deref(n.refundError), RefundLeaseExpiresAt: n.refundLease,
+	}
+	if n.attempt != nil {
+		p.Attempt = *n.attempt
 	}
 	if n.attempts != nil {
 		p.RefundAttempts = *n.attempts
@@ -63,11 +66,16 @@ func (db *DBAdapter) ListOrders(ctx context.Context, limit int) ([]domain.OrderW
 	if limit <= 0 {
 		return nil, errors.New("failed to list orders: limit must be positive")
 	}
-	// One LEFT JOIN, so an order and its payment come from the same snapshot.
-	// created_at then id makes the order stable when two orders share a moment.
+	// One query, so an order and its payment come from the same snapshot. An
+	// order that was declined and paid again has several payments; the lateral
+	// join takes the latest. created_at then id makes the order stable when two
+	// orders share a moment.
 	query := `
 		SELECT ` + qualify("o.", orderColumns) + `, ` + qualify("p.", paymentColumns) + `
-		FROM orders o LEFT JOIN payments p ON p.order_id = o.id
+		FROM orders o
+		LEFT JOIN LATERAL (
+			SELECT ` + paymentColumns + ` FROM payments WHERE order_id = o.id ORDER BY attempt DESC LIMIT 1
+		) p ON true
 		ORDER BY o.created_at DESC, o.id
 		LIMIT $1`
 	rows, err := db.Pool.Query(ctx, query, limit)
@@ -84,7 +92,7 @@ func (db *DBAdapter) ListOrders(ctx context.Context, limit int) ([]domain.OrderW
 			&o.ID, &o.PaymentType, &o.CustomerID, &o.RestaurantID, &o.Items, &o.State,
 			&o.FoodReady, &o.AssignedDriverID, &o.CreatedAt, &o.UpdatedAt,
 			&n.id, &n.orderID, &n.status, &n.amount, &n.providerID, &n.reason, &n.lease, &n.created, &n.updated,
-			&n.refundStatus, &n.refundID, &n.attempts, &n.refundError, &n.refundLease,
+			&n.refundStatus, &n.refundID, &n.attempts, &n.refundError, &n.refundLease, &n.attempt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list orders: %w", err)

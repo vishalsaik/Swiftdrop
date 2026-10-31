@@ -24,7 +24,7 @@ const foreignKeyViolation = "23503"
 
 // paymentColumns is the one column list every payment query returns. It must
 // stay in the same order as the Scan in scanPayment.
-const paymentColumns = `id, order_id, status, amount_cents, provider_payment_id, reason, lease_expires_at, created_at, updated_at, refund_status, refund_id, refund_attempts, refund_error, refund_lease_expires_at`
+const paymentColumns = `id, order_id, status, amount_cents, provider_payment_id, reason, lease_expires_at, created_at, updated_at, refund_status, refund_id, refund_attempts, refund_error, refund_lease_expires_at, attempt`
 
 func scanPayment(row pgx.Row) (domain.Payment, error) {
 	var p domain.Payment
@@ -43,6 +43,7 @@ func scanPayment(row pgx.Row) (domain.Payment, error) {
 		&p.RefundAttempts,
 		&p.RefundError,
 		&p.RefundLeaseExpiresAt,
+		&p.Attempt,
 	)
 	return p, err
 }
@@ -65,7 +66,8 @@ func paymentExists(ctx context.Context, q querier, id string) (bool, error) {
 }
 
 func getPaymentByOrder(ctx context.Context, q querier, orderID string) (domain.Payment, error) {
-	query := `SELECT ` + paymentColumns + ` FROM payments WHERE order_id = $1`
+	// The latest attempt: an order that was declined and paid again has several.
+	query := `SELECT ` + paymentColumns + ` FROM payments WHERE order_id = $1 ORDER BY attempt DESC LIMIT 1`
 	p, err := scanPayment(q.QueryRow(ctx, query, orderID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, fmt.Errorf("%w: order %s", ports.ErrPaymentNotFound, orderID)
@@ -95,14 +97,17 @@ func claimPayment(ctx context.Context, q querier, p domain.Payment, lease time.D
 	if lease <= 0 {
 		return domain.Payment{}, false, errors.New("failed to claim payment: lease must be positive")
 	}
-	// The UNIQUE constraint on order_id makes this atomic: when two requests
-	// insert for the same order at once, one row is written and the other
-	// statement does nothing, whichever of them the database sees first. The
-	// deadline comes from the database clock so servers agree on it.
+	// The partial unique index (one payment per order that is not declined) makes
+	// this atomic: when two requests insert for the same order at once, one row is
+	// written and the other statement does nothing, whichever of them the database
+	// sees first. A declined payment does not block a new one; attempt counts the
+	// order's payments so far. The deadline comes from the database clock so
+	// servers agree on it.
 	query := `
-		INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at)
-		VALUES ($1, $2, 'processing', $3, now() + make_interval(secs => $4))
-		ON CONFLICT (order_id) DO NOTHING
+		INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at, attempt)
+		VALUES ($1, $2, 'processing', $3, now() + make_interval(secs => $4),
+		        (SELECT count(*) FROM payments WHERE order_id = $2) + 1)
+		ON CONFLICT (order_id) WHERE status <> 'declined' DO NOTHING
 		RETURNING ` + paymentColumns
 	claimed, err := scanPayment(q.QueryRow(ctx, query, p.ID, p.OrderID, p.AmountCents, lease.Seconds()))
 	if err == nil {
