@@ -15,15 +15,18 @@ import (
 
 var _ ports.RefundStore = (*DBAdapter)(nil)
 
-// qualified prefixes every payment column, for queries that join the orders
-// table (which has columns of the same names).
-func qualified(prefix string) string {
-	cols := strings.Split(paymentColumns, ", ")
+// qualify prefixes every column of a column list, for queries that join tables
+// whose columns share names (both have id, created_at and updated_at).
+func qualify(prefix, columns string) string {
+	cols := strings.Split(columns, ", ")
 	for i, c := range cols {
 		cols[i] = prefix + c
 	}
 	return strings.Join(cols, ", ")
 }
+
+// qualified is that for the payment columns.
+func qualified(prefix string) string { return qualify(prefix, paymentColumns) }
 
 // refundOwed is the condition that makes a refund due, for a payment p joined to
 // its order o. Cash is excluded because no money moved through us, and a

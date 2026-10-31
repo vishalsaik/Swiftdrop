@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwiftDrop Dispatch</title>
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23ff6a2b'/%3E%3Cpath d='M7 11h13M5 16h17M9 21h12' stroke='%23101216' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M22 9l6 7-6 7' fill='none' stroke='%23101216' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=Hanken+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#board">Skip to the board</a>
+
+  <header class="bar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="7" fill="var(--accent)"/>
+        <path d="M7 11h13M5 16h17M9 21h12" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/>
+        <path d="M22 9l6 7-6 7" fill="none" stroke="var(--ink)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <div class="word">SWIFT<b>DROP</b></div>
+        <div class="sub">Dispatch desk</div>
+      </div>
+    </div>
+
+    <dl class="stats" id="stats" aria-label="Live totals"></dl>
+
+    <div class="tools">
+      <span class="live" id="live" role="status"><i></i><span id="liveText">Connecting</span></span>
+      <button class="btn ghost icon" id="theme" type="button" aria-label="Switch between dark and light" title="Switch theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="btn primary" id="newOrder" type="button">New order</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="alert" hidden></div>
+
+  <main class="board" id="board" tabindex="-1" aria-label="Orders by stage"></main>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-label="Order details" aria-hidden="true" tabindex="-1"></aside>
+
+  <dialog class="sheet" id="sheet" aria-labelledby="sheetTitle">
+    <form id="orderForm" method="dialog" novalidate>
+      <header>
+        <h2 id="sheetTitle">New order</h2>
+        <button class="btn ghost icon" type="button" id="sheetClose" aria-label="Close">&times;</button>
+      </header>
+
+      <div class="grid2">
+        <label>Order id
+          <input name="id" autocomplete="off" spellcheck="false">
+          <small class="err" data-err="id"></small>
+        </label>
+        <label>Pays by
+          <select name="paymentType">
+            <option value="card">Card</option>
+            <option value="wallet">Wallet</option>
+            <option value="cash">Cash on delivery</option>
+          </select>
+          <small class="err" data-err="paymentType"></small>
+        </label>
+        <label>Customer
+          <input name="customerId" value="cust-1" autocomplete="off" spellcheck="false">
+          <small class="err" data-err="customerId"></small>
+        </label>
+        <label>Restaurant
+          <input name="restaurantId" value="rest-1" autocomplete="off" spellcheck="false">
+          <small class="err" data-err="restaurantId"></small>
+        </label>
+      </div>
+
+      <fieldset>
+        <legend>Items</legend>
+        <div class="rows" id="rows"></div>
+        <small class="err" data-err="items"></small>
+        <div class="rowtools">
+          <button class="btn ghost" type="button" id="addRow">Add item</button>
+          <button class="btn ghost" type="button" id="sample">Fill a sample</button>
+          <span class="total" id="formTotal">$0.00</span>
+        </div>
+      </fieldset>
+
+      <p class="tip">Tip: the built-in fake payment gateway declines a card order over <b>$500.00</b> and a wallet order over <b>$100.00</b>, so you can see a decline.</p>
+
+      <footer>
+        <button class="btn ghost" type="button" id="sheetCancel">Cancel</button>
+        <button class="btn primary" type="submit" id="sheetSubmit">Place order</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="notices" id="notices" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

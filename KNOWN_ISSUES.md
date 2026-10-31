@@ -10,15 +10,15 @@ Things we decided **not** to build yet, written down so they are not forgotten. 
 | 2 | **Money may still have moved with no record** | The provider charged, but the response was lost or `FinishPayment` failed. The webhook records this when Stripe's event arrives (seconds later, retried for about 3 days). It stays unrecorded only if that event is lost or `STRIPE_WEBHOOK_SECRET` is not set, and then it looks identical to "never reached the provider". | We cannot tell the two apart without asking the provider. | Provider lookup (needs the ledger first) |
 | 3 | **A retry more than ~24 hours later is a new charge** | Stripe prunes idempotency keys after at least 24 hours, so re-sending the same key is treated as a new request. | We decided: no expiry, no cutoff, no pruning for now. Revisit when optimising. | Takeover cutoff (about 20h, inside the takeover SQL) or a provider lookup |
 | 4 | **A customer can pay twice through a new order** | The old order errors, the customer places a new one and pays again. If the first charge succeeded, they paid twice. The webhook shrinks this to the time before the event arrives. | Needs the provider lookup to detect. | Lookup / reconciler / ledger |
-| 5 | **Charged but cancelled** | `/cancel` is allowed while the order is `payment_pending`. If the payment then succeeds, `FinishPayment` finds the order moved on: 409, a `NEEDS REVIEW` log line, nothing recorded. Money moved, order is cancelled. The webhook path behaves the same (acknowledged, `NEEDS REVIEW`, nothing recorded), so the charge's `provider_payment_id` is not stored and a refund job could not find it yet. | Refunds are a later feature. A test documents this behaviour. | Refunds, or refusing `/cancel` while a payment is in flight |
-| 6 | **No alert on `NEEDS REVIEW`** | The only signal for #1, #2 and #5 is a log line. No metric, no query, no dashboard. | No ops tooling yet. | Metrics, or at least a query for old `processing` rows |
+| 5 | **Charged but cancelled** | Fixed. The provider's answer is kept even when it arrives after the cancel (an authorized payment on a cancelled order), and the refund job gives the money back within one interval (30 s by default). What is left: Stripe can accept a refund and later fail it, which nothing tracks yet; and a refund that fails 5 times is marked `failed` and logged `NEEDS REVIEW` for a person. | Refunds are automatic, but only as far as Stripe accepting them. | Stripe's refund events (not looked up yet) and an alert on `failed` refunds |
+| 6 | **Alerts are log lines** | `NEEDS REVIEW` (an unrecorded charge, a contradicting event, a refund given up on) is only a log line. No metric, no query, no dashboard panel. | No ops tooling yet. | Metrics, or at least a query for old `processing` payments and `failed` refunds |
 
 ## Payments: design not built
 
-- **No ledger / payment history.** `payments` is the idempotent claim store: one row per order holding the latest status. It is not an audit trail. **Do not delete payment rows** until the ledger and refunds exist: a refund needs `provider_payment_id`.
+- **No ledger / payment history.** `payments` is the idempotent claim store: one row per order holding the latest status. It is not an audit trail. **Do not delete payment rows** until the ledger exists: a row holds the `provider_payment_id` a refund needs and is the only record of the charge.
 - **No provider lookup, metadata or create-the-PaymentIntent-first.** Ignored on purpose until the ledger exists. Today the gateway creates and confirms in one call and sends no metadata. The webhook matches events through `event.request.idempotency_key` instead, so an event that none of our requests caused (a dashboard refund, a dispute) carries no key and is ignored.
 - **No auth-then-capture, no end-of-day reconciliation, no polling reconciler.** Real payment systems layer these under webhooks as backstops. Not planned yet.
-- **No refunds.**
+- **Refunds are automatic but basic.** One full refund per payment, made by a job inside the API process (`REFUND_INTERVAL`). No partial refunds, no refund reasons, and nothing tracks a refund that Stripe accepts and later reverses. A separate `cmd/worker` process would be the next step, since jobs should not share a process with request handling.
 - **Client `Idempotency-Key` header is ignored.** Our own payment uuid is the key.
 - **A retry or takeover must send the same body.** Otherwise Stripe reports an idempotency conflict.
 
@@ -35,10 +35,17 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 
 ## Orders and API
 
-- `SetFoodReady` is still check-then-write (every other state write is compare-and-set).
-- `paymentMethodId` from the `/pay` body is not validated and a body decode error is ignored. A card order with no `paymentMethodId` under real Stripe is a `500`; it should be a `4xx`.
-- `createdAt` / `updatedAt` on orders are never set.
 - Nothing sweeps old `payment_pending` orders.
+- A `payment_pending` order whose payment never gets an answer (the request never reached Stripe, or its event was lost) stays pending until someone cancels it.
+- There is no authentication. Anyone who can reach the server can pay, accept or cancel any order, and the dashboard has no login.
+
+## The dashboard
+
+- It polls every 3 seconds. Pushing changes to the screen (server-sent events) is not built.
+- Only its rules (`logic.js`) have automated tests. The drawing code (`app.js`) was checked by hand in a browser, so a change to it needs a look in a browser.
+- The customer messages are shown to the dispatcher, as a preview of what the customer would see. Nothing is sent to a customer: there is no customer app, email or push yet.
+- The fonts come from Google Fonts. Offline the stylesheet falls back to the system fonts it names (not tried offline).
+- Shutting down on Ctrl+C (the server stops, then the refund job finishes what it is doing) is in `main.go`, which has no automated test.
 
 ## Performance and structure
 

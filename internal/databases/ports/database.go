@@ -24,6 +24,11 @@ type IDatabase interface {
 	CreateOrder(ctx context.Context, order domain.Order) (domain.Order, error)
 	GetOrderbyId(ctx context.Context, id string) (domain.Order, error)
 
+	// ListOrders returns up to limit orders, newest first, each with its payment
+	// (nil when it has none), read in a single query so an order and its payment
+	// are never from two different moments. limit must be positive.
+	ListOrders(ctx context.Context, limit int) ([]domain.OrderWithPayment, error)
+
 	// UpdateOrderState is a compare-and-set: it moves the order from `from`
 	// to `to` only if it is still in `from`, and returns ErrStateConflict if
 	// it is not (or ErrOrderNotFound if there is no such order). Of two

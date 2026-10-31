@@ -68,6 +68,7 @@ func NewServer(db ports.Store, pay *payment.Router) *Server {
 func (s *Server) routes() {
 	s.Router.HandleFunc("/health", GetHealth).Methods("GET")
 	s.Router.HandleFunc("/orders", s.CreateOrder).Methods("POST")
+	s.Router.HandleFunc("/orders", s.ListOrders).Methods("GET")
 	s.Router.HandleFunc("/orders/{id}", s.GetOrderByID).Methods("GET")
 	s.Router.HandleFunc("/orders/{id}/cancel", s.CancelOrder).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/ready", s.ReadyState).Methods("POST")
@@ -76,6 +77,7 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/orders/{id}/accept", s.AcceptOrder).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/pay", s.PayOrder).Methods("POST")
 	s.Router.HandleFunc("/webhooks/stripe", s.PaymentWebhook).Methods("POST")
+	s.dashboardRoutes()
 }
 
 func GetHealth(w http.ResponseWriter, r *http.Request) {
