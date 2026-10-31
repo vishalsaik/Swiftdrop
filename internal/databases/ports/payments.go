@@ -36,6 +36,11 @@ type PaymentStore interface {
 	// GetPaymentByOrder returns the order's payment, or ErrPaymentNotFound.
 	GetPaymentByOrder(ctx context.Context, orderID string) (domain.Payment, error)
 
+	// GetPayment returns the payment with the given id, or ErrPaymentNotFound.
+	// A provider's webhook names a payment by its id (our idempotency key), not
+	// by the order, so this is how an event finds its payment.
+	GetPayment(ctx context.Context, id string) (domain.Payment, error)
+
 	// CompletePayment records the outcome (authorized or declined) of a
 	// payment, but only while it is still processing, so a late or duplicate
 	// writer cannot overwrite the result. ErrPaymentNotProcessing if it was

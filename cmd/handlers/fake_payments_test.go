@@ -66,6 +66,20 @@ func (f *fakeDB) GetPaymentByOrder(_ context.Context, orderID string) (domain.Pa
 	return p, nil
 }
 
+func (f *fakeDB) GetPayment(_ context.Context, id string) (domain.Payment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.payGetCalls++
+	if f.payGetErr != nil && (f.payGetFailOnCall == 0 || f.payGetCalls == f.payGetFailOnCall) {
+		return domain.Payment{}, f.payGetErr
+	}
+	p, ok := f.paymentByID(id)
+	if !ok {
+		return domain.Payment{}, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, id)
+	}
+	return p, nil
+}
+
 func (f *fakeDB) CompletePayment(_ context.Context, id string, status domain.PaymentStatus, providerPaymentID, reason string) (domain.Payment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

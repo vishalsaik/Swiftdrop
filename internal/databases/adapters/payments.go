@@ -71,6 +71,18 @@ func getPaymentByOrder(ctx context.Context, q querier, orderID string) (domain.P
 	return p, nil
 }
 
+func getPayment(ctx context.Context, q querier, id string) (domain.Payment, error) {
+	query := `SELECT ` + paymentColumns + ` FROM payments WHERE id = $1`
+	p, err := scanPayment(q.QueryRow(ctx, query, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, id)
+	}
+	if err != nil {
+		return domain.Payment{}, fmt.Errorf("failed to fetch payment: %w", err)
+	}
+	return p, nil
+}
+
 func claimPayment(ctx context.Context, q querier, p domain.Payment, lease time.Duration) (domain.Payment, bool, error) {
 	if p.ID == "" || p.OrderID == "" {
 		return domain.Payment{}, false, errors.New("failed to claim payment: id and order id are required")
@@ -140,6 +152,10 @@ func (db *DBAdapter) ClaimPayment(ctx context.Context, p domain.Payment, lease t
 
 func (db *DBAdapter) GetPaymentByOrder(ctx context.Context, orderID string) (domain.Payment, error) {
 	return getPaymentByOrder(ctx, db.Pool, orderID)
+}
+
+func (db *DBAdapter) GetPayment(ctx context.Context, id string) (domain.Payment, error) {
+	return getPayment(ctx, db.Pool, id)
 }
 
 func (db *DBAdapter) CompletePayment(ctx context.Context, id string, status domain.PaymentStatus, providerPaymentID, reason string) (domain.Payment, error) {

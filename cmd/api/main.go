@@ -43,6 +43,16 @@ func main() {
 	)
 	s := handlers.NewServer(dbConn, payRouter)
 
+	// Stripe pushes payment outcomes to POST /webhooks/stripe and signs every
+	// request with the endpoint's secret (the whsec_ value from the Stripe
+	// dashboard, or from `stripe listen` in development). Without it the route
+	// answers 404, because an unverified webhook must never be trusted.
+	if secret := os.Getenv("STRIPE_WEBHOOK_SECRET"); secret != "" {
+		s.Webhook = gateways.NewStripeWebhook(secret)
+	} else {
+		fmt.Println("STRIPE_WEBHOOK_SECRET not set: POST /webhooks/stripe is disabled")
+	}
+
 	srv := &http.Server{
 		Addr:         "127.0.0.1:8080",
 		Handler:      s.Handler(),
