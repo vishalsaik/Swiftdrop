@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -236,10 +237,10 @@ func (s *Server) ReadyState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("order %s cannot be marked ready from state %s", o.ID, o.State))
 		return
 	}
-	updated, err := s.DB.SetFoodReady(r.Context(), o.ID)
+	updated, err := s.DB.SetFoodReady(r.Context(), o.ID, string(o.State))
 	if err != nil {
 		log.Printf("database update error for %s: %v", o.ID, err)
-		writeError(w, http.StatusInternalServerError, "Failed to set food ready due to an internal server error")
+		writeWriteError(w, o.ID, err, "Failed to set food ready due to an internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -350,6 +351,12 @@ func (s *Server) startPayment(w http.ResponseWriter, r *http.Request, o domain.O
 	if !ok {
 		return
 	}
+	// Refuse a request the provider could never fulfil before claiming anything:
+	// a claim that is then abandoned would leave the payment stuck in processing.
+	method, ok := s.paymentMethod(w, r, o, provider)
+	if !ok {
+		return
+	}
 	// The claim. The payment row and the order's move to payment_pending are
 	// written in one transaction, and only if the order has no payment yet and
 	// is still in the state we read. Of any number of simultaneous requests,
@@ -367,7 +374,41 @@ func (s *Server) startPayment(w http.ResponseWriter, r *http.Request, o domain.O
 		s.continuePayment(w, r, o, p)
 		return
 	}
-	s.authorize(w, r, p, provider)
+	s.authorize(w, r, p, provider, method)
+}
+
+// payBody is what /pay may carry: the payment method token the client got from
+// the provider's own library (Stripe.js). Cash and the fake gateway need none.
+type payBody struct {
+	PaymentMethodID string `json:"paymentMethodId"`
+}
+
+// paymentMethod reads the payment method from the request body and lets the
+// provider refuse the request if it could never succeed (422), so that nothing
+// is claimed for it. A body that is not JSON is a 400, an oversized one a 413,
+// and no body at all is fine: it is just an empty method. If it cannot return
+// the method it has already answered the request.
+func (s *Server) paymentMethod(w http.ResponseWriter, r *http.Request, o domain.Order, provider payment.PaymentProvider) (string, bool) {
+	var body payBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return "", false
+		}
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return "", false
+	}
+	if checker, ok := provider.(payment.RequestChecker); ok {
+		req := domain.PaymentRequest{
+			OrderID: o.ID, AmountCents: o.TotalCents(), Currency: "USD", PaymentMethodID: body.PaymentMethodID,
+		}
+		if err := checker.Check(req); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return "", false
+		}
+	}
+	return body.PaymentMethodID, true
 }
 
 // continuePayment handles an order that already has a payment, so this request
@@ -410,6 +451,16 @@ func (s *Server) replayPayment(w http.ResponseWriter, r *http.Request, p domain.
 // the SAME payment id (the provider returns the saved answer, or runs it once),
 // never with a new one.
 func (s *Server) takeOverPayment(w http.ResponseWriter, r *http.Request, o domain.Order, p domain.Payment) {
+	// Everything that can refuse this request comes before the takeover, so a
+	// refused retry does not take the lease and leave the payment held.
+	provider, ok := s.providerFor(w, o)
+	if !ok {
+		return
+	}
+	method, ok := s.paymentMethod(w, r, o, provider)
+	if !ok {
+		return
+	}
 	taken, ok, err := s.DB.TakeOverPayment(r.Context(), p.ID, paymentLease)
 	if err != nil {
 		log.Printf("database error taking over payment %s: %v", p.ID, err)
@@ -431,29 +482,20 @@ func (s *Server) takeOverPayment(w http.ResponseWriter, r *http.Request, o domai
 		s.replayPayment(w, r, latest)
 		return
 	}
-	provider, ok := s.providerFor(w, o)
-	if !ok {
-		return
-	}
-	s.authorize(w, r, taken, provider)
+	s.authorize(w, r, taken, provider, method)
 }
 
 // authorize asks the provider and records the answer. p is a payment this
 // request holds the claim on. The payment's own id is the provider's
 // idempotency key, and the amount is the one stored when it was claimed, so a
 // retry or a takeover asks the provider the very same question.
-func (s *Server) authorize(w http.ResponseWriter, r *http.Request, p domain.Payment, provider payment.PaymentProvider) {
-	var body struct {
-		PaymentMethodID string `json:"paymentMethodId"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, p domain.Payment, provider payment.PaymentProvider, method string) {
 	req := domain.PaymentRequest{
 		OrderID:         p.OrderID,
 		IdempotencyKey:  p.ID,
 		AmountCents:     p.AmountCents,
 		Currency:        "USD",
-		PaymentMethodID: body.PaymentMethodID,
+		PaymentMethodID: method,
 	}
 	result, err := provider.Authorize(r.Context(), req)
 	if err != nil {

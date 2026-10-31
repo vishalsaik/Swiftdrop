@@ -16,3 +16,8 @@ type WalletProvider struct {
 func (w *WalletProvider) Authorize(ctx context.Context, req domain.PaymentRequest) (*domain.PaymentResult, error) {
 	return w.Gateway.Charge(ctx, req)
 }
+
+// Check lets the gateway refuse a request it could never fulfil.
+func (w *WalletProvider) Check(req domain.PaymentRequest) error {
+	return checkWith(w.Gateway, req)
+}

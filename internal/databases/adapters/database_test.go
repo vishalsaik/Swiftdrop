@@ -179,7 +179,7 @@ func TestPaymentTypeIsStoredAndReturnedByEveryQuery(t *testing.T) {
 	if err != nil || updated.PaymentType != domain.PaymentWallet {
 		t.Errorf("UpdateOrderState: paymentType = %q, err = %v", updated.PaymentType, err)
 	}
-	ready, err := db.SetFoodReady(ctx, "it-payment")
+	ready, err := db.SetFoodReady(ctx, "it-payment", string(domain.OrderPreparing))
 	if err != nil || ready.PaymentType != domain.PaymentWallet {
 		t.Errorf("SetFoodReady: paymentType = %q, err = %v", ready.PaymentType, err)
 	}
@@ -229,7 +229,7 @@ func TestSetFoodReady(t *testing.T) {
 	db := testAdapter(t)
 	newRow(t, db, "it-ready", domain.OrderPreparing)
 
-	first, err := db.SetFoodReady(context.Background(), "it-ready")
+	first, err := db.SetFoodReady(context.Background(), "it-ready", string(domain.OrderPreparing))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestSetFoodReady(t *testing.T) {
 		t.Errorf("SetFoodReady must not change state, got %s", first.State)
 	}
 
-	second, err := db.SetFoodReady(context.Background(), "it-ready")
+	second, err := db.SetFoodReady(context.Background(), "it-ready", string(domain.OrderPreparing))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,8 +251,56 @@ func TestSetFoodReady(t *testing.T) {
 
 func TestSetFoodReadyMissingOrder(t *testing.T) {
 	db := testAdapter(t)
-	_, err := db.SetFoodReady(context.Background(), "it-does-not-exist")
+	_, err := db.SetFoodReady(context.Background(), "it-does-not-exist", string(domain.OrderPreparing))
 	wantNotFound(t, err)
+}
+
+// The write only lands while the order is in the state the caller read: an
+// order that was cancelled meanwhile must not get a foodReady.
+func TestSetFoodReadyInAnotherStateIsAConflictAndChangesNothing(t *testing.T) {
+	db := testAdapter(t)
+	newRow(t, db, "it-ready-conflict", domain.OrderCancelled)
+
+	_, err := db.SetFoodReady(context.Background(), "it-ready-conflict", string(domain.OrderPreparing))
+	if !errors.Is(err, ports.ErrStateConflict) {
+		t.Fatalf("error = %v, want one wrapping ErrStateConflict", err)
+	}
+	stored, err := db.GetOrderbyId(context.Background(), "it-ready-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.FoodReady != nil {
+		t.Errorf("foodReady = %v, want it left unset", stored.FoodReady)
+	}
+}
+
+// Many kitchens press "ready" at once: one timestamp results, and everybody sees it.
+func TestConcurrentSetFoodReadyKeepsOneTimestamp(t *testing.T) {
+	db := testAdapter(t)
+	newRow(t, db, "it-ready-race", domain.OrderPreparing)
+
+	const n = 20
+	stamps := make([]time.Time, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			o, err := db.SetFoodReady(context.Background(), "it-ready-race", string(domain.OrderPreparing))
+			errs[i] = err
+			if err == nil && o.FoodReady != nil {
+				stamps[i] = *o.FoodReady
+			}
+		})
+	}
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("call %d: %v", i, errs[i])
+		}
+		if !stamps[i].Equal(stamps[0]) || stamps[i].IsZero() {
+			t.Errorf("call %d saw %v, want the same non-zero timestamp as call 0 (%v)", i, stamps[i], stamps[0])
+		}
+	}
 }
 
 func TestAcceptOrderWritesStateAndDriverTogether(t *testing.T) {

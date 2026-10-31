@@ -140,15 +140,21 @@ func (f *fakeDB) UpdateOrderState(_ context.Context, id string, from, to string)
 	return o, nil
 }
 
-func (f *fakeDB) SetFoodReady(_ context.Context, id string) (domain.Order, error) {
+func (f *fakeDB) SetFoodReady(_ context.Context, id string, from string) (domain.Order, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.beforeWrite != nil {
+		f.beforeWrite(f, id)
+	}
 	if f.readyErr != nil {
 		return domain.Order{}, f.readyErr
 	}
 	o, ok := f.orders[id]
 	if !ok {
 		return domain.Order{}, notFound(id)
+	}
+	if string(o.State) != from { // the compare of compare-and-set
+		return domain.Order{}, stateConflict(id)
 	}
 	if o.FoodReady == nil { // COALESCE(food_ready, now())
 		now := time.Now()
