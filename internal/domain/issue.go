@@ -1,0 +1,46 @@
+package domain
+
+// PaymentIssue is what is wrong or unfinished about an order's money, in terms a
+// customer-facing screen can act on. It is derived from the order and its
+// payment, never stored, so it cannot go out of date: there is nothing to keep
+// in step with the facts it describes.
+type PaymentIssue string
+
+const (
+	// IssueNone: nothing to tell the customer.
+	IssueNone PaymentIssue = ""
+	// IssueConfirming: the payment was started and has no final answer yet. The
+	// customer may or may not have been charged; if they were and the order does
+	// not go ahead, they are refunded.
+	IssueConfirming PaymentIssue = "confirming"
+	// IssueRefundPending: the customer was charged and the order is cancelled.
+	// The money is on its way back.
+	IssueRefundPending PaymentIssue = "refund_pending"
+	// IssueRefunded: the refund was accepted by the provider.
+	IssueRefunded PaymentIssue = "refunded"
+	// IssueRefundFailed: the refund could not be made automatically. Support has
+	// to step in.
+	IssueRefundFailed PaymentIssue = "refund_failed"
+)
+
+// IssueFor derives the PaymentIssue of an order from its payment (nil when it
+// has none). Cash is never charged online, so it has nothing to refund.
+func IssueFor(o Order, p *Payment) PaymentIssue {
+	if p == nil || o.PaymentType == PaymentCash {
+		return IssueNone
+	}
+	switch {
+	case p.Status == PaymentProcessing && (o.State == OrderPaymentPending || o.State == OrderCancelled):
+		return IssueConfirming
+	case p.Status == PaymentAuthorized && o.State == OrderCancelled:
+		switch p.RefundStatus {
+		case RefundDone:
+			return IssueRefunded
+		case RefundFailed:
+			return IssueRefundFailed
+		default:
+			return IssueRefundPending
+		}
+	}
+	return IssueNone
+}

@@ -24,7 +24,7 @@ const foreignKeyViolation = "23503"
 
 // paymentColumns is the one column list every payment query returns. It must
 // stay in the same order as the Scan in scanPayment.
-const paymentColumns = `id, order_id, status, amount_cents, provider_payment_id, reason, lease_expires_at, created_at, updated_at`
+const paymentColumns = `id, order_id, status, amount_cents, provider_payment_id, reason, lease_expires_at, created_at, updated_at, refund_status, refund_id, refund_attempts, refund_error, refund_lease_expires_at`
 
 func scanPayment(row pgx.Row) (domain.Payment, error) {
 	var p domain.Payment
@@ -38,6 +38,11 @@ func scanPayment(row pgx.Row) (domain.Payment, error) {
 		&p.LeaseExpiresAt,
 		&p.CreatedAt,
 		&p.UpdatedAt,
+		&p.RefundStatus,
+		&p.RefundID,
+		&p.RefundAttempts,
+		&p.RefundError,
+		&p.RefundLeaseExpiresAt,
 	)
 	return p, err
 }

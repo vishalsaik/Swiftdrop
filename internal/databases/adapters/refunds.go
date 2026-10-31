@@ -1,0 +1,145 @@
+package adapters
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"swiftdrop/internal/databases/ports"
+	"swiftdrop/internal/domain"
+
+	"github.com/jackc/pgx/v5"
+)
+
+var _ ports.RefundStore = (*DBAdapter)(nil)
+
+// qualified prefixes every payment column, for queries that join the orders
+// table (which has columns of the same names).
+func qualified(prefix string) string {
+	cols := strings.Split(paymentColumns, ", ")
+	for i, c := range cols {
+		cols[i] = prefix + c
+	}
+	return strings.Join(cols, ", ")
+}
+
+// refundOwed is the condition that makes a refund due, for a payment p joined to
+// its order o. Cash is excluded because no money moved through us, and a
+// payment with no provider id could not be refunded anyway.
+const refundOwed = `p.status = 'authorized'
+		AND p.provider_payment_id <> ''
+		AND o.state = 'cancelled'
+		AND o.payment_type <> 'cash'
+		AND (p.refund_status = 'none'
+		     OR (p.refund_status = 'refunding' AND p.refund_lease_expires_at <= now()))`
+
+func (db *DBAdapter) ListRefundable(ctx context.Context, limit int) ([]domain.Payment, error) {
+	if limit <= 0 {
+		return nil, errors.New("failed to list refunds: limit must be positive")
+	}
+	query := `
+		SELECT ` + qualified("p.") + `
+		FROM payments p JOIN orders o ON o.id = p.order_id
+		WHERE ` + refundOwed + `
+		ORDER BY p.updated_at, p.id
+		LIMIT $1`
+	rows, err := db.Pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list refunds: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Payment
+	for rows.Next() {
+		p, err := scanPayment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list refunds: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list refunds: %w", err)
+	}
+	return out, nil
+}
+
+func (db *DBAdapter) ClaimRefund(ctx context.Context, paymentID string, lease time.Duration) (domain.Payment, bool, error) {
+	if lease <= 0 {
+		return domain.Payment{}, false, errors.New("failed to claim refund: lease must be positive")
+	}
+	// The row only matches while the refund is due, and the update changes what
+	// makes it due (refund_status, the lease), so of several simultaneous
+	// claimers exactly one gets the row. The deadline comes from the database
+	// clock so servers agree on it.
+	query := `
+		UPDATE payments p
+		SET refund_status = 'refunding',
+		    refund_attempts = p.refund_attempts + 1,
+		    refund_lease_expires_at = now() + make_interval(secs => $2),
+		    updated_at = now()
+		FROM orders o
+		WHERE p.id = $1 AND o.id = p.order_id AND ` + refundOwed + `
+		RETURNING ` + qualified("p.")
+	p, err := scanPayment(db.Pool.QueryRow(ctx, query, paymentID, lease.Seconds()))
+	if err == nil {
+		return p, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, fmt.Errorf("failed to claim refund: %w", err)
+	}
+	exists, qerr := paymentExists(ctx, db.Pool, paymentID)
+	if qerr != nil {
+		return domain.Payment{}, false, fmt.Errorf("failed to claim refund: %w", qerr)
+	}
+	if !exists {
+		return domain.Payment{}, false, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, paymentID)
+	}
+	return domain.Payment{}, false, nil
+}
+
+func (db *DBAdapter) CompleteRefund(ctx context.Context, paymentID, refundID string) error {
+	if refundID == "" {
+		return errors.New("failed to complete refund: refund id is required")
+	}
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE payments
+		SET refund_status = 'refunded', refund_id = $2, refund_error = '',
+		    refund_lease_expires_at = NULL, updated_at = now()
+		WHERE id = $1 AND refund_status = 'refunding'`, paymentID, refundID)
+	return db.refundWriteResult(ctx, tag.RowsAffected(), err, paymentID, "complete")
+}
+
+func (db *DBAdapter) FailRefund(ctx context.Context, paymentID, message string, giveUp bool) error {
+	// Giving up is final; otherwise only the reason is recorded and the lease
+	// keeps running, which is the wait before the next attempt.
+	status, release := "refunding", "refund_lease_expires_at"
+	if giveUp {
+		status, release = "failed", "NULL"
+	}
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE payments
+		SET refund_status = $2, refund_error = $3, refund_lease_expires_at = `+release+`, updated_at = now()
+		WHERE id = $1 AND refund_status = 'refunding'`, paymentID, status, message)
+	return db.refundWriteResult(ctx, tag.RowsAffected(), err, paymentID, "fail")
+}
+
+// refundWriteResult turns the outcome of a guarded refund write into the error
+// callers expect: zero rows is either a payment that is not there or a refund
+// that was not in progress.
+func (db *DBAdapter) refundWriteResult(ctx context.Context, rows int64, err error, paymentID, doing string) error {
+	if err != nil {
+		return fmt.Errorf("failed to %s refund: %w", doing, err)
+	}
+	if rows > 0 {
+		return nil
+	}
+	exists, qerr := paymentExists(ctx, db.Pool, paymentID)
+	if qerr != nil {
+		return fmt.Errorf("failed to %s refund: %w", doing, qerr)
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, paymentID)
+	}
+	return fmt.Errorf("%w: %s", ports.ErrRefundNotInProgress, paymentID)
+}

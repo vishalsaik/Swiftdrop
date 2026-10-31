@@ -77,4 +77,48 @@ type Payment struct {
 	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+
+	// The refund of this payment, a second dimension next to Status: a payment
+	// stays authorized forever (the money was taken), and RefundStatus says
+	// whether it has been given back. Empty is the same as RefundNone.
+	RefundStatus RefundStatus `json:"refundStatus"`
+	// RefundID is the provider's id for the refund, set when it is done.
+	RefundID string `json:"refundId"`
+	// RefundAttempts counts how often a refund was started, to give up after a few.
+	RefundAttempts int `json:"refundAttempts"`
+	// RefundError is why the last attempt failed, for the person who looks.
+	RefundError string `json:"refundError"`
+	// RefundLeaseExpiresAt is the deadline of the refund job's claim, like
+	// LeaseExpiresAt but for the refund. Nil unless a refund is in progress.
+	RefundLeaseExpiresAt *time.Time `json:"refundLeaseExpiresAt,omitempty"`
+}
+
+// RefundStatus says where giving the money back stands.
+type RefundStatus string
+
+const (
+	// RefundNone: nothing has been refunded. Together with an authorized payment
+	// on a cancelled order it means a refund is DUE.
+	RefundNone RefundStatus = "none"
+	// RefundInProgress: the refund job has claimed it and is asking the provider.
+	RefundInProgress RefundStatus = "refunding"
+	// RefundDone: the provider accepted the refund.
+	RefundDone RefundStatus = "refunded"
+	// RefundFailed: the job gave up after several attempts. A person must look.
+	RefundFailed RefundStatus = "failed"
+)
+
+// RefundRequest is what the refund job hands to a Refunder.
+type RefundRequest struct {
+	PaymentID         string `json:"paymentId"`         // our payment id
+	ProviderPaymentID string `json:"providerPaymentId"` // what to refund
+	AmountCents       int64  `json:"amountCents"`
+	// IdempotencyKey makes a repeated request refund once. It is derived from
+	// the payment id, so every attempt for one payment uses the same key.
+	IdempotencyKey string `json:"idempotencyKey"`
+}
+
+// RefundResult is the provider's acceptance of a refund.
+type RefundResult struct {
+	RefundID string `json:"refundId"`
 }

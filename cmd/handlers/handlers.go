@@ -213,8 +213,12 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) GetOrderByID(w http.ResponseWriter, r *http.Request) {
-	if o, ok := s.loadOrder(w, r); ok {
-		writeJSON(w, http.StatusOK, o)
+	o, ok := s.loadOrder(w, r)
+	if !ok {
+		return
+	}
+	if view, ok := s.loadView(w, r, o); ok {
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 

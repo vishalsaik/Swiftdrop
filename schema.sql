@@ -45,3 +45,20 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The refund of a payment, a second dimension next to status: an authorized
+-- payment stays authorized forever (the money was taken) and refund_status says
+-- whether it has been given back. An authorized payment on a cancelled order
+-- whose refund_status is 'none' is a refund that is DUE; the refund job finds
+-- those and claims them with a lease, the same way a charge is claimed.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_status TEXT NOT NULL DEFAULT 'none'
+    CHECK (refund_status IN ('none', 'refunding', 'refunded', 'failed'));
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_attempts INTEGER NOT NULL DEFAULT 0
+    CHECK (refund_attempts >= 0);
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_error TEXT NOT NULL DEFAULT '';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_lease_expires_at TIMESTAMPTZ;   -- NULL unless refunding
+
+-- Keeps "which refunds are due" cheap: only authorized payments not yet finished.
+CREATE INDEX IF NOT EXISTS payments_refund_due_idx ON payments (updated_at)
+    WHERE status = 'authorized' AND refund_status IN ('none', 'refunding');

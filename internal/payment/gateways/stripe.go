@@ -97,37 +97,49 @@ func (g *StripeGateway) Charge(ctx context.Context, req domain.PaymentRequest) (
 		"automatic_payment_methods[allow_redirects]": {"never"},
 	}
 
+	status, body, err := g.post(ctx, "/v1/payment_intents", form, req.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Translate: Stripe response → domain.PaymentResult. The HTTP status
+	// comes first: a rejected request has no PaymentIntent to look at.
+	if status >= 200 && status < 300 {
+		return intentResult(body)
+	}
+	return failureResult(status, body)
+}
+
+// post sends one form-encoded POST to the Stripe API and returns the HTTP status
+// and the (size-capped) body. A non-nil error means no answer was read at all
+// (it could not be sent, reached or read), so the caller does not know what
+// happened. An answer of any status, a rejection included, is not an error here.
+func (g *StripeGateway) post(ctx context.Context, path string, form url.Values, idempotencyKey string) (int, []byte, error) {
 	httpReq, err := http.NewRequestWithContext(
 		ctx, http.MethodPost,
-		g.baseURL+"/v1/payment_intents",
+		g.baseURL+path,
 		strings.NewReader(form.Encode()),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("stripe: building request: %w", err)
+		return 0, nil, fmt.Errorf("stripe: building request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	httpReq.Header.Set("Authorization", "Bearer "+g.apiKey)
-	if req.IdempotencyKey != "" {
-		httpReq.Header.Set("Idempotency-Key", req.IdempotencyKey)
+	if idempotencyKey != "" {
+		httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 	}
 
 	resp, err := g.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("stripe: request failed: %w", err)
+		return 0, nil, fmt.Errorf("stripe: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("stripe: reading response: %w", err)
+		return 0, nil, fmt.Errorf("stripe: reading response: %w", err)
 	}
-
-	// Translate: Stripe response → domain.PaymentResult. The HTTP status
-	// comes first: a rejected request has no PaymentIntent to look at.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return intentResult(body)
-	}
-	return failureResult(resp.StatusCode, body)
+	return resp.StatusCode, body, nil
 }
 
 // intentResult handles a 2xx reply, where the body is a PaymentIntent. Only
