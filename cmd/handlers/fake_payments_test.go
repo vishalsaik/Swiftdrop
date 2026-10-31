@@ -83,6 +83,9 @@ func (f *fakeDB) GetPayment(_ context.Context, id string) (domain.Payment, error
 func (f *fakeDB) CompletePayment(_ context.Context, id string, status domain.PaymentStatus, providerPaymentID, reason string) (domain.Payment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.completeErr != nil {
+		return domain.Payment{}, f.completeErr
+	}
 	return f.completeLocked(id, status, providerPaymentID, reason)
 }
 
