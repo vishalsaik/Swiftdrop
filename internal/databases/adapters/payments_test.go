@@ -236,6 +236,51 @@ func TestGetPaymentByOrder(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GetPayment (by the payment's own id)
+// ---------------------------------------------------------------------------
+
+func TestGetPaymentFindsAPaymentByItsOwnId(t *testing.T) {
+	db := testAdapter(t)
+	ctx := context.Background()
+	paidOrder(t, db, "pay-by-id")
+
+	_, err := db.GetPayment(ctx, "pay-id-by-id")
+	wantPaymentErr(t, err, ports.ErrPaymentNotFound)
+
+	claimed := claim(t, db, "pay-by-id", "pay-id-by-id", time.Minute)
+	got, err := db.GetPayment(ctx, "pay-id-by-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != claimed.ID || got.OrderID != "pay-by-id" || got.Status != domain.PaymentProcessing ||
+		got.AmountCents != claimed.AmountCents || !got.LeaseExpiresAt.Equal(claimed.LeaseExpiresAt) {
+		t.Errorf("got %+v, want the claimed payment %+v", got, claimed)
+	}
+
+	// It sees the outcome once it is recorded.
+	if _, err := db.CompletePayment(ctx, "pay-id-by-id", domain.PaymentAuthorized, "pi_by_id", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPayment(ctx, "pay-id-by-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.PaymentAuthorized || got.ProviderPaymentID != "pi_by_id" {
+		t.Errorf("got %+v, want the authorized payment", got)
+	}
+}
+
+// The id is the payment's, not the order's: an order id finds nothing.
+func TestGetPaymentDoesNotMatchAnOrderId(t *testing.T) {
+	db := testAdapter(t)
+	paidOrder(t, db, "pay-by-id-order")
+	claim(t, db, "pay-by-id-order", "pay-id-other", time.Minute)
+
+	_, err := db.GetPayment(context.Background(), "pay-by-id-order")
+	wantPaymentErr(t, err, ports.ErrPaymentNotFound)
+}
+
+// ---------------------------------------------------------------------------
 // CompletePayment
 // ---------------------------------------------------------------------------
 
@@ -527,6 +572,8 @@ func TestPaymentStoreFailuresAreInternalErrors(t *testing.T) {
 	}
 	_, err = db.GetPaymentByOrder(ctx, "pay-cancelled")
 	plain("GetPaymentByOrder", err)
+	_, err = db.GetPayment(ctx, "pay-id-cancelled")
+	plain("GetPayment", err)
 	_, err = db.CompletePayment(ctx, "pay-id-cancelled", domain.PaymentAuthorized, "pi_x", "")
 	plain("CompletePayment", err)
 	_, ok, err := db.TakeOverPayment(ctx, "pay-id-cancelled", time.Minute)
