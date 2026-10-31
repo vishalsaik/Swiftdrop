@@ -4,6 +4,8 @@ A food-delivery and driver-dispatch backend, built from scratch in Go as a hands
 
 ## Status
 
+For how the payment flow fits together (the pieces, the states, what happens when a call fails, and how refunds work), see [docs/PAYMENT_FLOW.md](docs/PAYMENT_FLOW.md).
+
 Early stage. Working today:
 
 - Domain model: `Order`, `Driver`, `Payment`, `Event` types (`internal/domain`)
@@ -54,6 +56,7 @@ internal/
   databases/
     ports/        IDatabase — the storage interface handlers depend on
     adapters/     Postgres implementation of IDatabase
+docs/             architecture notes (PAYMENT_FLOW.md)
 web/              the dashboard (static files compiled into the binary) and its tests
 schema.sql        database schema
 curls.txt         example curl commands for manual API testing
