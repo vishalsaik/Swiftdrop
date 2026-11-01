@@ -279,3 +279,18 @@ func TestAnAbandonedAttemptShowsAsAbandonedAndKeepsItsReasonPrivate(t *testing.T
 		t.Errorf("payment = %v: the reason is for the people running the service", pay)
 	}
 }
+
+// An order that is deleted while the payment is being claimed is a 404, not a 500.
+func TestAnOrderThatVanishesWhileThePaymentIsClaimedIs404(t *testing.T) {
+	g := approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	db.beforeWrite = func(f *fakeDB, orderID string) { delete(f.orders, orderID) }
+
+	rec := payWith(t, db, routerOf(g, g), "o1")
+	wantStatus(t, rec, http.StatusNotFound)
+	wantErrorContains(t, rec, "could not be found")
+	if len(g.calls) != 0 {
+		t.Errorf("the provider was called %d times", len(g.calls))
+	}
+}
