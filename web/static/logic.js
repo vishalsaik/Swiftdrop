@@ -215,7 +215,7 @@ export function noticeFor(order) {
 
 const EVENT_LABELS = {
   claimed: 'Payment started',
-  taken_over: 'A retry took the payment over',
+  taken_over: 'Taken over by a retry or the payment checker',
   authorized: 'Money taken',
   declined: 'Payment declined',
   abandoned: 'Attempt abandoned, nothing was charged',

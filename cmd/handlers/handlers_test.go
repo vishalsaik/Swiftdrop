@@ -73,6 +73,11 @@ type fakeDB struct {
 	nextAlertID int64
 	alertErr    error
 	alertBlock  bool // RaiseAlert waits for its context, like a database that hangs
+
+	// unsettledErr and markErr make the stuck-payment calls fail.
+	unsettledErr error
+	markErr      error
+	beforeMark   func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
 	createErr error
 	readyErr  error
 	acceptErr error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"swiftdrop/internal/databases/ports"
@@ -43,10 +44,10 @@ func (f *fakeDB) ClaimPayment(_ context.Context, p domain.Payment, lease time.Du
 	defer f.mu.Unlock()
 	attempt := 1
 	if existing, ok := f.payments[p.OrderID]; ok {
-		if existing.Status != domain.PaymentDeclined {
+		if !closedWithoutCharge(existing) {
 			return existing, false, nil
 		}
-		attempt = max(existing.Attempt, 1) + 1 // a declined payment does not block a new one
+		attempt = max(existing.Attempt, 1) + 1 // a declined or abandoned payment does not block a new one
 	}
 	if _, ok := f.orders[p.OrderID]; !ok {
 		return domain.Payment{}, false, notFound(p.OrderID)
@@ -95,14 +96,14 @@ func (f *fakeDB) CompletePayment(_ context.Context, id string, status domain.Pay
 }
 
 func (f *fakeDB) completeLocked(id string, status domain.PaymentStatus, providerPaymentID, reason string) (domain.Payment, error) {
-	if status != domain.PaymentAuthorized && status != domain.PaymentDeclined {
+	if status != domain.PaymentAuthorized && status != domain.PaymentDeclined && status != domain.PaymentAbandoned {
 		return domain.Payment{}, fmt.Errorf("%q is not a final status", status)
 	}
 	p, ok := f.paymentByID(id)
 	if !ok {
 		return domain.Payment{}, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, id)
 	}
-	if p.Status != domain.PaymentProcessing {
+	if !p.Unsettled() {
 		return domain.Payment{}, fmt.Errorf("%w: %s", ports.ErrPaymentNotProcessing, id)
 	}
 	p.Status, p.ProviderPaymentID, p.Reason, p.UpdatedAt = status, providerPaymentID, reason, time.Now()
@@ -144,10 +145,10 @@ func (f *fakeDB) StartPayment(_ context.Context, p domain.Payment, lease time.Du
 	}
 	attempt := 1
 	if existing, ok := f.payments[p.OrderID]; ok {
-		if existing.Status != domain.PaymentDeclined {
+		if !closedWithoutCharge(existing) {
 			return existing, false, nil // already has a live payment: nothing is written
 		}
-		attempt = max(existing.Attempt, 1) + 1 // a declined payment does not block a new one
+		attempt = max(existing.Attempt, 1) + 1 // a declined or abandoned payment does not block a new one
 	}
 	o, ok := f.orders[p.OrderID]
 	if !ok {
@@ -180,10 +181,10 @@ func (f *fakeDB) FinishPayment(_ context.Context, paymentID string, status domai
 	if f.updateErr != nil && (f.updateErrOn == "" || string(f.updateErrOn) == orderTo) {
 		return domain.Order{}, f.updateErr
 	}
-	if status != domain.PaymentAuthorized && status != domain.PaymentDeclined {
+	if status != domain.PaymentAuthorized && status != domain.PaymentDeclined && status != domain.PaymentAbandoned {
 		return domain.Order{}, errors.New("not a final status")
 	}
-	if p.Status != domain.PaymentProcessing {
+	if !p.Unsettled() {
 		return domain.Order{}, fmt.Errorf("%w: %s", ports.ErrPaymentNotProcessing, paymentID)
 	}
 	o := f.orders[p.OrderID]
@@ -197,6 +198,62 @@ func (f *fakeDB) FinishPayment(_ context.Context, paymentID string, status domai
 	f.orders[p.OrderID] = o
 	f.stateWrites = append(f.stateWrites, o.State)
 	return o, nil
+}
+
+// closedWithoutCharge reports whether a payment ended with no money taken, so the
+// order may start another one (the Postgres index leaves such payments out).
+func closedWithoutCharge(p domain.Payment) bool {
+	return p.Status == domain.PaymentDeclined || p.Status == domain.PaymentAbandoned
+}
+
+// ListUnsettledPayments follows the adapter: payments needing review, and those
+// processing whose lease ran out and that are at least minAge old.
+func (f *fakeDB) ListUnsettledPayments(_ context.Context, minAge time.Duration, limit int) ([]domain.Payment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.unsettledErr != nil {
+		return nil, f.unsettledErr
+	}
+	out := []domain.Payment{}
+	now := time.Now()
+	for _, p := range f.payments {
+		stuck := p.Status == domain.PaymentProcessing && !p.LeaseExpiresAt.After(now) && !p.CreatedAt.After(now.Add(-minAge))
+		if p.Status == domain.PaymentNeedsReview || stuck {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// MarkPaymentNeedsReview follows the adapter: only a processing payment moves.
+func (f *fakeDB) MarkPaymentNeedsReview(_ context.Context, id, reason string) (domain.Payment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeMark != nil {
+		f.beforeMark(f)
+	}
+	if f.markErr != nil {
+		return domain.Payment{}, false, f.markErr
+	}
+	p, ok := f.paymentByID(id)
+	if !ok {
+		return domain.Payment{}, false, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, id)
+	}
+	if p.Status != domain.PaymentProcessing {
+		return domain.Payment{}, false, nil
+	}
+	p.Status, p.Reason, p.UpdatedAt = domain.PaymentNeedsReview, reason, time.Now()
+	f.payments[p.OrderID] = p
+	return p, true, nil
 }
 
 // ListPaymentEvents returns what a test put in f.events for the order (the
