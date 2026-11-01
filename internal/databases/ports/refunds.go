@@ -12,6 +12,18 @@ import (
 // held by anyone (never claimed, or already finished). Nothing was changed.
 var ErrRefundNotInProgress = errors.New("refund is not in progress")
 
+// RefundReversalStore records that a refund the provider accepted was later
+// reversed. The webhook handler needs it, so it is part of Store.
+type RefundReversalStore interface {
+	// ReverseRefund moves the refund of the payment the provider knows as
+	// providerPaymentID from refunded to failed, with the reason a person will
+	// read, but only when that refund is the one with id refundID. reversed =
+	// false means nothing was changed, and payment is the payment as it stands:
+	// its refund may be still in progress, already failed, not ours, or never
+	// made. ErrPaymentNotFound if no payment has that provider id.
+	ReverseRefund(ctx context.Context, providerPaymentID, refundID, reason string) (payment domain.Payment, reversed bool, err error)
+}
+
 // RefundStore is what the refund job needs from storage. A refund is DUE when a
 // payment was authorized (money taken), its order is cancelled, it was charged
 // online (cash moves no money through us) and its refund has not been done. The
