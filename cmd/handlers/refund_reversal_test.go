@@ -144,3 +144,31 @@ func TestAReversalIsRecordedEvenWhenTheAlertCannotBeKept(t *testing.T) {
 		t.Errorf("refund = %s, want failed", db.payments["o1"].RefundStatus)
 	}
 }
+
+// The log shows every verified event and what became of it, not only the problems,
+// so a deployment can see that the provider's events arrive and name our payments.
+func TestEveryVerifiedWebhookEventIsLoggedWithWhatBecameOfIt(t *testing.T) {
+	logs := captureLog(t)
+	g := approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	wantStatus(t, payWith(t, db, routerOf(g, g), "o1"), http.StatusOK)
+	id := db.payments["o1"].ID
+
+	// the charge's own reply was recorded first, so the event has nothing left to do
+	wantAck(t, postWebhook(webhookServer(db, eventFor(id, domain.PaymentAuthorized)), `{}`), "already recorded")
+	got := logs.String()
+	if !strings.Contains(got, "webhook evt_1: payment "+id+" is authorized at the provider (pi_event)") ||
+		!strings.Contains(got, "webhook evt_1: already recorded") {
+		t.Errorf("the event and its outcome should both be logged:\n%s", got)
+	}
+
+	logs.Reset()
+	seedRefunded(db, domain.RefundDone, "re_1")
+	wantAck(t, postWebhook(webhookServer(db, reversal("pi_1", "re_1")), `{}`), "recorded")
+	got = logs.String()
+	if !strings.Contains(got, "webhook evt_r1: refund re_1 of provider payment pi_1 failed (expired_or_canceled_card)") ||
+		!strings.Contains(got, "webhook evt_r1: recorded") {
+		t.Errorf("the refund event and its outcome should both be logged:\n%s", got)
+	}
+}

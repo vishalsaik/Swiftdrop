@@ -94,7 +94,7 @@ KNOWN_ISSUES.md   what we chose not to build yet, and the production problems th
    go run ./cmd/api
    ```
 
-   The server listens on `127.0.0.1:8080`. With no `STRIPE_KEY` set it uses the fake payment gateway and never touches the network. To try real Stripe, set `STRIPE_KEY` to a Stripe **test-mode** secret key and send a test payment method in the `/pay` body (`{"paymentMethodId": "pm_..."}`). Never use a live key while developing, and never commit a key.
+   The server listens on `127.0.0.1:8080`. With no `STRIPE_KEY` set it uses the fake payment gateway and never touches the network. To try real Stripe, set `STRIPE_KEY` to a Stripe **test-mode** secret key and send a test payment method in the `/pay` body (`{"paymentMethodId": "pm_..."}`). Never use a live key while developing, and never commit a key. `powershell -ExecutionPolicy Bypass -File .\scripts\stripe-dev.ps1` does all of this for you, including the webhook listener: it asks for the key (hidden, refuses anything but `sk_test_`), fetches the matching webhook signing secret from the Stripe CLI so the two cannot disagree, opens `stripe listen` in a new window and starts the server.
 
    To receive Stripe's webhook as well, set `STRIPE_WEBHOOK_SECRET` to the endpoint's signing secret (the `whsec_` value). In development run `stripe listen --forward-to localhost:8080/webhooks/stripe` with the [Stripe CLI](https://docs.stripe.com/stripe-cli); it prints the secret to use. It works with the fake gateway too, so you can try it with events you sign yourself (see [curls.txt](curls.txt)).
 
