@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/payment/gateways"
 	"swiftdrop/internal/payment/providers"
+	"swiftdrop/internal/paymentcache"
 	"swiftdrop/internal/reconcile"
 	"swiftdrop/internal/refund"
 )
@@ -26,6 +28,10 @@ const defaultRefundInterval = 30 * time.Second
 // defaultReconcileInterval is how often the reconciler looks for payments that
 // never got an answer. Set RECONCILE_INTERVAL (for example "10s") to change it.
 const defaultReconcileInterval = time.Minute
+
+// defaultPaymentCacheSize is how many paid orders' payments are kept in memory.
+// Set PAYMENT_CACHE_SIZE to change it; 0 switches the cache off.
+const defaultPaymentCacheSize = 10_000
 
 func main() {
 	// The local development database, unless DATABASE_URL names another (for
@@ -84,6 +90,19 @@ func main() {
 		&providers.WalletProvider{Gateway: walletGateway},
 	)
 	s := handlers.NewServer(dbConn, payRouter)
+
+	// A retried /pay on a paid order is answered from memory: an authorized payment
+	// never changes, so it is the one kind of payment worth keeping.
+	cacheSize := defaultPaymentCacheSize
+	if v := os.Getenv("PAYMENT_CACHE_SIZE"); v != "" {
+		cacheSize, err = strconv.Atoi(v)
+		if err != nil || cacheSize < 0 {
+			panic(fmt.Sprintf("PAYMENT_CACHE_SIZE must be a whole number, 0 or more, got %q", v))
+		}
+	}
+	if cacheSize > 0 {
+		s.Lookup = paymentcache.New(dbConn, cacheSize)
+	}
 
 	// Stripe pushes payment outcomes to POST /webhooks/stripe and signs every
 	// request with the endpoint's secret (the whsec_ value from the Stripe
