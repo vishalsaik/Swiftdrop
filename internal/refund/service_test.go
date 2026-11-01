@@ -687,6 +687,105 @@ func TestNewServiceSetsSensibleDefaults(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// problems only a person can fix are kept as alerts
+// ---------------------------------------------------------------------------
+
+// spyAlerts remembers the alerts it is asked to keep.
+type spyAlerts struct {
+	mu     sync.Mutex
+	raised []domain.Alert
+	err    error
+}
+
+func (s *spyAlerts) RaiseAlert(_ context.Context, kind, subject, orderID, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.raised = append(s.raised, domain.Alert{Kind: kind, Subject: subject, OrderID: orderID, Message: message})
+	return nil
+}
+
+func (s *spyAlerts) ListAlerts(context.Context, bool, int) ([]domain.Alert, error) { return nil, nil }
+
+func (s *spyAlerts) ResolveAlert(context.Context, int64, string) (domain.Alert, error) {
+	return domain.Alert{}, nil
+}
+
+func TestGivingUpOnARefundRaisesAnAlertForAPerson(t *testing.T) {
+	store := newMemStore()
+	store.add("a", 100)
+	alerts := &spyAlerts{}
+	s := service(store, failing("no such charge"))
+	s.Alerts = alerts
+	s.MaxAttempts = 2
+
+	for range 2 {
+		s.RunOnce(context.Background())
+		store.expire("a")
+	}
+	if len(alerts.raised) != 1 {
+		t.Fatalf("alerts = %+v, want exactly one, for the give-up and not for the first failure", alerts.raised)
+	}
+	a := alerts.raised[0]
+	if a.Kind != domain.AlertRefundGivenUp || a.Subject != "a" || a.OrderID != "o-a" || !strings.Contains(a.Message, "no such charge") {
+		t.Errorf("alert = %+v", a)
+	}
+}
+
+func TestARefundThatCannotBeRecordedRaisesAnAlert(t *testing.T) {
+	store := newMemStore()
+	store.add("a", 100)
+	store.completeErr = errors.New("connection refused")
+	alerts := &spyAlerts{}
+	s := service(store, accepting())
+	s.Alerts = alerts
+
+	s.RunOnce(context.Background())
+	if len(alerts.raised) != 1 || alerts.raised[0].Kind != domain.AlertRefundUnrecorded || alerts.raised[0].Subject != "a" {
+		t.Errorf("alerts = %+v, want one refund_unrecorded for a", alerts.raised)
+	}
+}
+
+func TestAHealthyRefundRaisesNoAlert(t *testing.T) {
+	store := newMemStore()
+	store.add("a", 100)
+	alerts := &spyAlerts{}
+	s := service(store, accepting())
+	s.Alerts = alerts
+	s.RunOnce(context.Background())
+	if len(alerts.raised) != 0 {
+		t.Errorf("alerts = %+v, want none", alerts.raised)
+	}
+}
+
+// Not being able to keep the alert must not stop the job; the log line remains.
+func TestFailingToKeepAnAlertIsLoggedAndTheJobGoesOn(t *testing.T) {
+	logs := captureLog(t)
+	store := newMemStore()
+	store.add("a", 100)
+	store.add("b", 100)
+	r := &script{do: func(_ int, req domain.RefundRequest) (*domain.RefundResult, error) {
+		if req.PaymentID == "a" {
+			return nil, errors.New("no such charge")
+		}
+		return &domain.RefundResult{RefundID: "re_b"}, nil
+	}}
+	s := service(store, r)
+	s.Alerts = &spyAlerts{err: errors.New("connection refused")}
+	s.MaxAttempts = 1
+
+	rep, _ := s.RunOnce(context.Background())
+	if rep.GaveUp != 1 || rep.Refunded != 1 {
+		t.Errorf("report = %+v, want a given up and b refunded", rep)
+	}
+	if !strings.Contains(logs.String(), "NEEDS REVIEW") || !strings.Contains(logs.String(), "could not keep the alert") {
+		t.Errorf("the problem and the failure to keep it must both be logged:\n%s", logs)
+	}
+}
+
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
