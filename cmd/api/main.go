@@ -15,12 +15,17 @@ import (
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/payment/gateways"
 	"swiftdrop/internal/payment/providers"
+	"swiftdrop/internal/reconcile"
 	"swiftdrop/internal/refund"
 )
 
 // defaultRefundInterval is how often the refund job looks for refunds that are
 // due. Set REFUND_INTERVAL (for example "5s") to change it.
 const defaultRefundInterval = 30 * time.Second
+
+// defaultReconcileInterval is how often the reconciler looks for payments that
+// never got an answer. Set RECONCILE_INTERVAL (for example "10s") to change it.
+const defaultReconcileInterval = time.Minute
 
 func main() {
 	// The local development database, unless DATABASE_URL names another (for
@@ -43,6 +48,14 @@ func main() {
 		}
 	}
 
+	reconcileInterval := defaultReconcileInterval
+	if v := os.Getenv("RECONCILE_INTERVAL"); v != "" {
+		reconcileInterval, err = time.ParseDuration(v)
+		if err != nil || reconcileInterval <= 0 {
+			panic(fmt.Sprintf("RECONCILE_INTERVAL must be a positive duration such as 1m, got %q", v))
+		}
+	}
+
 	// Gateways are chosen once, here. All three providers are always built and
 	// every one that needs a gateway always gets one, so no payment type can
 	// reach a nil gateway. Without a Stripe key the app uses the fake gateway
@@ -50,16 +63,19 @@ func main() {
 	// it back.
 	var cardGateway, walletGateway payment.Gateway
 	var refunder payment.Refunder
+	var looker payment.Looker
 	if key := os.Getenv("STRIPE_KEY"); key != "" {
 		stripeGateway := gateways.NewStripeGateway(key)
 		cardGateway = stripeGateway
 		walletGateway = stripeGateway // TODO: replace with WalletServiceGateway
 		refunder = stripeGateway
+		looker = stripeGateway
 	} else {
 		fmt.Println("STRIPE_KEY not set: using FakeGateway (card declines over 50000 cents, wallet over 10000)")
 		cardGateway = &payment.FakeGateway{LimitCents: 50_000}
 		walletGateway = &payment.FakeGateway{LimitCents: 10_000}
 		refunder = &payment.FakeGateway{}
+		looker = &payment.FakeGateway{}
 	}
 
 	payRouter := payment.NewRouter(
@@ -93,6 +109,17 @@ func main() {
 	}()
 	fmt.Printf("refund job running every %s\n", refundInterval)
 
+	// The reconciler settles payments that never got an answer by asking the
+	// provider what became of them. It never sends a charge again.
+	reconcileDone := make(chan struct{})
+	go func() {
+		defer close(reconcileDone)
+		reconciler := reconcile.NewService(dbConn, looker)
+		reconciler.Alerts = dbConn
+		reconciler.Run(ctx, reconcileInterval)
+	}()
+	fmt.Printf("payment reconciler running every %s\n", reconcileInterval)
+
 	srv := &http.Server{
 		Addr:         "127.0.0.1:8080",
 		Handler:      s.Handler(),
@@ -105,8 +132,9 @@ func main() {
 
 	select {
 	case err := <-serveErr:
-		stop() // the server died on its own: stop the job too
+		stop() // the server died on its own: stop the jobs too
 		<-jobDone
+		<-reconcileDone
 		panic(err)
 	case <-ctx.Done():
 	}
@@ -118,4 +146,5 @@ func main() {
 		fmt.Println("server shutdown:", err)
 	}
 	<-jobDone
+	<-reconcileDone
 }

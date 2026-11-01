@@ -37,7 +37,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFA
 CREATE TABLE IF NOT EXISTS payments (
     id                  TEXT PRIMARY KEY,
     order_id            TEXT NOT NULL REFERENCES orders (id),
-    status              TEXT NOT NULL CHECK (status IN ('processing', 'authorized', 'declined')),
+    status              TEXT NOT NULL,
     amount_cents        BIGINT NOT NULL CHECK (amount_cents >= 0),
     provider_payment_id TEXT NOT NULL DEFAULT '',   -- the provider's id, set on completion
     reason              TEXT NOT NULL DEFAULT '',   -- decline reason, empty otherwise
@@ -51,7 +51,19 @@ CREATE TABLE IF NOT EXISTS payments (
 -- had UNIQUE (order_id) on the column, which is dropped in favour of the index.
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1);
 ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_order_id_key;
-CREATE UNIQUE INDEX IF NOT EXISTS payments_one_live_per_order ON payments (order_id) WHERE status <> 'declined';
+-- Stuck payments. 'abandoned': no answer and the provider has no record of it, so no
+-- money moved (final, like declined). 'needs_review': no answer for too long, a
+-- person must look (it still counts as the order's live payment, so a new attempt is
+-- refused until it is settled). The constraint is re-created so older databases pick
+-- up the new statuses.
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
+ALTER TABLE payments ADD CONSTRAINT payments_status_check
+    CHECK (status IN ('processing', 'authorized', 'declined', 'abandoned', 'needs_review'));
+DROP INDEX IF EXISTS payments_one_live_per_order;
+CREATE UNIQUE INDEX payments_one_live_per_order ON payments (order_id) WHERE status NOT IN ('declined', 'abandoned');
+
+-- The reconciler looks for payments that wait for an answer.
+CREATE INDEX IF NOT EXISTS payments_unsettled_idx ON payments (created_at) WHERE status IN ('processing', 'needs_review');
 
 -- The refund of a payment, a second dimension next to status: an authorized
 -- payment stays authorized forever (the money was taken) and refund_status says

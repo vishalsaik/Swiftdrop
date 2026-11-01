@@ -97,6 +97,15 @@ func (g *StripeGateway) Charge(ctx context.Context, req domain.PaymentRequest) (
 		"automatic_payment_methods[allow_redirects]": {"never"},
 	}
 
+	// Our own ids ride along as metadata. They are how a payment whose reply was
+	// lost is found again (see Lookup): the idempotency key is not on the intent.
+	if req.IdempotencyKey != "" {
+		form.Set("metadata[payment_id]", req.IdempotencyKey)
+	}
+	if req.OrderID != "" {
+		form.Set("metadata[order_id]", req.OrderID)
+	}
+
 	status, body, err := g.post(ctx, "/v1/payment_intents", form, req.IdempotencyKey)
 	if err != nil {
 		return nil, err

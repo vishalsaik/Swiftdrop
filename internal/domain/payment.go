@@ -54,12 +54,58 @@ const (
 	PaymentAuthorized PaymentStatus = "authorized"
 	PaymentDeclined   PaymentStatus = "declined"
 	PaymentRefunded   PaymentStatus = "refunded"
+	// PaymentAbandoned: the attempt was claimed and the provider has no record of
+	// it, so no money moved. It is final: the order is open again for a new
+	// attempt (or cancelled when the attempts have run out). Stored only.
+	PaymentAbandoned PaymentStatus = "abandoned"
+	// PaymentNeedsReview: the attempt has had no answer for too long to be settled
+	// by itself, and the customer may or may not have been charged. A person looks
+	// at it; the provider's answer, if it ever arrives, still settles it. A new
+	// attempt is refused meanwhile. Stored only.
+	PaymentNeedsReview PaymentStatus = "needs_review"
 )
+
+// Unsettled reports whether the payment still waits for an answer from the
+// provider: it was claimed and nobody has recorded what became of it.
+func (p Payment) Unsettled() bool {
+	return p.Status == PaymentProcessing || p.Status == PaymentNeedsReview
+}
+
+// OrderStateAfterFailure is where a payment that did not go through leaves its
+// order (declined, or abandoned because the provider never saw it): back to
+// created, so the customer can try again, unless this was the last attempt.
+func (p Payment) OrderStateAfterFailure() OrderState {
+	if p.Attempt >= MaxPaymentAttempts {
+		return OrderCancelled
+	}
+	return OrderCreated
+}
 
 type PaymentResult struct {
 	PaymentID string        `json:"paymentId"`
 	Status    PaymentStatus `json:"status"`
 	Reason    string        `json:"reason"` // set when Status is PaymentDeclined
+}
+
+// LookupRequest asks a provider what became of a payment we claimed, without
+// sending the charge again. We do not know the provider's id for it (that is
+// exactly what a lost reply loses), so the provider finds it by our own id.
+type LookupRequest struct {
+	PaymentID   string    // our payment id
+	CreatedAt   time.Time // when we claimed it: the provider cannot have it from before
+	AmountCents int64
+}
+
+// LookupResult is what the provider knows about a payment.
+type LookupResult struct {
+	// Found is false when the provider has no record of the payment: the charge
+	// never reached it, so no money moved.
+	Found bool
+	// Status is authorized or declined when the provider has a final answer. It
+	// is empty when the provider has the payment but has not decided yet.
+	Status            PaymentStatus
+	ProviderPaymentID string
+	Reason            string
 }
 
 // Payment is our own record of one payment attempt for an order, kept so a

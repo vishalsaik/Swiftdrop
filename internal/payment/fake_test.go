@@ -108,3 +108,16 @@ func TestFakeGatewayStopsWhenTheCallerGivesUp(t *testing.T) {
 		t.Errorf("result = %+v, want nil alongside an error", got)
 	}
 }
+
+func TestFakeGatewayKeepsNoRecordSoALookupFindsNothing(t *testing.T) {
+	g := &payment.FakeGateway{}
+	res, err := g.Lookup(context.Background(), domain.LookupRequest{PaymentID: "p1"})
+	if err != nil || res == nil || res.Found {
+		t.Errorf("Lookup = %+v, %v, want an answer that says not found", res, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := g.Lookup(ctx, domain.LookupRequest{PaymentID: "p1"}); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled context gave %v, want context.Canceled", err)
+	}
+}

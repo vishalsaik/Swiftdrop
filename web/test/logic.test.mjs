@@ -184,6 +184,42 @@ test('after a decline the payment action offers another attempt', () => {
   assert.equal(actionsFor(order({ state: 'created', payment: { status: 'processing' } }))[0].label, 'Take payment');
 });
 
+test('an abandoned attempt offers another one and says nothing was charged', () => {
+  const abandoned = order({ state: 'created', payment: { status: 'abandoned', attempt: 1, maxAttempts: 3 } });
+  const [pay] = actionsFor(abandoned);
+  assert.equal(pay.label, 'Try payment again');
+  assert.match(pay.note, /Attempt 2 of 3/);
+  assert.match(pay.note, /last failed attempt cancels/);
+
+  const notice = (state, attempt) => noticeFor(order({ state, paymentIssue: 'abandoned', payment: { status: 'abandoned', attempt, maxAttempts: 3 } }));
+  assert.match(notice('created', 1).body, /not charged/);
+  assert.match(notice('created', 1).body, /2 attempts left/);
+  assert.match(notice('created', 2).body, /1 attempt left/);
+  assert.doesNotMatch(notice('created', 1).body, /cancelled/);
+  assert.match(notice('cancelled', 3).body, /not charged and the order was cancelled/);
+  assert.equal(notice('created', 1).issue, 'abandoned');
+});
+
+test('a payment waiting for review cannot be retried and the customer is told it is being checked', () => {
+  const review = order({ state: 'payment_pending', paymentIssue: 'confirming', payment: { status: 'needs_review', attempt: 1, maxAttempts: 3 } });
+  const [pay] = actionsFor(review);
+  assert.equal(pay.enabled, false);
+  assert.match(pay.why, /person is checking/);
+  assert.match(noticeFor(review).title, /still confirming/);
+  // an ordinary pending payment can still be retried, and says the usual thing
+  const pending = order({ state: 'payment_pending', paymentIssue: 'confirming', payment: { status: 'processing' } });
+  assert.equal(actionsFor(pending)[0].enabled, true);
+  assert.equal(noticeFor(pending).title, "We're confirming your payment");
+});
+
+test('the new ledger kinds and the new alert are described', () => {
+  assert.equal(describeEvent({ kind: 'abandoned', detail: 'no record at the provider after 30m' }).label, 'Attempt abandoned, nothing was charged');
+  assert.equal(describeEvent({ kind: 'needs_review', detail: 'x' }).label, 'No answer for too long, handed to a person');
+  const a = describeAlert({ kind: 'payment_needs_review', message: 'm', occurrences: 1 });
+  assert.match(a.title, /no answer for too long/);
+  assert.match(a.advice, /not sent again/);
+});
+
 test('there is no notice when there is nothing to say', () => {
   assert.equal(noticeFor(order({ state: 'paid', payment: { status: 'authorized', amountCents: 100 } })), null);
   assert.equal(noticeFor(order()), null);
@@ -199,7 +235,7 @@ test('ledger lines are described in words', () => {
   assert.deepEqual(d('claimed', 'amount_cents=1447'), { label: 'Payment started', note: '$14.47' });
   assert.deepEqual(d('authorized', 'provider_payment_id=pi_123'), { label: 'Money taken', note: 'pi_123' });
   assert.deepEqual(d('declined', 'Your card was declined.'), { label: 'Payment declined', note: 'Your card was declined.' });
-  assert.deepEqual(d('taken_over'), { label: 'A retry took the payment over', note: '' });
+  assert.deepEqual(d('taken_over'), { label: 'Taken over by a retry or the payment checker', note: '' });
   assert.deepEqual(d('refund_started', 'attempt 2'), { label: 'Refund started', note: 'attempt 2' });
   assert.deepEqual(d('refund_attempt_failed', 'stripe: HTTP 500'), { label: 'Refund attempt failed', note: 'stripe: HTTP 500' });
   assert.deepEqual(d('refunded', 'refund_id=re_9'), { label: 'Refund sent', note: 're_9' });
@@ -207,7 +243,7 @@ test('ledger lines are described in words', () => {
 });
 
 test('an unknown ledger kind or odd detail still reads sensibly', () => {
-  assert.equal(describeEvent({ kind: 'needs_review' }).label, 'needs review');
+  assert.equal(describeEvent({ kind: 'something_new' }).label, 'something new');
   assert.equal(describeEvent({}).label, 'Something happened');
   // a short lower-case word before "=" is read as a key, so only its value is shown
   assert.equal(describeEvent({ kind: 'declined', detail: 'a=b is not a key' }).note, 'b is not a key');

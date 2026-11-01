@@ -12,6 +12,9 @@ const (
 	AlertRefundGivenUp = "refund_given_up"
 	// AlertRefundUnrecorded: the provider refunded but we could not write it down.
 	AlertRefundUnrecorded = "refund_unrecorded"
+	// AlertPaymentNeedsReview: a payment has had no answer for so long that the
+	// system stopped asking, and the customer may have been charged.
+	AlertPaymentNeedsReview = "payment_needs_review"
 )
 
 // Alert is a problem a person has to look at. It stays open until someone

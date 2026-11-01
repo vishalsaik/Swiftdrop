@@ -47,9 +47,14 @@ func viewOf(o domain.Order, p *domain.Payment) orderView {
 			refund = domain.RefundNone
 		}
 		v.Payment = &paymentView{
-			ID: p.ID, Status: p.Status, AmountCents: p.AmountCents, Reason: p.Reason,
+			ID: p.ID, Status: p.Status, AmountCents: p.AmountCents,
 			RefundStatus: refund, UpdatedAt: p.UpdatedAt,
 			Attempt: max(p.Attempt, 1), MaxAttempts: domain.MaxPaymentAttempts,
+		}
+		// Only a decline's reason is written for the customer; the reason on a
+		// payment waiting for review or abandoned is for the people running the service.
+		if p.Status == domain.PaymentDeclined {
+			v.Payment.Reason = p.Reason
 		}
 	}
 	return v
