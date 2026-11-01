@@ -87,9 +87,9 @@ readiness and the assigned driver are separate facts, not states.
 
 ### The payment and its refund
 
-A row in `payments` per attempt. An order can have several after declines, but only
-one that is not declined: a partial unique index is what makes the claim atomic. A
-payment has two independent dimensions:
+A row in `payments` per attempt. An order can have several after declines or
+abandoned attempts, but only one that is not declined or abandoned: a partial unique
+index is what makes the claim atomic. A payment has two independent dimensions:
 
 ```mermaid
 stateDiagram-v2
@@ -98,6 +98,10 @@ stateDiagram-v2
     [*] --> processing: claimed
     processing --> authorized: money taken
     processing --> declined: card refused
+    processing --> abandoned: provider has no record, 30 min
+    processing --> needs_review: no answer, 20 h
+    needs_review --> authorized: late answer
+    needs_review --> declined: late answer
   }
 ```
 
@@ -115,6 +119,12 @@ stateDiagram-v2
 
 A payment stays `authorized` forever (the money *was* taken); the refund status
 says whether it has been given back.
+
+`abandoned` and `needs_review` are what a payment becomes when it never got an
+answer (section 8). `abandoned` is final, like `declined`: no money moved, and the
+order is open again. `needs_review` is not final: a person has been asked, it still
+counts as the order's live payment so no second attempt can start, and the
+provider's answer, if it ever arrives, still settles it.
 
 ## 4. The happy path
 
@@ -162,6 +172,9 @@ payment and a retry.
 | `declined`, and the order is closed (`cancelled`) | **replay**: `402` with the same reason, no charge |
 | `processing`, lease still live | someone is working on it: `409`, try again shortly |
 | `processing`, lease expired | its owner probably died: **take it over** (compare-and-set on the expired lease), then ask Stripe again with the **same** payment id |
+| `processing`, claimed more than 20 hours ago | **not sent again**: the provider may have forgotten the key and a send could charge twice. Handed to a person (`needs_review`, an alert), `409` |
+| `needs_review` | `409`: a person is checking it, no new attempt until it is settled |
+| `abandoned` | a **new attempt**, like after a decline: the provider never saw the old one |
 
 A **lease** is a claim with a deadline held in the database row, timed by the
 database's clock (so servers with drifting clocks agree). It is not a cache: if it
@@ -273,6 +286,40 @@ sequenceDiagram
 | Two requests pay one order at once | one charge | one row | the claim: the loser replays or gets `409` |
 | Webhook delivered twice, or out of order | n/a | already recorded | compare-and-set makes it a no-op |
 | Refund call fails | yes, still | `refunding` with an error | retried after the lease; a person is asked after 5 attempts |
+| No answer ever arrives (a crash, a lost reply, no webhook) | unknown | `processing` | the **reconciler** asks the provider: a success or a refusal is recorded, no record after 30 min is `abandoned`, nothing decided after 20 h is `needs_review` |
+
+### A payment that never got an answer
+
+The claim comes before the provider call (that is what stops two requests both
+charging), so a crash, a timeout or a lost reply leaves a payment `processing` with
+nobody working on it. The webhook recovers the cases where the provider sends an
+event. For the rest, the **reconciler** (`internal/reconcile`, every
+`RECONCILE_INTERVAL`) asks the provider what became of the payment. It only asks:
+
+| The provider says | The reconciler |
+|---|---|
+| it succeeded, or the card was refused | records it exactly as a webhook would (`internal/settle`): the order is paid, or reopened for another attempt (cancelled after the last) |
+| it has the payment and has not decided | waits; after 20 hours hands it to a person |
+| it has no record, and the attempt is under 30 minutes old | waits: the lookup may simply be early |
+| it has no record, and the attempt is 30 minutes old or more | **abandons** it: no money moved, the order is open again |
+| it cannot be asked (an outage, a wrong key, a search it could not finish) | tries again next run; after 20 hours hands it to a person |
+
+The reconciler never re-sends the charge. The customer may have given up and walked
+away, and once Stripe forgets the idempotency key (at least 24 hours) a second send is
+a new charge. Re-sending is the customer's decision, made by retrying themselves. For
+the same reason a customer's retry of a payment older than 20 hours is not sent
+either: it is handed to a person.
+
+To hold a payment while it asks, the job takes it over like a retry does (a lease, on
+the database clock), so a customer's retry and another server never work on it at
+the same time. A payment under review is only read, never held.
+
+How Stripe is asked: the charge carries `metadata[payment_id]` and
+`metadata[order_id]`, and the lookup lists the payment intents created since the
+claim and picks the one with our id. A list is current, where Stripe's search is
+eventually consistent and not offered to every account. If it cannot read everything
+since the claim it returns an error, never "no record": that would abandon a payment
+that may have been charged.
 
 Whenever the table says a person is asked, the system raises an **alert**: a row
 in `alerts`, one open per kind and subject, with a count of how many times the
@@ -283,8 +330,8 @@ context that outlives the request, so a client that hangs up cannot lose it, and
 failing to write it is only logged: it never changes what the customer or
 the provider is told.
 
-The cases not covered (no event ever arrives for a lost charge, a retry after
-Stripe forgot the key, a customer paying twice through a new order) are written
+The cases not fully covered (a person who is not told, a charge found after we
+gave up on the attempt, a customer paying twice through a new order) are written
 down in [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) with what would unlock each.
 
 ## 9. What a screen is told
@@ -295,10 +342,11 @@ order and its payment, so it cannot go out of date:
 
 | `paymentIssue` | When | Customer message |
 |---|---|---|
-| `confirming` | payment `processing` on a pending or cancelled order | "We're confirming your payment. If you were charged and the order doesn't go ahead, it is refunded." |
+| `confirming` | payment `processing` (or `needs_review`) on a pending or cancelled order | "We're confirming your payment. If you were charged and the order doesn't go ahead, it is refunded." |
 | `refund_pending` | charged, order cancelled, refund not done | "Your order was cancelled. Your money is on its way back and will be credited soon." |
 | `refunded` | the provider accepted the refund | "Your refund has been sent." |
 | `refund_failed` | the job gave up | "Please contact support and quote the order id." |
+| `abandoned` | an attempt got no answer and the provider has no record of it (order open again, or cancelled after the last attempt) | "We never received an answer for that attempt and you were not charged. You can try again (2 attempts left)." |
 | `declined` | the latest payment was refused (order open again, or cancelled after the last attempt) | "Your payment was declined. You were not charged. You can try another card (2 attempts left)." |
 | *(absent)* | nothing to say, and always for cash | |
 
@@ -347,6 +395,7 @@ breaker around the gateway), Command, Builder, Facade (for `PayOrder`).
 | `STRIPE_KEY` | use Stripe (a **test-mode** key while developing); unset uses the fake gateway | unset |
 | `STRIPE_WEBHOOK_SECRET` | switch on `POST /webhooks/stripe` (the `whsec_` value); unset answers `404` | unset |
 | `REFUND_INTERVAL` | how often the refund job looks for due refunds | `30s` |
+| `RECONCILE_INTERVAL` | how often the reconciler looks for payments without an answer | `1m` |
 | `DATABASE_URL` | another database than the local development one | local Postgres |
 
 With no `STRIPE_KEY` the fake gateway declines a card order over 50,000 cents and a
@@ -362,6 +411,7 @@ exercised with no network.
 | The webhook handler and its signature check | `cmd/handlers/webhook.go`, `internal/payment/gateways/stripe_webhook.go` |
 | The claim, lease, takeover and the two transactions | `internal/databases/adapters/payments.go` |
 | Refunds: storage, provider call, job | `adapters/refunds.go`, `gateways/stripe_refund.go`, `internal/refund/service.go` |
+| Payments without an answer: lookup, job, recording | `gateways/stripe_lookup.go`, `internal/reconcile/service.go`, `internal/settle/settle.go` |
 | What a screen is told | `internal/domain/issue.go`, `cmd/handlers/view.go` |
 | Alerts: raising, listing, resolving | `cmd/handlers/alerts.go`, `adapters/alerts.go`, `internal/domain/alert.go` |
 | The schema | `schema.sql` |

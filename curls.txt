@@ -392,6 +392,41 @@ curl -i http://127.0.0.1:8080/orders/no-such-order/payment-history
 
 
 # ---------------------------------------------------------------------------
+# A payment that never got an answer. A crash right after the claim leaves a
+# payment "processing" that nobody works on. The reconciler asks the provider
+# what became of it and never charges again. Start the server with
+# RECONCILE_INTERVAL=3s to watch it. Here the crash is simulated with SQL: a
+# payment claimed 45 minutes ago whose lease has long run out. With the fake
+# gateway (no STRIPE_KEY) the provider never has a record, so the attempt is
+# abandoned; with Stripe it would first be looked up by its metadata.
+# ---------------------------------------------------------------------------
+
+curl -s -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" -d '{"id":"stuck-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":2,"unitPriceCents":599}],"paymentType":"card"}'
+docker exec postgres psql -U postgres -d swiftdrop -c "UPDATE orders SET state = 'payment_pending' WHERE id = 'stuck-1';" -c "INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at, created_at, attempt) VALUES ('pay-stuck-1', 'stuck-1', 'processing', 1198, now() - interval '44 minutes', now() - interval '45 minutes', 1);"
+
+## Right away: payment_pending, paymentIssue "confirming"
+curl -s http://127.0.0.1:8080/orders/stuck-1
+
+## A few seconds later (one reconciler run): the order is "created" again, the payment is "abandoned", paymentIssue "abandoned"
+curl -s http://127.0.0.1:8080/orders/stuck-1
+curl -s http://127.0.0.1:8080/orders/stuck-1/payment-history
+
+## The customer can pay again: a NEW payment, attempt 2 — 200, state "paid"
+curl -s -X POST http://127.0.0.1:8080/orders/stuck-1/pay
+curl -s http://127.0.0.1:8080/orders/stuck-1
+
+## A payment claimed 21 hours ago is never sent again by a retry: 409, "needs_review", and an alert for a person
+curl -s -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" -d '{"id":"stuck-2","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":2,"unitPriceCents":599}],"paymentType":"card"}'
+docker exec postgres psql -U postgres -d swiftdrop -c "UPDATE orders SET state = 'payment_pending' WHERE id = 'stuck-2';" -c "INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at, created_at, attempt) VALUES ('pay-stuck-2', 'stuck-2', 'processing', 1198, now() - interval '20 hours', now() - interval '21 hours', 1);"
+curl -i -X POST http://127.0.0.1:8080/orders/stuck-2/pay
+curl -s http://127.0.0.1:8080/orders/stuck-2
+curl -s http://127.0.0.1:8080/alerts
+
+## While a person looks, another try is refused (409); the provider's answer would still settle it
+curl -i -X POST http://127.0.0.1:8080/orders/stuck-2/pay
+
+
+# ---------------------------------------------------------------------------
 # Alerts. Problems only a person can fix (an unrecorded charge, a contradicting
 # event, a refund given up on) are kept until someone resolves them. The server
 # raises them itself; here one is raised by hand the way the server does it, so
