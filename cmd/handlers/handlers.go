@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,16 @@ type Server struct {
 	// than a NewServer argument because only some deployments have a webhook
 	// secret to configure.
 	Webhook payment.EventParser
+	// Lookup is where /pay first reads an order's payment. It is DB unless a cache
+	// is put in front (see internal/paymentcache): the first read of a retried
+	// /pay is the one that is asked most, and for a paid order its answer never
+	// changes. Everything else reads DB, so a screen never sees a stale refund.
+	Lookup PaymentLookup
+}
+
+// PaymentLookup reads the payment of an order.
+type PaymentLookup interface {
+	GetPaymentByOrder(ctx context.Context, orderID string) (domain.Payment, error)
 }
 
 // maxBodyBytes caps every request body.
@@ -57,6 +68,7 @@ func NewServer(db ports.Store, pay *payment.Router) *Server {
 		Router:  mux.NewRouter(),
 		DB:      db,
 		Payment: pay,
+		Lookup:  db,
 	}
 	// The middleware chain: links run in this order for every route.
 	s.Router.Use(MaxBody(maxBodyBytes))
@@ -330,7 +342,7 @@ func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	p, err := s.DB.GetPaymentByOrder(r.Context(), o.ID)
+	p, err := s.Lookup.GetPaymentByOrder(r.Context(), o.ID)
 	switch {
 	case err == nil && p.Status == domain.PaymentDeclined && o.State == domain.OrderCreated:
 		// The last attempt was declined and the order is open again (a decline
