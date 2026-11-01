@@ -85,4 +85,5 @@ type PaymentStore interface {
 type Store interface {
 	IDatabase
 	PaymentStore
+	AlertStore
 }

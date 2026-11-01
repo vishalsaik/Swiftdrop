@@ -218,6 +218,22 @@ button, input, select { font: inherit; color: inherit; }
 .payform label { display: grid; gap: 6px; font: 500 12px var(--font-mono); color: var(--muted); }
 .payform small { color: var(--muted); font: 400 12px var(--font-body); }
 
+/* ---------- alerts ---------- */
+.alertsbtn { display: inline-flex; align-items: center; gap: 8px; }
+.badge { min-width: 20px; padding: 2px 6px; border-radius: 999px; background: var(--bad); color: #fff; font: 700 11px/1.3 var(--font-mono); text-align: center; }
+.alerts-pane { padding: 22px 24px 20px; display: grid; gap: 14px; }
+.alerts-pane header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.alerts-pane h2 { margin: 0; font: 800 30px/1 var(--font-display); letter-spacing: .08em; text-transform: uppercase; }
+.alert-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; max-height: 60vh; overflow: auto; }
+.alert-list li { display: grid; gap: 6px; padding: 14px; border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--line)); border-radius: 12px; }
+.alert-list h3 { margin: 0; font: 700 15px var(--font-body); }
+.alert-list p { margin: 0; font: 400 13px/1.45 var(--font-body); color: var(--muted); }
+.alert-list .detail { font: 500 12px var(--font-mono); overflow-wrap: anywhere; color: var(--text); }
+.alert-list .meta { font: 500 11px var(--font-mono); color: var(--muted); letter-spacing: .04em; }
+.alert-list .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.alert-list input { flex: 1 1 160px; min-width: 0; }
+.alert-empty { font: 500 13px var(--font-mono); color: var(--muted); }
+
 /* ---------- new-order sheet ---------- */
 .sheet { border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(640px, calc(100% - 24px)); background: var(--panel); color: var(--text); box-shadow: 0 30px 80px rgba(0, 0, 0, .55); }
 .sheet::backdrop { background: rgba(5, 6, 8, .62); backdrop-filter: blur(3px); }

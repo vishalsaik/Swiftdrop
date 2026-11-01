@@ -38,6 +38,10 @@ const (
 type Service struct {
 	Store    ports.RefundStore
 	Refunder payment.Refunder
+	// Alerts, if set, keeps the problems only a person can fix (a refund given
+	// up on, a refund that could not be recorded) where the dashboard shows them.
+	// They are logged either way.
+	Alerts ports.AlertStore
 
 	// Lease is how long a claimed refund is held. It is also the wait before a
 	// failed attempt is tried again, so it must be longer than the provider call.
@@ -138,7 +142,8 @@ func (s *Service) complete(record func(func(context.Context) error) error, p dom
 		// The provider has the refund but we could not write it down. When the
 		// lease expires it is claimed again and the provider (which treats a
 		// repeat as already refunded) lets it finish.
-		log.Printf("refund: NEEDS REVIEW: payment %s was refunded as %s but this could not be recorded: %v", p.ID, refundID, err)
+		s.alert(domain.AlertRefundUnrecorded, p,
+			"payment %s was refunded as %s but this could not be recorded: %v", p.ID, refundID, err)
 		rep.Errors++
 		return
 	}
@@ -158,12 +163,29 @@ func (s *Service) failed(record func(func(context.Context) error) error, p domai
 		return
 	}
 	if giveUp {
-		log.Printf("refund: NEEDS REVIEW: payment %s for order %s could not be refunded after %d attempts: %s", p.ID, p.OrderID, p.RefundAttempts, msg)
+		s.alert(domain.AlertRefundGivenUp, p,
+			"payment %s for order %s could not be refunded after %d attempts: %s", p.ID, p.OrderID, p.RefundAttempts, msg)
 		rep.GaveUp++
 		return
 	}
 	log.Printf("refund: payment %s attempt %d of %d failed, will retry: %s", p.ID, p.RefundAttempts, s.MaxAttempts, msg)
 	rep.Retrying++
+}
+
+// alert logs a problem for a person and, when the service has somewhere to keep
+// it, keeps it as an alert. It uses a context that is not cancelled with the job,
+// like the results it records.
+func (s *Service) alert(kind string, p domain.Payment, format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	log.Printf("refund: NEEDS REVIEW: %s", message)
+	if s.Alerts == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recordTimeout)
+	defer cancel()
+	if err := s.Alerts.RaiseAlert(ctx, kind, p.ID, p.OrderID, message); err != nil {
+		log.Printf("refund: could not keep the alert for payment %s: %v", p.ID, err)
+	}
 }
 
 // Run makes the due refunds now and then every interval until ctx is cancelled.
