@@ -14,7 +14,8 @@ var (
 	ErrPaymentNotFound = errors.New("payment not found")
 
 	// ErrPaymentNotProcessing means a completion found the payment already
-	// finished: someone else recorded its outcome first. Nothing was changed.
+	// finished (no longer processing, and not waiting for review either): someone
+	// else recorded its outcome first. Nothing was changed.
 	ErrPaymentNotProcessing = errors.New("payment is not processing")
 )
 
@@ -46,10 +47,11 @@ type PaymentStore interface {
 	// itself: see payment_events in schema.sql.
 	ListPaymentEvents(ctx context.Context, orderID string) ([]domain.PaymentEvent, error)
 
-	// CompletePayment records the outcome (authorized or declined) of a
-	// payment, but only while it is still processing, so a late or duplicate
-	// writer cannot overwrite the result. ErrPaymentNotProcessing if it was
-	// already completed, ErrPaymentNotFound if there is no such payment.
+	// CompletePayment records the outcome (authorized, declined or abandoned) of a
+	// payment, but only while it still waits for one (processing, or needs_review:
+	// the provider's answer may arrive after a person was asked to look), so a late
+	// or duplicate writer cannot overwrite the result. ErrPaymentNotProcessing if
+	// it was already completed, ErrPaymentNotFound if there is no such payment.
 	CompletePayment(ctx context.Context, id string, status domain.PaymentStatus, providerPaymentID, reason string) (domain.Payment, error)
 
 	// TakeOverPayment extends the lease of a processing payment, but only if
@@ -69,6 +71,20 @@ type PaymentStore interface {
 	// in orderFrom (the claim is rolled back); ErrOrderNotFound if there is no
 	// such order.
 	StartPayment(ctx context.Context, p domain.Payment, lease time.Duration, orderFrom, orderTo string) (payment domain.Payment, claimed bool, err error)
+
+	// ListUnsettledPayments returns the payments that wait for an answer and that a
+	// reconciler should ask the provider about, oldest first, at most limit: those
+	// needing review, and those processing whose lease has run out (nobody is
+	// working on them) and that were claimed at least minAge ago. The clock is the
+	// database's.
+	ListUnsettledPayments(ctx context.Context, minAge time.Duration, limit int) ([]domain.Payment, error)
+
+	// MarkPaymentNeedsReview moves a processing payment to needs_review, with the
+	// reason a person will read, so that no new attempt is started for the order
+	// until it is settled. ok = false: it was no longer processing, so nothing
+	// changed. The order is not touched. ErrPaymentNotFound if there is no such
+	// payment.
+	MarkPaymentNeedsReview(ctx context.Context, id, reason string) (payment domain.Payment, ok bool, err error)
 
 	// FinishPayment records the outcome of a processing payment (like
 	// CompletePayment) AND moves its order from orderFrom to orderTo, in one

@@ -22,7 +22,18 @@ type FakeGateway struct {
 var (
 	_ Gateway  = (*FakeGateway)(nil)
 	_ Refunder = (*FakeGateway)(nil)
+	_ Looker   = (*FakeGateway)(nil)
 )
+
+// Lookup always says the fake has no record of the payment: it charges and
+// answers in the same call and keeps nothing, so a payment whose answer was lost
+// never happened as far as it is concerned.
+func (f *FakeGateway) Lookup(ctx context.Context, _ domain.LookupRequest) (*domain.LookupResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &domain.LookupResult{Found: false}, nil
+}
 
 // Refund always accepts, and gives back an id that is the same for the same
 // idempotency key, like a real provider's replay of an earlier answer.

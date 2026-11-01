@@ -25,6 +25,10 @@ const (
 	// left the order is open again (created) and the customer can try another
 	// method; after the last one it is cancelled.
 	IssueDeclined PaymentIssue = "declined"
+	// IssueAbandoned: an attempt got no answer and the provider has no record of
+	// it, so the customer was not charged. The order is open again (or cancelled
+	// after the last attempt), like after a decline.
+	IssueAbandoned PaymentIssue = "abandoned"
 )
 
 // IssueFor derives the PaymentIssue of an order from its payment (nil when it
@@ -34,8 +38,10 @@ func IssueFor(o Order, p *Payment) PaymentIssue {
 		return IssueNone
 	}
 	switch {
-	case p.Status == PaymentProcessing && (o.State == OrderPaymentPending || o.State == OrderCancelled):
+	case p.Unsettled() && (o.State == OrderPaymentPending || o.State == OrderCancelled):
 		return IssueConfirming
+	case p.Status == PaymentAbandoned && (o.State == OrderCreated || o.State == OrderCancelled):
+		return IssueAbandoned
 	case p.Status == PaymentDeclined && (o.State == OrderCreated || o.State == OrderCancelled):
 		return IssueDeclined
 	case p.Status == PaymentAuthorized && o.State == OrderCancelled:

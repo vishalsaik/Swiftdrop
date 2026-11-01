@@ -9,6 +9,7 @@ import (
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/payment"
+	"swiftdrop/internal/settle"
 )
 
 // PaymentWebhook receives a payment provider's report of a payment outcome. It
@@ -75,7 +76,7 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 		return
 	}
 
-	if p.Status != domain.PaymentProcessing {
+	if !p.Unsettled() {
 		// Already recorded, by PayOrder or by an earlier delivery of this event.
 		if p.Status != event.Status {
 			s.raiseAlert(r.Context(), domain.AlertContradictingEvent, p.ID, p.OrderID,
@@ -85,38 +86,31 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 		return
 	}
 
-	to := domain.OrderPaid
-	if event.Status == domain.PaymentDeclined {
-		to = declineTarget(p)
-	}
-	_, err = s.DB.FinishPayment(r.Context(), p.ID, event.Status, event.ProviderPaymentID, event.Reason,
-		string(domain.OrderPaymentPending), string(to))
+	// The order may have moved on (been cancelled) while the payment was in
+	// flight. Then the order stays as it is, but the answer is kept, so an
+	// authorized payment on a cancelled order is found by the refund job. If we
+	// cannot keep it, answer 5xx so the provider delivers it again.
+	result, err := settle.Apply(r.Context(), s.DB, p, event.Status, event.ProviderPaymentID, event.Reason)
+	var unrecorded *settle.UnrecordedError
 	switch {
-	case err == nil:
-		writeWebhookAck(w, "recorded")
-	case errors.Is(err, ports.ErrPaymentNotProcessing), errors.Is(err, ports.ErrPaymentNotFound):
-		// Another writer finished it between our read and our write.
-		writeWebhookAck(w, "already recorded")
-	case errors.Is(err, ports.ErrStateConflict):
-		// The order moved on (it was cancelled) while the payment was in flight.
-		// The order stays as it is, but the answer is kept, so an authorized
-		// payment on a cancelled order is found by the refund job. If we cannot
-		// keep it, answer 5xx so the provider delivers it again.
-		if keepErr := s.recordOrphanedOutcome(r.Context(), p, event.Status, event.ProviderPaymentID, event.Reason); keepErr != nil {
-			s.raiseAlert(r.Context(), domain.AlertUnrecordedCharge, p.ID, p.OrderID,
-				"webhook %s says payment %s for order %s was %s after the order moved on (%v), and the answer could not be recorded: %v",
-				event.ID, p.ID, p.OrderID, event.Status, err, keepErr)
-			writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
-			return
-		}
-		if event.Status == domain.PaymentAuthorized {
-			log.Printf("REFUND DUE: webhook %s says payment %s for order %s was authorized after the order moved on: %v",
-				event.ID, p.ID, p.OrderID, err)
-		}
-		writeWebhookAck(w, "order moved on")
-	default:
+	case errors.As(err, &unrecorded):
+		s.raiseAlert(r.Context(), domain.AlertUnrecordedCharge, p.ID, p.OrderID,
+			"webhook %s says payment %s for order %s was %s after the order moved on (%v), and the answer could not be recorded: %v",
+			event.ID, p.ID, p.OrderID, event.Status, unrecorded.Conflict, unrecorded.Err)
+		writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
+	case err != nil:
 		log.Printf("webhook %s: database error recording payment %s: %v", event.ID, p.ID, err)
 		writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
+	case result == settle.Recorded:
+		writeWebhookAck(w, "recorded")
+	case result == settle.AlreadyRecorded:
+		writeWebhookAck(w, "already recorded")
+	default: // settle.OrderMovedOn
+		if event.Status == domain.PaymentAuthorized {
+			log.Printf("REFUND DUE: webhook %s says payment %s for order %s was authorized after the order moved on",
+				event.ID, p.ID, p.OrderID)
+		}
+		writeWebhookAck(w, "order moved on")
 	}
 }
 

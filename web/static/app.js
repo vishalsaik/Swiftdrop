@@ -99,7 +99,7 @@ function stampFor(order) {
   if (n) {
     const label = {
       refund_pending: 'Refund on its way', refunded: 'Refunded', refund_failed: 'Refund failed',
-      confirming: 'Confirming', declined: 'Declined',
+      confirming: 'Confirming', declined: 'Declined', abandoned: 'Not charged',
     }[n.issue];
     if (label) return { text: label, cls: n.tone };
   }
@@ -359,7 +359,7 @@ function moneyList(order, pay) {
     ['Pays by', order.paymentType],
     ['Payment', pay ? pay.status : 'not started'],
     pay ? ['Amount', money(pay.amountCents)] : null,
-    pay && (pay.attempt > 1 || pay.status === 'declined') ? ['Attempt', `${pay.attempt} of ${pay.maxAttempts}`] : null,
+    pay && (pay.attempt > 1 || ['declined', 'abandoned'].includes(pay.status)) ? ['Attempt', `${pay.attempt} of ${pay.maxAttempts}`] : null,
     pay && pay.reason ? ['Decline reason', pay.reason] : null,
     refund ? ['Refund', refund] : null,
     order.assignedDriverId ? ['Driver', order.assignedDriverId.slice(0, 8)] : null,

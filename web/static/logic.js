@@ -56,19 +56,29 @@ export function actionsFor(order) {
   const charged = order.payment && order.payment.status === 'authorized' && order.paymentType !== 'cash';
 
   if (s === 'created') {
-    const declined = order.payment && order.payment.status === 'declined';
-    actions.push(declined
+    // an earlier attempt that ended without a charge: declined, or abandoned
+    // because the provider never saw it
+    const failed = order.payment && ['declined', 'abandoned'].includes(order.payment.status);
+    actions.push(failed
       ? {
         key: 'pay', label: 'Try payment again', primary: true, enabled: true,
-        note: `Attempt ${order.payment.attempt + 1} of ${order.payment.maxAttempts}. The last decline cancels the order.`,
+        note: `Attempt ${order.payment.attempt + 1} of ${order.payment.maxAttempts}. The last ${order.payment.status === 'declined' ? 'decline' : 'failed attempt'} cancels the order.`,
       }
       : { key: 'pay', label: 'Take payment', primary: true, enabled: true });
   }
   if (s === 'payment_pending') {
-    actions.push({
-      key: 'pay', label: 'Retry payment', enabled: true,
-      note: 'Only if the customer chooses to try again. The same payment is reused, never charged twice.',
-    });
+    // a person is looking at a payment that got no answer for too long: the
+    // server refuses a retry until it is settled
+    const review = order.payment && order.payment.status === 'needs_review';
+    actions.push(review
+      ? {
+        key: 'pay', label: 'Retry payment', enabled: false,
+        why: 'A person is checking this payment. It cannot be tried again until that is done.',
+      }
+      : {
+        key: 'pay', label: 'Retry payment', enabled: true,
+        note: 'Only if the customer chooses to try again. The same payment is reused, never charged twice.',
+      });
   }
   if (s === 'paid') {
     actions.push({ key: 'accept', label: 'Accept order', primary: true, enabled: true });
@@ -137,11 +147,33 @@ export function noticeFor(order) {
   const amount = money(order.payment ? order.payment.amountCents : totalCents(order));
   switch (order.paymentIssue) {
     case 'confirming':
+      if (order.payment && order.payment.status === 'needs_review') {
+        return {
+          issue: 'confirming', tone: 'wait',
+          title: "We're still confirming your payment",
+          body: "This is taking longer than usual and our team is checking it. If you were charged and the order doesn't go ahead, the amount is returned to you.",
+        };
+      }
       return {
         issue: 'confirming', tone: 'wait',
         title: "We're confirming your payment",
         body: "This usually takes a few seconds. If you were charged and the order doesn't go ahead, the amount is returned to you automatically.",
       };
+    case 'abandoned': {
+      if (order.state === 'created') {
+        const left = order.payment ? order.payment.maxAttempts - order.payment.attempt : 0;
+        return {
+          issue: 'abandoned', tone: 'bad',
+          title: "Your payment didn't go through",
+          body: `We never received an answer for that attempt and you were not charged. You can try again (${left} ${left === 1 ? 'attempt' : 'attempts'} left).`,
+        };
+      }
+      return {
+        issue: 'abandoned', tone: 'bad',
+        title: "Your payment didn't go through",
+        body: 'We never received an answer for the last attempt. You were not charged and the order was cancelled.',
+      };
+    }
     case 'refund_pending':
       return {
         issue: 'refund_pending', tone: 'money',
@@ -186,6 +218,8 @@ const EVENT_LABELS = {
   taken_over: 'A retry took the payment over',
   authorized: 'Money taken',
   declined: 'Payment declined',
+  abandoned: 'Attempt abandoned, nothing was charged',
+  needs_review: 'No answer for too long, handed to a person',
   refund_started: 'Refund started',
   refund_attempt_failed: 'Refund attempt failed',
   refunded: 'Refund sent',
@@ -220,6 +254,10 @@ const ALERT_TEXT = {
   refund_given_up: {
     title: 'A refund could not be sent',
     advice: 'The refund job tried every time it was allowed to and failed. Refund the customer from the provider dashboard.',
+  },
+  payment_needs_review: {
+    title: 'A payment has had no answer for too long',
+    advice: 'We could not find out whether the customer was charged, and the payment was not sent again. Look it up in the provider dashboard: if money was taken, record it and the order proceeds; if not, the customer can try again.',
   },
   refund_unrecorded: {
     title: 'A refund was sent, but not written down',

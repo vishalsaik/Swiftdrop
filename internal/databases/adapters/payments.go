@@ -100,14 +100,14 @@ func claimPayment(ctx context.Context, q querier, p domain.Payment, lease time.D
 	// The partial unique index (one payment per order that is not declined) makes
 	// this atomic: when two requests insert for the same order at once, one row is
 	// written and the other statement does nothing, whichever of them the database
-	// sees first. A declined payment does not block a new one; attempt counts the
+	// sees first. A declined or abandoned payment does not block a new one; attempt counts the
 	// order's payments so far. The deadline comes from the database clock so
 	// servers agree on it.
 	query := `
 		INSERT INTO payments (id, order_id, status, amount_cents, lease_expires_at, attempt)
 		VALUES ($1, $2, 'processing', $3, now() + make_interval(secs => $4),
 		        (SELECT count(*) FROM payments WHERE order_id = $2) + 1)
-		ON CONFLICT (order_id) WHERE status <> 'declined' DO NOTHING
+		ON CONFLICT (order_id) WHERE status NOT IN ('declined', 'abandoned') DO NOTHING
 		RETURNING ` + paymentColumns
 	claimed, err := scanPayment(q.QueryRow(ctx, query, p.ID, p.OrderID, p.AmountCents, lease.Seconds()))
 	if err == nil {
@@ -129,15 +129,16 @@ func claimPayment(ctx context.Context, q querier, p domain.Payment, lease time.D
 }
 
 func completePayment(ctx context.Context, q querier, id string, status domain.PaymentStatus, providerPaymentID, reason string) (domain.Payment, error) {
-	if status != domain.PaymentAuthorized && status != domain.PaymentDeclined {
+	if status != domain.PaymentAuthorized && status != domain.PaymentDeclined && status != domain.PaymentAbandoned {
 		return domain.Payment{}, fmt.Errorf("failed to complete payment %s: %q is not a final status", id, status)
 	}
-	// Compare-and-set again: only a payment that is still processing can be
-	// completed, so a late or duplicate writer cannot overwrite the result.
+	// Compare-and-set again: only a payment that still waits for an answer can be
+	// completed, so a late or duplicate writer cannot overwrite the result. A
+	// payment waiting for review is open to the provider's late answer.
 	query := `
 		UPDATE payments
 		SET status = $2, provider_payment_id = $3, reason = $4, updated_at = now()
-		WHERE id = $1 AND status = 'processing'
+		WHERE id = $1 AND status IN ('processing', 'needs_review')
 		RETURNING ` + paymentColumns
 	p, err := scanPayment(q.QueryRow(ctx, query, id, status, providerPaymentID, reason))
 	if err == nil {
@@ -193,6 +194,58 @@ func (db *DBAdapter) TakeOverPayment(ctx context.Context, id string, lease time.
 	exists, qerr := paymentExists(ctx, db.Pool, id)
 	if qerr != nil {
 		return domain.Payment{}, false, fmt.Errorf("failed to take over payment: %w", qerr)
+	}
+	if !exists {
+		return domain.Payment{}, false, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, id)
+	}
+	return domain.Payment{}, false, nil
+}
+
+func (db *DBAdapter) ListUnsettledPayments(ctx context.Context, minAge time.Duration, limit int) ([]domain.Payment, error) {
+	if limit <= 0 {
+		return nil, errors.New("failed to list unsettled payments: limit must be positive")
+	}
+	if minAge < 0 {
+		return nil, errors.New("failed to list unsettled payments: minAge must not be negative")
+	}
+	rows, err := db.Pool.Query(ctx, `
+		SELECT `+paymentColumns+` FROM payments
+		WHERE status = 'needs_review'
+		   OR (status = 'processing' AND lease_expires_at <= now() AND created_at <= now() - make_interval(secs => $1))
+		ORDER BY created_at, id
+		LIMIT $2`, minAge.Seconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list unsettled payments: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.Payment{}
+	for rows.Next() {
+		p, err := scanPayment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list unsettled payments: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list unsettled payments: %w", err)
+	}
+	return out, nil
+}
+
+func (db *DBAdapter) MarkPaymentNeedsReview(ctx context.Context, id, reason string) (domain.Payment, bool, error) {
+	p, err := scanPayment(db.Pool.QueryRow(ctx, `
+		UPDATE payments SET status = 'needs_review', reason = $2, updated_at = now()
+		WHERE id = $1 AND status = 'processing'
+		RETURNING `+paymentColumns, id, reason))
+	if err == nil {
+		return p, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, fmt.Errorf("failed to mark payment for review: %w", err)
+	}
+	exists, qerr := paymentExists(ctx, db.Pool, id)
+	if qerr != nil {
+		return domain.Payment{}, false, fmt.Errorf("failed to mark payment for review: %w", qerr)
 	}
 	if !exists {
 		return domain.Payment{}, false, fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, id)
