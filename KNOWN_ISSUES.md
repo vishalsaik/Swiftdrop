@@ -54,7 +54,7 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 ## Performance and structure
 
 - The payment cache (`internal/paymentcache`) holds only authorized payments and only serves `/pay`. It is per process, which is fine because what it keeps never changes, and it has no expiry for the same reason (an entry leaves only when the cache is full). Deleting a payment row by hand would leave it in a running server's cache until a restart; nothing deletes payments.
-- `PayOrder` is now about 250 lines of orchestration across helpers: candidate for a service layer (Facade).
+- `/pay` lives in `internal/paying` (a Facade); the handler is thin. The webhook handler and the reconciler still record answers through `internal/settle`, which `/pay` does not use: `/pay` records through its own `finish` and `keep` because it has already claimed the payment itself. Folding the three into one is possible but would change what a failed write does in each.
 
 ## Stand-ins
 

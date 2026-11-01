@@ -50,7 +50,8 @@ flowchart LR
 
 | Piece | Where | Job |
 |---|---|---|
-| Handlers | `cmd/handlers` | HTTP in, HTTP out. `PayOrder` runs the flow below; `PaymentWebhook` records an outcome Stripe pushes; `GetOrderByID` and `ListOrders` add the payment summary and `paymentIssue`. |
+| Handlers | `cmd/handlers` | HTTP in, HTTP out. `PayOrder` reads the request, hands it to the pay service and writes the answer; `PaymentWebhook` records an outcome Stripe pushes; `GetOrderByID` and `ListOrders` add the payment summary and `paymentIssue`. |
+| Pay service | `internal/paying` | **Facade.** `Pay` runs the flow below (the payment record, the provider, the state machine, alerts) and returns a typed `Outcome`; it knows nothing of HTTP. It reads the request body lazily, through a function the handler passes, so a replay never reads it. |
 | Router | `internal/payment/router.go` | **Factory.** Payment type in (`card`, `wallet`, `cash`), provider out. The handler asks per request because the type is only known after loading the order. |
 | Providers | `internal/payment/providers` | **Strategy.** One per payment type. Card and wallet delegate to a gateway; cash authorizes with no gateway. A provider may also refuse a request up front (`RequestChecker`). |
 | Gateway | `internal/payment`, `.../gateways` | **Adapter** to the outside. `StripeGateway` speaks Stripe's HTTP API; `FakeGateway` runs everything locally with no network. Both also implement `Refunder`. |
@@ -410,11 +411,12 @@ that takes a note), or through `GET /alerts` and `POST /alerts/{id}/resolve`.
 | Chain of Responsibility | the middleware chain and the order validators |
 | State as data | `legalTransitions` |
 | Observer (pub/sub, across a network) | Stripe's webhook into our handler |
+| Facade | `paying.Service`: one `Pay` over the payment record, the provider, the state machine and alerts |
 
 Also used: Decorator (`paymentcache.Cache` wraps the payment lookup of `/pay`).
 
 Not used yet but planned: Decorator again (retries and a circuit breaker around the
-gateway), Command, Builder, Facade (for `PayOrder`).
+gateway), Command, Builder.
 
 ## 12. Configuration
 
@@ -435,8 +437,8 @@ exercised with no network.
 
 | For | File |
 |---|---|
-| The whole `/pay` flow | `cmd/handlers/handlers.go` (`PayOrder` and the helpers below it) |
-| An answer for an order that moved on | `cmd/handlers/outcome.go` |
+| The whole `/pay` flow, and an answer for an order that moved on | `internal/paying/service.go` |
+| `/pay` as HTTP: the body, the status codes | `cmd/handlers/handlers.go` (`PayOrder`, `payMethod`, `writePayOutcome`) |
 | The webhook handler and its signature check | `cmd/handlers/webhook.go`, `internal/payment/gateways/stripe_webhook.go` |
 | The claim, lease, takeover and the two transactions | `internal/databases/adapters/payments.go` |
 | Refunds: storage, provider call, job | `adapters/refunds.go`, `gateways/stripe_refund.go`, `internal/refund/service.go` |
