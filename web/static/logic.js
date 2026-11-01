@@ -56,7 +56,13 @@ export function actionsFor(order) {
   const charged = order.payment && order.payment.status === 'authorized' && order.paymentType !== 'cash';
 
   if (s === 'created') {
-    actions.push({ key: 'pay', label: 'Take payment', primary: true, enabled: true });
+    const declined = order.payment && order.payment.status === 'declined';
+    actions.push(declined
+      ? {
+        key: 'pay', label: 'Try payment again', primary: true, enabled: true,
+        note: `Attempt ${order.payment.attempt + 1} of ${order.payment.maxAttempts}. The last decline cancels the order.`,
+      }
+      : { key: 'pay', label: 'Take payment', primary: true, enabled: true });
   }
   if (s === 'payment_pending') {
     actions.push({
@@ -154,17 +160,25 @@ export function noticeFor(order) {
         title: "We couldn't return your money automatically",
         body: `Please contact support and quote order ${order.id}. We will return ${amount} to you. You do not need to pay again.`,
       };
+    case 'declined': {
+      const reason = (order.payment && order.payment.reason) || 'The payment was declined.';
+      if (order.state === 'created') {
+        const left = order.payment ? order.payment.maxAttempts - order.payment.attempt : 0;
+        return {
+          issue: 'declined', tone: 'bad',
+          title: 'Your payment was declined',
+          body: `${reason} You were not charged. You can try another card or payment method (${left} ${left === 1 ? 'attempt' : 'attempts'} left).`,
+        };
+      }
+      return {
+        issue: 'declined', tone: 'bad',
+        title: 'Your payment was declined',
+        body: `${reason} You were not charged and the order was cancelled.`,
+      };
+    }
     default:
-      break;
+      return null;
   }
-  if (order.state === 'cancelled' && order.payment && order.payment.status === 'declined') {
-    return {
-      issue: 'declined', tone: 'bad',
-      title: 'Your payment was declined',
-      body: `${order.payment.reason || 'The payment was declined.'} You were not charged and the order was cancelled.`,
-    };
-  }
-  return null;
 }
 
 const EVENT_LABELS = {

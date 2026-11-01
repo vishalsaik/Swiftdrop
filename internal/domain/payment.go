@@ -40,6 +40,11 @@ func (p PaymentType) Valid() bool {
 	return slices.Contains(PaymentTypes, p)
 }
 
+// MaxPaymentAttempts is how many times an order may be paid for. A decline moves
+// the order back to created so the customer can try another method; the last
+// allowed decline cancels it instead.
+const MaxPaymentAttempts = 3
+
 type PaymentStatus string
 
 const (
@@ -77,6 +82,9 @@ type Payment struct {
 	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+	// Attempt numbers the order's payments 1, 2, 3 ...: a declined payment can be
+	// followed by another, up to MaxPaymentAttempts.
+	Attempt int `json:"attempt"`
 
 	// The refund of this payment, a second dimension next to Status: a payment
 	// stays authorized forever (the money was taken), and RefundStatus says

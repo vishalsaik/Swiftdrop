@@ -32,6 +32,10 @@ type paymentView struct {
 	Reason       string               `json:"reason,omitempty"` // the decline reason
 	RefundStatus domain.RefundStatus  `json:"refundStatus"`
 	UpdatedAt    time.Time            `json:"updatedAt"`
+	// Attempt is which try this payment is (1, 2, 3 ...) of MaxAttempts: a
+	// declined payment can be followed by another until the attempts run out.
+	Attempt     int `json:"attempt"`
+	MaxAttempts int `json:"maxAttempts"`
 }
 
 // viewOf builds the view of an order from its payment (nil if it has none).
@@ -45,6 +49,7 @@ func viewOf(o domain.Order, p *domain.Payment) orderView {
 		v.Payment = &paymentView{
 			ID: p.ID, Status: p.Status, AmountCents: p.AmountCents, Reason: p.Reason,
 			RefundStatus: refund, UpdatedAt: p.UpdatedAt,
+			Attempt: max(p.Attempt, 1), MaxAttempts: domain.MaxPaymentAttempts,
 		}
 	}
 	return v

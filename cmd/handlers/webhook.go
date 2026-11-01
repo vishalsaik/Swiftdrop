@@ -86,7 +86,7 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 
 	to := domain.OrderPaid
 	if event.Status == domain.PaymentDeclined {
-		to = domain.OrderCancelled
+		to = declineTarget(p)
 	}
 	_, err = s.DB.FinishPayment(r.Context(), p.ID, event.Status, event.ProviderPaymentID, event.Reason,
 		string(domain.OrderPaymentPending), string(to))

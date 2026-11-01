@@ -96,8 +96,8 @@ func TestNewPaymentThatIsDeclinedIsRecordedWithItsReason(t *testing.T) {
 	if p.Status != domain.PaymentDeclined || p.Reason != "Your card was declined." {
 		t.Errorf("payment = %+v, want declined with the reason", p)
 	}
-	if got := db.orders["o1"].State; got != domain.OrderCancelled {
-		t.Errorf("order state = %s, want cancelled", got)
+	if got := db.orders["o1"].State; got != domain.OrderCreated {
+		t.Errorf("order state = %s, want created (open for another attempt)", got)
 	}
 }
 
@@ -170,12 +170,14 @@ func TestReplayShowsTheOrderAsItIsNow(t *testing.T) {
 	}
 }
 
-func TestRetryAfterADeclineReplaysTheDecline(t *testing.T) {
+// Once the order is closed (cancelled), a retry replays the decline.
+func TestRetryOfADeclineOnAClosedOrderReplaysTheDecline(t *testing.T) {
 	g := declining("insufficient funds")
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
 	router := routerOf(g, g)
 	wantStatus(t, payWith(t, db, router, "o1"), http.StatusPaymentRequired)
+	wantStatus(t, do(t, db, http.MethodPost, "/orders/o1/cancel", ""), http.StatusOK)
 
 	rec := payWith(t, db, router, "o1")
 	wantStatus(t, rec, http.StatusPaymentRequired)
@@ -188,6 +190,9 @@ func TestRetryAfterADeclineReplaysTheDecline(t *testing.T) {
 func TestReplayOfADeclineWithNoStoredReasonUsesTheFallback(t *testing.T) {
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	o := db.orders["o1"]
+	o.State = domain.OrderCancelled // closed, so the decline is replayed
+	db.orders["o1"] = o
 	db.payments["o1"] = domain.Payment{ID: "pay-1", OrderID: "o1", Status: domain.PaymentDeclined}
 	g := approving()
 

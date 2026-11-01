@@ -318,13 +318,13 @@ func orderFrom(t *testing.T, rec *httptest.ResponseRecorder) domain.Order {
 
 func errorFrom(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	var e map[string]string
+	var e map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
 		t.Fatalf("response is not a JSON error: %v (body: %s)", err, rec.Body.String())
 	}
-	msg, ok := e["error"]
+	msg, ok := e["error"].(string)
 	if !ok {
-		t.Fatalf(`response has no "error" key: %s`, rec.Body.String())
+		t.Fatalf(`response has no "error" string: %s`, rec.Body.String())
 	}
 	return msg
 }
@@ -1163,7 +1163,25 @@ func TestPaySendsTheOrderFactsToTheGateway(t *testing.T) {
 	}
 }
 
-func TestPayDeclineCancelsTheOrder(t *testing.T) {
+// declineAnswer reads what a 402 tells the customer: whether they can try again
+// and how many attempts are left.
+func declineAnswer(t *testing.T, rec *httptest.ResponseRecorder) (canRetry bool, attemptsLeft int) {
+	t.Helper()
+	wantStatus(t, rec, http.StatusPaymentRequired)
+	var body struct {
+		CanRetry     *bool `json:"canRetry"`
+		AttemptsLeft *int  `json:"attemptsLeft"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.CanRetry == nil || body.AttemptsLeft == nil {
+		t.Fatalf("a decline must say canRetry and attemptsLeft: %v (%s)", err, rec.Body)
+	}
+	return *body.CanRetry, *body.AttemptsLeft
+}
+
+// A decline is a definite no, but the customer may have another card: the order
+// goes back to created and paying again is a NEW attempt with a new payment. The
+// last allowed attempt cancels the order, and after that a decline is replayed.
+func TestADeclineReopensTheOrderForAnotherAttemptUntilTheAttemptsRunOut(t *testing.T) {
 	for _, pt := range []domain.PaymentType{domain.PaymentCard, domain.PaymentWallet} {
 		t.Run(string(pt), func(t *testing.T) {
 			g := declining("insufficient funds")
@@ -1171,23 +1189,98 @@ func TestPayDeclineCancelsTheOrder(t *testing.T) {
 			seedPayable(db, "o1", pt, 1198)
 			router := routerOf(g, g)
 
-			rec := payWith(t, db, router, "o1")
-			wantStatus(t, rec, http.StatusPaymentRequired)
-			wantErrorContains(t, rec, "insufficient funds")
-			wantWrites(t, db, domain.OrderPaymentPending, domain.OrderCancelled)
-			if got := db.orders["o1"].State; got != domain.OrderCancelled {
-				t.Errorf("state = %s, want cancelled", got)
+			first := payWith(t, db, router, "o1")
+			wantErrorContains(t, first, "insufficient funds")
+			if retry, left := declineAnswer(t, first); !retry || left != 2 {
+				t.Errorf("after attempt 1: canRetry=%v attemptsLeft=%d, want true and 2", retry, left)
+			}
+			if got := db.orders["o1"].State; got != domain.OrderCreated {
+				t.Errorf("state = %s, want the order open again (created)", got)
+			}
+			firstID := db.payments["o1"].ID
+
+			second := payWith(t, db, router, "o1")
+			if retry, left := declineAnswer(t, second); !retry || left != 1 {
+				t.Errorf("after attempt 2: canRetry=%v attemptsLeft=%d, want true and 1", retry, left)
+			}
+			if db.payments["o1"].ID == firstID || db.payments["o1"].Attempt != 2 {
+				t.Errorf("payment = %+v, want a NEW payment, attempt 2", db.payments["o1"])
 			}
 
-			// paying again is a retry of the same payment: the decline is
-			// replayed, and the provider is not asked a second time
+			third := payWith(t, db, router, "o1")
+			if retry, left := declineAnswer(t, third); retry || left != 0 {
+				t.Errorf("after attempt 3: canRetry=%v attemptsLeft=%d, want false and 0", retry, left)
+			}
+			if got := db.orders["o1"].State; got != domain.OrderCancelled {
+				t.Errorf("state = %s, want cancelled after the last attempt", got)
+			}
+			wantWrites(t, db, domain.OrderPaymentPending, domain.OrderCreated, domain.OrderPaymentPending,
+				domain.OrderCreated, domain.OrderPaymentPending, domain.OrderCancelled)
+
+			// the order is closed now: paying again replays the decline and the
+			// provider is not asked a fourth time
 			again := payWith(t, db, router, "o1")
-			wantStatus(t, again, http.StatusPaymentRequired)
 			wantErrorContains(t, again, "insufficient funds")
-			if len(g.calls) != 1 {
-				t.Errorf("gateway called %d times, want 1", len(g.calls))
+			if retry, _ := declineAnswer(t, again); retry {
+				t.Error("a replayed decline must not offer another attempt")
+			}
+			if len(g.calls) != 3 {
+				t.Errorf("gateway called %d times, want 3", len(g.calls))
 			}
 		})
+	}
+}
+
+// A retry after a decline can succeed with another method.
+func TestAnotherMethodAfterADeclineCanSucceed(t *testing.T) {
+	declined, approved := declining("Your card was declined."), approving()
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	wantStatus(t, payWith(t, db, routerOf(declined, declined), "o1"), http.StatusPaymentRequired)
+
+	rec := payWith(t, db, routerOf(approved, approved), "o1")
+	wantStatus(t, rec, http.StatusOK)
+	if got := orderFrom(t, rec).State; got != domain.OrderPaid {
+		t.Errorf("state = %s, want paid", got)
+	}
+	if p := db.payments["o1"]; p.Status != domain.PaymentAuthorized || p.Attempt != 2 {
+		t.Errorf("payment = %+v, want authorized on attempt 2", p)
+	}
+	// and now it is a normal paid order: another /pay replays the success
+	wantStatus(t, payWith(t, db, routerOf(approved, approved), "o1"), http.StatusOK)
+	if len(approved.calls) != 1 {
+		t.Errorf("the approving gateway was called %d times, want 1", len(approved.calls))
+	}
+}
+
+// Each attempt is a different payment, so its provider call has its own idempotency
+// key: the provider must not replay the earlier decline for the new attempt.
+func TestEachAttemptHasItsOwnIdempotencyKey(t *testing.T) {
+	g := declining("no")
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	router := routerOf(g, g)
+	payWith(t, db, router, "o1")
+	payWith(t, db, router, "o1")
+
+	if len(g.calls) != 2 || g.calls[0].IdempotencyKey == "" || g.calls[0].IdempotencyKey == g.calls[1].IdempotencyKey {
+		t.Errorf("provider calls = %+v, want two different idempotency keys", g.calls)
+	}
+}
+
+// A customer who gives up cancels the order; it is then closed for good.
+func TestACustomerCanCancelAfterADeclineAndThenCannotPay(t *testing.T) {
+	g := declining("no")
+	db := newFakeDB()
+	seedPayable(db, "o1", domain.PaymentCard, 1000)
+	router := routerOf(g, g)
+	wantStatus(t, payWith(t, db, router, "o1"), http.StatusPaymentRequired)
+	wantStatus(t, do(t, db, http.MethodPost, "/orders/o1/cancel", ""), http.StatusOK)
+
+	again := payWith(t, db, router, "o1")
+	wantStatus(t, again, http.StatusPaymentRequired) // the decline is replayed
+	if len(g.calls) != 1 {
+		t.Errorf("gateway called %d times, want 1: a cancelled order is not charged again", len(g.calls))
 	}
 }
 
@@ -1209,7 +1302,7 @@ func TestPayDeclineThatCannotBeSavedIsAServerError(t *testing.T) {
 	g := declining("insufficient funds")
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
-	db.updateErr, db.updateErrOn = errors.New("db down"), domain.OrderCancelled
+	db.updateErr, db.updateErrOn = errors.New("db down"), domain.OrderCreated
 
 	rec := payWith(t, db, routerOf(g, g), "o1")
 	wantStatus(t, rec, http.StatusInternalServerError)
@@ -1289,9 +1382,9 @@ func TestPayWithTheFakeGatewayLimits(t *testing.T) {
 		wantState domain.OrderState
 	}{
 		{domain.PaymentCard, 50_000, http.StatusOK, domain.OrderPaid},
-		{domain.PaymentCard, 50_001, http.StatusPaymentRequired, domain.OrderCancelled},
+		{domain.PaymentCard, 50_001, http.StatusPaymentRequired, domain.OrderCreated},
 		{domain.PaymentWallet, 10_000, http.StatusOK, domain.OrderPaid},
-		{domain.PaymentWallet, 10_001, http.StatusPaymentRequired, domain.OrderCancelled},
+		{domain.PaymentWallet, 10_001, http.StatusPaymentRequired, domain.OrderCreated},
 		{domain.PaymentCash, 999_999_999, http.StatusOK, domain.OrderPaid},
 	}
 	for _, tt := range tests {

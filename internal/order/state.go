@@ -20,7 +20,7 @@ var ErrIllegalTransition = errors.New("illegal order state transition")
 // whatever this table says about the state transition.
 var legalTransitions = map[domain.OrderState][]domain.OrderState{
 	domain.OrderCreated:        {domain.OrderPaymentPending, domain.OrderCancelled},
-	domain.OrderPaymentPending: {domain.OrderPaid, domain.OrderCancelled},
+	domain.OrderPaymentPending: {domain.OrderPaid, domain.OrderCancelled, domain.OrderCreated}, // created: the payment was declined and the customer may try again
 	domain.OrderPaid:           {domain.OrderPreparing, domain.OrderCancelled},
 	domain.OrderPreparing:      {domain.OrderPickedUp, domain.OrderCancelled},
 	domain.OrderPickedUp:       {domain.OrderDelivered},

@@ -41,13 +41,18 @@ func newProcessing(p domain.Payment, lease time.Duration) domain.Payment {
 func (f *fakeDB) ClaimPayment(_ context.Context, p domain.Payment, lease time.Duration) (domain.Payment, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	attempt := 1
 	if existing, ok := f.payments[p.OrderID]; ok {
-		return existing, false, nil
+		if existing.Status != domain.PaymentDeclined {
+			return existing, false, nil
+		}
+		attempt = max(existing.Attempt, 1) + 1 // a declined payment does not block a new one
 	}
 	if _, ok := f.orders[p.OrderID]; !ok {
 		return domain.Payment{}, false, notFound(p.OrderID)
 	}
 	claimed := newProcessing(p, lease)
+	claimed.Attempt = attempt
 	f.payments[p.OrderID] = claimed
 	return claimed, true, nil
 }
@@ -137,8 +142,12 @@ func (f *fakeDB) StartPayment(_ context.Context, p domain.Payment, lease time.Du
 	if f.updateErr != nil && (f.updateErrOn == "" || string(f.updateErrOn) == orderTo) {
 		return domain.Payment{}, false, f.updateErr
 	}
+	attempt := 1
 	if existing, ok := f.payments[p.OrderID]; ok {
-		return existing, false, nil // already has a payment: nothing is written
+		if existing.Status != domain.PaymentDeclined {
+			return existing, false, nil // already has a live payment: nothing is written
+		}
+		attempt = max(existing.Attempt, 1) + 1 // a declined payment does not block a new one
 	}
 	o, ok := f.orders[p.OrderID]
 	if !ok {
@@ -148,6 +157,7 @@ func (f *fakeDB) StartPayment(_ context.Context, p domain.Payment, lease time.Du
 		return domain.Payment{}, false, stateConflict(p.OrderID)
 	}
 	claimed := newProcessing(p, lease)
+	claimed.Attempt = attempt
 	f.payments[p.OrderID] = claimed
 	o.State = domain.OrderState(orderTo)
 	f.orders[p.OrderID] = o

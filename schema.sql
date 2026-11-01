@@ -26,17 +26,17 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_type TEXT NOT NULL DEFAULT '
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
--- One row per payment attempt. The UNIQUE constraint on order_id is what makes
--- claiming a payment atomic: of two requests inserting at once, the database
--- lets exactly one succeed. (Retrying a declined payment, a later feature, will
--- relax this to "one active payment per order".)
+-- One row per payment attempt. An order may be paid again after a decline, so it
+-- can have several payments, but only one that is not declined (the partial unique
+-- index below). That index is what makes claiming a payment atomic: of two
+-- requests inserting at once, the database lets exactly one succeed.
 --
 -- No ON DELETE CASCADE on purpose: a payment is a financial record and must
 -- not disappear because its order row was removed. status 'processing' means
 -- claimed and not yet answered; lease_expires_at is the deadline of that claim.
 CREATE TABLE IF NOT EXISTS payments (
     id                  TEXT PRIMARY KEY,
-    order_id            TEXT NOT NULL UNIQUE REFERENCES orders (id),
+    order_id            TEXT NOT NULL REFERENCES orders (id),
     status              TEXT NOT NULL CHECK (status IN ('processing', 'authorized', 'declined')),
     amount_cents        BIGINT NOT NULL CHECK (amount_cents >= 0),
     provider_payment_id TEXT NOT NULL DEFAULT '',   -- the provider's id, set on completion
@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Retrying a declined payment. attempt numbers an order's payments 1, 2, 3 ... (it
+-- is information, set when the payment is claimed). Databases created before this
+-- had UNIQUE (order_id) on the column, which is dropped in favour of the index.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1);
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_order_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS payments_one_live_per_order ON payments (order_id) WHERE status <> 'declined';
 
 -- The refund of a payment, a second dimension next to status: an authorized
 -- payment stays authorized forever (the money was taken) and refund_status says
