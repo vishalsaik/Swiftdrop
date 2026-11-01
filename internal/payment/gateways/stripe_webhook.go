@@ -26,11 +26,16 @@ const (
 )
 
 // StripeWebhook implements payment.EventParser for the events Stripe pushes to
-// us. It checks that a request really came from Stripe, then turns the two
-// events we care about into a payment.Event:
+// us. It checks that a request really came from Stripe, then turns the events
+// we care about into a payment.Event:
 //
 //	payment_intent.succeeded       -> authorized
 //	payment_intent.payment_failed  -> declined
+//	refund.failed                  -> a refund failed (EventRefundFailed)
+//	refund.updated, when the refund's status became failed or canceled -> the same
+//
+// A refund event is matched on the payment intent it refunds, because Stripe
+// changes a refund on its own and the event is not caused by a request of ours.
 //
 // Our payment is found through the event's request.idempotency_key, which
 // Stripe fills in from the Idempotency-Key header of the charge that caused the
@@ -54,7 +59,8 @@ type stripeEvent struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
 	Data struct {
-		Object stripeIntent `json:"object"`
+		// Object is a PaymentIntent or a Refund, depending on the type.
+		Object json.RawMessage `json:"object"`
 	} `json:"data"`
 	// Request is raw because Stripe's oldest API versions send a string here
 	// instead of an object. Anything that is not an object just has no key.
@@ -82,6 +88,15 @@ func (w *StripeWebhook) ParseEvent(payload []byte, header http.Header) (payment.
 		return payment.Event{}, fmt.Errorf("%w: decoding the event: %v", payment.ErrInvalidEvent, err)
 	}
 
+	if e.Type == "refund.failed" || e.Type == "refund.updated" {
+		return refundEvent(e)
+	}
+
+	var intent stripeIntent
+	if err := json.Unmarshal(e.Data.Object, &intent); err != nil && isPaymentIntentEvent(e.Type) {
+		return payment.Event{}, fmt.Errorf("%w: decoding the payment intent of event %s: %v", payment.ErrInvalidEvent, e.ID, err)
+	}
+
 	var status domain.PaymentStatus
 	reason := ""
 	switch e.Type {
@@ -90,8 +105,8 @@ func (w *StripeWebhook) ParseEvent(payload []byte, header http.Header) (payment.
 	case "payment_intent.payment_failed":
 		status = domain.PaymentDeclined
 		message := ""
-		if e.Data.Object.LastPaymentError != nil {
-			message = e.Data.Object.LastPaymentError.Message
+		if intent.LastPaymentError != nil {
+			message = intent.LastPaymentError.Message
 		}
 		reason = declineReason(message)
 	default:
@@ -105,8 +120,48 @@ func (w *StripeWebhook) ParseEvent(payload []byte, header http.Header) (payment.
 	return payment.Event{
 		ID:                e.ID,
 		PaymentID:         key,
-		ProviderPaymentID: e.Data.Object.ID,
+		ProviderPaymentID: intent.ID,
 		Status:            status,
+		Reason:            reason,
+	}, nil
+}
+
+func isPaymentIntentEvent(eventType string) bool {
+	return eventType == "payment_intent.succeeded" || eventType == "payment_intent.payment_failed"
+}
+
+// stripeRefundObject is the subset of Stripe's Refund object we read from an event.
+type stripeRefundObject struct {
+	ID            string `json:"id"`
+	Status        string `json:"status"`
+	FailureReason string `json:"failure_reason"`
+	PaymentIntent string `json:"payment_intent"`
+}
+
+// refundEvent translates refund.failed, and refund.updated when the refund ended
+// up failed or canceled ("cancelled" is accepted too: Stripe's guide spells it
+// both ways). Any other refund update is not news.
+func refundEvent(e stripeEvent) (payment.Event, error) {
+	var r stripeRefundObject
+	if err := json.Unmarshal(e.Data.Object, &r); err != nil {
+		return payment.Event{}, fmt.Errorf("%w: decoding the refund of event %s: %v", payment.ErrInvalidEvent, e.ID, err)
+	}
+	failed := e.Type == "refund.failed" || r.Status == "failed" || r.Status == "canceled" || r.Status == "cancelled"
+	if !failed {
+		return payment.Event{}, fmt.Errorf("%w: refund %s is %q, not a failure (event %s)", payment.ErrEventIgnored, r.ID, r.Status, e.ID)
+	}
+	if r.ID == "" || r.PaymentIntent == "" {
+		return payment.Event{}, fmt.Errorf("%w: event %s (%s) names no refund or no payment intent", payment.ErrEventIgnored, e.ID, e.Type)
+	}
+	reason := r.FailureReason
+	if reason == "" {
+		reason = "unknown"
+	}
+	return payment.Event{
+		Kind:              payment.EventRefundFailed,
+		ID:                e.ID,
+		ProviderPaymentID: r.PaymentIntent,
+		RefundID:          r.ID,
 		Reason:            reason,
 	}, nil
 }

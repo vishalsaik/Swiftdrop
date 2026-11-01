@@ -15,6 +15,9 @@ const (
 	// AlertPaymentNeedsReview: a payment has had no answer for so long that the
 	// system stopped asking, and the customer may have been charged.
 	AlertPaymentNeedsReview = "payment_needs_review"
+	// AlertRefundReversed: the provider accepted a refund and later reported that
+	// it failed, so the customer has NOT got their money back.
+	AlertRefundReversed = "refund_reversed"
 )
 
 // Alert is a problem a person has to look at. It stays open until someone

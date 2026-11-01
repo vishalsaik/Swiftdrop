@@ -102,4 +102,5 @@ type Store interface {
 	IDatabase
 	PaymentStore
 	AlertStore
+	RefundReversalStore
 }

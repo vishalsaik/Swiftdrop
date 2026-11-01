@@ -206,6 +206,28 @@ func closedWithoutCharge(p domain.Payment) bool {
 	return p.Status == domain.PaymentDeclined || p.Status == domain.PaymentAbandoned
 }
 
+// ReverseRefund follows the adapter: only the refund recorded as done, and only
+// that very refund, moves to failed; otherwise the payment is handed back as it is.
+func (f *fakeDB) ReverseRefund(_ context.Context, providerPaymentID, refundID, reason string) (domain.Payment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reverseErr != nil {
+		return domain.Payment{}, false, f.reverseErr
+	}
+	for orderID, p := range f.payments {
+		if p.ProviderPaymentID != providerPaymentID {
+			continue
+		}
+		if p.RefundStatus == domain.RefundDone && p.RefundID == refundID {
+			p.RefundStatus, p.RefundError, p.UpdatedAt = domain.RefundFailed, reason, time.Now()
+			f.payments[orderID] = p
+			return p, true, nil
+		}
+		return p, false, nil
+	}
+	return domain.Payment{}, false, fmt.Errorf("%w: provider payment %s", ports.ErrPaymentNotFound, providerPaymentID)
+}
+
 // ListUnsettledPayments follows the adapter: payments needing review, and those
 // processing whose lease ran out and that are at least minAge old.
 func (f *fakeDB) ListUnsettledPayments(_ context.Context, minAge time.Duration, limit int) ([]domain.Payment, error) {

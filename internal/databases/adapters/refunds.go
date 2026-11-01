@@ -13,7 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var _ ports.RefundStore = (*DBAdapter)(nil)
+var (
+	_ ports.RefundStore         = (*DBAdapter)(nil)
+	_ ports.RefundReversalStore = (*DBAdapter)(nil)
+)
 
 // qualify prefixes every column of a column list, for queries that join tables
 // whose columns share names (both have id, created_at and updated_at).
@@ -37,6 +40,35 @@ const refundOwed = `p.status = 'authorized'
 		AND o.payment_type <> 'cash'
 		AND (p.refund_status = 'none'
 		     OR (p.refund_status = 'refunding' AND p.refund_lease_expires_at <= now()))`
+
+func (db *DBAdapter) ReverseRefund(ctx context.Context, providerPaymentID, refundID, reason string) (domain.Payment, bool, error) {
+	if providerPaymentID == "" || refundID == "" {
+		return domain.Payment{}, false, errors.New("failed to reverse refund: the provider payment id and the refund id are required")
+	}
+	// Only the refund we recorded as done, and only that very refund: another one
+	// failing (made by hand in the provider's dashboard) says nothing about ours.
+	p, err := scanPayment(db.Pool.QueryRow(ctx, `
+		UPDATE payments SET refund_status = 'failed', refund_error = $3, updated_at = now()
+		WHERE provider_payment_id = $1 AND refund_status = 'refunded' AND refund_id = $2
+		RETURNING `+paymentColumns, providerPaymentID, refundID, reason))
+	if err == nil {
+		return p, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, fmt.Errorf("failed to reverse refund: %w", err)
+	}
+	// Nothing changed: say how the payment stands, so the caller can tell a refund
+	// still being made from one already marked failed.
+	p, err = scanPayment(db.Pool.QueryRow(ctx,
+		`SELECT `+paymentColumns+` FROM payments WHERE provider_payment_id = $1 ORDER BY attempt DESC LIMIT 1`, providerPaymentID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, fmt.Errorf("%w: provider payment %s", ports.ErrPaymentNotFound, providerPaymentID)
+	}
+	if err != nil {
+		return domain.Payment{}, false, fmt.Errorf("failed to reverse refund: %w", err)
+	}
+	return p, false, nil
+}
 
 func (db *DBAdapter) ListRefundable(ctx context.Context, limit int) ([]domain.Payment, error) {
 	if limit <= 0 {

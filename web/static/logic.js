@@ -255,6 +255,10 @@ const ALERT_TEXT = {
     title: 'A refund could not be sent',
     advice: 'The refund job tried every time it was allowed to and failed. Refund the customer from the provider dashboard.',
   },
+  refund_reversed: {
+    title: 'A refund was accepted, then failed',
+    advice: 'The provider accepted the refund and later reported that it failed, so the customer has not got their money back. Refund them from the provider dashboard, then resolve this.',
+  },
   payment_needs_review: {
     title: 'A payment has had no answer for too long',
     advice: 'We could not find out whether the customer was charged, and the payment was not sent again. Look it up in the provider dashboard: if money was taken, record it and the order proceeds; if not, the customer can try again.',

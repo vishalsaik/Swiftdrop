@@ -58,7 +58,47 @@ func (s *Server) PaymentWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if event.Kind == payment.EventRefundFailed {
+		s.recordRefundFailure(w, r, event)
+		return
+	}
 	s.recordEvent(w, r, event)
+}
+
+// recordRefundFailure applies the provider's report that a refund it accepted has
+// failed. The refund job believes the money is on its way back; it is not, so the
+// refund becomes failed (the customer is told to contact support, as for any
+// refund we gave up on) and an alert tells a person to refund by hand. We never
+// ask the provider to refund again on our own: the provider said why it failed,
+// and a second refund could pay out twice.
+func (s *Server) recordRefundFailure(w http.ResponseWriter, r *http.Request, event payment.Event) {
+	p, reversed, err := s.DB.ReverseRefund(r.Context(), event.ProviderPaymentID, event.RefundID,
+		"the provider reversed refund "+event.RefundID+": "+event.Reason)
+	switch {
+	case errors.Is(err, ports.ErrPaymentNotFound):
+		log.Printf("webhook %s: no payment here has the provider id %s, nothing to record", event.ID, event.ProviderPaymentID)
+		writeWebhookAck(w, "unknown payment")
+	case err != nil:
+		log.Printf("webhook %s: database error reversing refund %s: %v", event.ID, event.RefundID, err)
+		writeError(w, http.StatusInternalServerError, "Failed to record the refund due to an internal server error")
+	case reversed:
+		s.raiseAlert(r.Context(), domain.AlertRefundReversed, p.ID, p.OrderID,
+			"webhook %s says refund %s of payment %s for order %s failed after the provider accepted it (%s): the customer has not got their money back",
+			event.ID, event.RefundID, p.ID, p.OrderID, event.Reason)
+		writeWebhookAck(w, "recorded")
+	case p.RefundStatus == domain.RefundInProgress:
+		// Our own job is still making the refund and has not written it down.
+		// Answer 5xx so the provider delivers the report again once it has.
+		log.Printf("webhook %s: refund %s of payment %s failed while our refund job is still working on it; asking for a redelivery", event.ID, event.RefundID, p.ID)
+		writeError(w, http.StatusServiceUnavailable, "the refund is still being recorded, try again")
+	case p.RefundStatus == domain.RefundFailed:
+		writeWebhookAck(w, "already recorded")
+	default:
+		// A refund of ours that this is not (none made, or another one's id).
+		log.Printf("webhook %s: refund %s failed but it is not the refund recorded for payment %s (%q, refund %q)",
+			event.ID, event.RefundID, p.ID, p.RefundStatus, p.RefundID)
+		writeWebhookAck(w, "not our refund")
+	}
 }
 
 // recordEvent applies a verified event to the payment it names.

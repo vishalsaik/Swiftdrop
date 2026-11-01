@@ -220,6 +220,13 @@ test('the new ledger kinds and the new alert are described', () => {
   assert.match(a.advice, /not sent again/);
 });
 
+test('a reversed refund is described and says the customer is still owed', () => {
+  const a = describeAlert({ kind: 'refund_reversed', message: 'm', occurrences: 1 });
+  assert.match(a.title, /accepted, then failed/);
+  assert.match(a.advice, /not got their money back/);
+  assert.match(a.advice, /provider dashboard/);
+});
+
 test('there is no notice when there is nothing to say', () => {
   assert.equal(noticeFor(order({ state: 'paid', payment: { status: 'authorized', amountCents: 100 } })), null);
   assert.equal(noticeFor(order()), null);
