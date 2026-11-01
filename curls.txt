@@ -330,6 +330,37 @@ BODY2='{"id":"evt_2","type":"charge.succeeded","data":{"object":{"id":"ch_demo"}
 SIG2=$(printf '%s.%s' "$TS" "$BODY2" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
 curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG2" --data-binary "$BODY2"
 
+# A refund the provider accepted and then reversed. Stripe tells us with
+# refund.failed (or refund.updated once the refund's status is failed or canceled).
+# The event is not caused by a request of ours, so it is matched on the payment
+# intent. Set up a charged, cancelled order whose refund the job recorded as done:
+
+## A refunded payment: provider id pi_rv, refund id re_rv
+curl -s -o /dev/null -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"hook-2","customerId":"c","restaurantId":"r","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":4000}]}'
+docker exec postgres psql -U postgres -d swiftdrop -c "BEGIN; UPDATE orders SET state='cancelled' WHERE id='hook-2'; INSERT INTO payments (id, order_id, status, amount_cents, provider_payment_id, lease_expires_at, refund_status, refund_id, refund_attempts) VALUES ('rev-pay', 'hook-2', 'authorized', 4000, 'pi_rv', now(), 'refunded', 're_rv', 1); COMMIT;"
+curl -s http://127.0.0.1:8080/orders/hook-2
+
+## Stripe says the refund failed — 200 {"status":"recorded"}; the refund is "failed", paymentIssue "refund_failed", and an alert asks a person to refund by hand
+BODY3='{"id":"evt_3","type":"refund.failed","data":{"object":{"id":"re_rv","object":"refund","status":"failed","failure_reason":"expired_or_canceled_card","payment_intent":"pi_rv"}},"request":null}'
+SIG3=$(printf '%s.%s' "$TS" "$BODY3" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG3" --data-binary "$BODY3"
+curl -s http://127.0.0.1:8080/orders/hook-2
+curl -s http://127.0.0.1:8080/alerts
+
+## Delivered again — 200 {"status":"already recorded"}, still one alert
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG3" --data-binary "$BODY3"
+
+## A refund update that is not a failure — 200 {"status":"ignored"}
+BODY4='{"id":"evt_4","type":"refund.updated","data":{"object":{"id":"re_rv","object":"refund","status":"succeeded","payment_intent":"pi_rv"}},"request":null}'
+SIG4=$(printf '%s.%s' "$TS" "$BODY4" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG4" --data-binary "$BODY4"
+
+## A failure for a payment we do not have — 200 {"status":"unknown payment"}
+BODY5='{"id":"evt_5","type":"refund.failed","data":{"object":{"id":"re_x","object":"refund","status":"failed","payment_intent":"pi_nobody"}},"request":null}'
+SIG5=$(printf '%s.%s' "$TS" "$BODY5" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -i -X POST http://127.0.0.1:8080/webhooks/stripe -H "Content-Type: application/json" -H "Stripe-Signature: t=$TS,v1=$SIG5" --data-binary "$BODY5"
+
 
 # ---------------------------------------------------------------------------
 # The board and refunds. GET /orders lists the newest orders, each with its

@@ -114,6 +114,7 @@ stateDiagram-v2
     refunding --> refunded: provider accepted
     refunding --> refunding: attempt failed, retried after the lease
     refunding --> failed: 5 attempts, a person must look
+    refunded --> failed: the provider reverses it later
   }
 ```
 
@@ -273,6 +274,21 @@ sequenceDiagram
   and an attempt cut short by shutdown is not counted against the payment.
 * The customer sees the stage through `paymentIssue` (section 9).
 
+**A refund the provider accepted can still fail.** "Accepted" is not "paid out": a
+refund Stripe called `pending` can fail later (an expired or closed card, for one),
+and then we would say the customer was refunded when they were not. Stripe reports it
+with `refund.failed`, and with `refund.updated` when the refund ends up `failed` or
+`canceled`; the data is the Refund object, with the payment intent it refunds. The
+webhook matches it on that payment intent (not on the request's idempotency key: Stripe
+changed the refund on its own, so no request of ours caused the event). Only the
+refund we recorded as done, with that very refund id, moves to `failed`, with the
+provider's reason; a refund someone made by hand in the Stripe dashboard failing says
+nothing about ours. An alert (`refund_reversed`) asks a person to refund by hand, and
+the customer sees the same message as for a refund we gave up on. Nothing asks Stripe
+for a second refund: it said why the first failed, and a second could pay out twice.
+If the report arrives while our own job is still making the refund and has not
+written it down, the webhook answers `503` so Stripe delivers it again.
+
 ## 8. What can break, and what recovers it
 
 | Where it breaks | Money moved? | What we have | What recovers it |
@@ -286,6 +302,7 @@ sequenceDiagram
 | Two requests pay one order at once | one charge | one row | the claim: the loser replays or gets `409` |
 | Webhook delivered twice, or out of order | n/a | already recorded | compare-and-set makes it a no-op |
 | Refund call fails | yes, still | `refunding` with an error | retried after the lease; a person is asked after 5 attempts |
+| The provider accepted a refund and reverses it later | **yes**, still owed | `refunded`, then `failed` | the **webhook** (`refund.failed`): an alert for a person, who refunds by hand |
 | No answer ever arrives (a crash, a lost reply, no webhook) | unknown | `processing` | the **reconciler** asks the provider: a success or a refusal is recorded, no record after 30 min is `abandoned`, nothing decided after 20 h is `needs_review` |
 
 ### A payment that never got an answer
@@ -345,7 +362,7 @@ order and its payment, so it cannot go out of date:
 | `confirming` | payment `processing` (or `needs_review`) on a pending or cancelled order | "We're confirming your payment. If you were charged and the order doesn't go ahead, it is refunded." |
 | `refund_pending` | charged, order cancelled, refund not done | "Your order was cancelled. Your money is on its way back and will be credited soon." |
 | `refunded` | the provider accepted the refund | "Your refund has been sent." |
-| `refund_failed` | the job gave up | "Please contact support and quote the order id." |
+| `refund_failed` | the job gave up, or the provider reversed an accepted refund | "Please contact support and quote the order id." |
 | `abandoned` | an attempt got no answer and the provider has no record of it (order open again, or cancelled after the last attempt) | "We never received an answer for that attempt and you were not charged. You can try again (2 attempts left)." |
 | `declined` | the latest payment was refused (order open again, or cancelled after the last attempt) | "Your payment was declined. You were not charged. You can try another card (2 attempts left)." |
 | *(absent)* | nothing to say, and always for cash | |
