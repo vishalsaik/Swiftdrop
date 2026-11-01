@@ -274,6 +274,15 @@ sequenceDiagram
 | Webhook delivered twice, or out of order | n/a | already recorded | compare-and-set makes it a no-op |
 | Refund call fails | yes, still | `refunding` with an error | retried after the lease; a person is asked after 5 attempts |
 
+Whenever the table says a person is asked, the system raises an **alert**: a row
+in `alerts`, one open per kind and subject, with a count of how many times the
+same problem was seen. The kinds are `unrecorded_charge` (money taken that could
+not be written down), `contradicting_event` (the provider disagrees with our
+record), `refund_given_up` and `refund_unrecorded`. The row is written on a
+context that outlives the request, so a client that hangs up cannot lose it, and
+failing to write it is only logged: it never changes what the customer or
+the provider is told.
+
 The cases not covered (no event ever arrives for a lost charge, a retry after
 Stripe forgot the key, a customer paying twice through a new order) are written
 down in [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) with what would unlock each.
@@ -295,6 +304,10 @@ order and its payment, so it cannot go out of date:
 
 The dashboard shows these as a message in the order drawer and a pop-up when an
 order's issue changes while someone is watching. Nothing is sent to a customer yet.
+
+The people running the service see the alerts of section 8 under **Alerts** in the
+dashboard header (a count badge, then a list with what to do and a Resolve button
+that takes a note), or through `GET /alerts` and `POST /alerts/{id}/resolve`.
 
 ## 10. Guarantees
 
@@ -350,5 +363,6 @@ exercised with no network.
 | The claim, lease, takeover and the two transactions | `internal/databases/adapters/payments.go` |
 | Refunds: storage, provider call, job | `adapters/refunds.go`, `gateways/stripe_refund.go`, `internal/refund/service.go` |
 | What a screen is told | `internal/domain/issue.go`, `cmd/handlers/view.go` |
+| Alerts: raising, listing, resolving | `cmd/handlers/alerts.go`, `adapters/alerts.go`, `internal/domain/alert.go` |
 | The schema | `schema.sql` |
 | Try it by hand | `curls.txt` |
