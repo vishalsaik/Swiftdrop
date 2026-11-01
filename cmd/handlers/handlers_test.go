@@ -77,6 +77,7 @@ type fakeDB struct {
 	// unsettledErr and markErr make the stuck-payment calls fail.
 	unsettledErr error
 	markErr      error
+	reverseErr   error // makes ReverseRefund fail
 	beforeMark   func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
 	createErr error
 	readyErr  error
