@@ -78,7 +78,8 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 	if p.Status != domain.PaymentProcessing {
 		// Already recorded, by PayOrder or by an earlier delivery of this event.
 		if p.Status != event.Status {
-			log.Printf("NEEDS REVIEW: webhook %s says payment %s is %s but we recorded %s", event.ID, p.ID, event.Status, p.Status)
+			s.raiseAlert(r.Context(), domain.AlertContradictingEvent, p.ID, p.OrderID,
+				"webhook %s says payment %s is %s but we recorded %s", event.ID, p.ID, event.Status, p.Status)
 		}
 		writeWebhookAck(w, "already recorded")
 		return
@@ -102,7 +103,8 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 		// payment on a cancelled order is found by the refund job. If we cannot
 		// keep it, answer 5xx so the provider delivers it again.
 		if keepErr := s.recordOrphanedOutcome(r.Context(), p, event.Status, event.ProviderPaymentID, event.Reason); keepErr != nil {
-			log.Printf("NEEDS REVIEW: webhook %s says payment %s for order %s was %s after the order moved on (%v), and the answer could not be recorded: %v",
+			s.raiseAlert(r.Context(), domain.AlertUnrecordedCharge, p.ID, p.OrderID,
+				"webhook %s says payment %s for order %s was %s after the order moved on (%v), and the answer could not be recorded: %v",
 				event.ID, p.ID, p.OrderID, event.Status, err, keepErr)
 			writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
 			return

@@ -208,6 +208,44 @@ export function describeEvent(event) {
   return { label, note };
 }
 
+const ALERT_TEXT = {
+  unrecorded_charge: {
+    title: 'Money taken, but not written down',
+    advice: 'The provider charged the customer and we could not record it. Check the payment in the provider dashboard, then fix the order by hand.',
+  },
+  contradicting_event: {
+    title: 'The provider disagrees with our record',
+    advice: 'The provider reported something that contradicts what we recorded. Look the payment up at the provider and decide which is right.',
+  },
+  refund_given_up: {
+    title: 'A refund could not be sent',
+    advice: 'The refund job tried every time it was allowed to and failed. Refund the customer from the provider dashboard.',
+  },
+  refund_unrecorded: {
+    title: 'A refund was sent, but not written down',
+    advice: 'The provider accepted the refund and we could not record it. Do not refund again: check the provider dashboard and mark it done.',
+  },
+};
+
+// describeAlert turns an alert from GET /alerts into words for the alerts list.
+export function describeAlert(alert) {
+  const kind = String(alert.kind || '');
+  const known = ALERT_TEXT[kind];
+  const n = Number(alert.occurrences) || 1;
+  return {
+    title: known ? known.title : (kind.replace(/_/g, ' ') || 'Needs a look'),
+    advice: known ? known.advice : 'Something needs a person to look at it.',
+    detail: String(alert.message || ''),
+    seen: n > 1 ? `seen ${n} times` : '',
+  };
+}
+
+// openAlerts keeps the alerts nobody has resolved, newest activity first.
+export function openAlerts(alerts) {
+  return (alerts || []).filter((a) => !a.resolvedAt)
+    .sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
+}
+
 // stats are the headline numbers over the orders on the board.
 export function stats(orders) {
   const out = { active: 0, onTheRoad: 0, takenCents: 0, refundsPending: 0, attention: 0 };

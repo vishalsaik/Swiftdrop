@@ -68,6 +68,11 @@ type fakeDB struct {
 	// events is the payment history FakeDB answers with, keyed by ORDER id.
 	events    map[string][]domain.PaymentEvent
 	eventsErr error
+	// alerts is what RaiseAlert has kept; alertErr makes every alert call fail.
+	alerts      []domain.Alert
+	nextAlertID int64
+	alertErr    error
+	alertBlock  bool // RaiseAlert waits for its context, like a database that hangs
 	createErr error
 	readyErr  error
 	acceptErr error

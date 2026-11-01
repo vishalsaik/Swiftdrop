@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COLUMNS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline, noticeFor,
-  stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent,
+  stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent, describeAlert, openAlerts,
 } from '../static/logic.js';
 
 const order = (over = {}) => ({
@@ -213,6 +213,39 @@ test('an unknown ledger kind or odd detail still reads sensibly', () => {
   assert.equal(describeEvent({ kind: 'declined', detail: 'a=b is not a key' }).note, 'b is not a key');
   assert.equal(describeEvent({ kind: 'claimed', detail: 'amount_cents=abc' }).note, 'abc');
   assert.equal(describeEvent({ kind: 'declined', detail: 'Card = declined' }).note, 'Card = declined');
+});
+
+test('an alert is described in words a person can act on', () => {
+  for (const kind of ['unrecorded_charge', 'contradicting_event', 'refund_given_up', 'refund_unrecorded']) {
+    const d = describeAlert({ kind, message: 'm', occurrences: 1 });
+    assert.ok(d.title.length > 5 && d.advice.length > 20, kind);
+    assert.equal(d.detail, 'm');
+    assert.equal(d.seen, '');
+  }
+  // each kind says something different, so they are not mixed up
+  const titles = new Set(['unrecorded_charge', 'contradicting_event', 'refund_given_up', 'refund_unrecorded'].map((kind) => describeAlert({ kind }).title));
+  assert.equal(titles.size, 4);
+  // refunding twice is the costly mistake, so that alert says not to
+  assert.match(describeAlert({ kind: 'refund_unrecorded' }).advice, /not refund again/i);
+  assert.equal(describeAlert({ kind: 'refund_given_up', occurrences: 3 }).seen, 'seen 3 times');
+  assert.equal(describeAlert({ kind: 'refund_given_up', occurrences: 'x' }).seen, '');
+});
+
+test('an alert of a kind the page does not know is still shown', () => {
+  const d = describeAlert({ kind: 'needs_review', message: 'hmm' });
+  assert.equal(d.title, 'needs review');
+  assert.equal(d.detail, 'hmm');
+  assert.equal(describeAlert({}).title, 'Needs a look');
+});
+
+test('only open alerts are listed, the most recently seen first', () => {
+  const list = openAlerts([
+    { id: 1, lastSeenAt: '2026-01-01T10:00:00Z' },
+    { id: 2, lastSeenAt: '2026-01-01T12:00:00Z' },
+    { id: 3, lastSeenAt: '2026-01-01T13:00:00Z', resolvedAt: '2026-01-01T13:05:00Z' },
+  ]);
+  assert.deepEqual(list.map((a) => a.id), [2, 1]);
+  assert.deepEqual(openAlerts(null), []);
 });
 
 test('stats count what matters', () => {

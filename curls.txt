@@ -392,6 +392,35 @@ curl -i http://127.0.0.1:8080/orders/no-such-order/payment-history
 
 
 # ---------------------------------------------------------------------------
+# Alerts. Problems only a person can fix (an unrecorded charge, a contradicting
+# event, a refund given up on) are kept until someone resolves them. The server
+# raises them itself; here one is raised by hand the way the server does it, so
+# you can see the list, the repeat count and the resolve call.
+# ---------------------------------------------------------------------------
+
+## Nothing open yet — 200 {"alerts":[]}
+curl -s http://127.0.0.1:8080/alerts
+
+## Raise the same alert twice: it stays ONE alert and "occurrences" goes to 2
+docker exec postgres psql -U postgres -d swiftdrop -c "INSERT INTO alerts (kind, subject, order_id, message) VALUES ('refund_given_up', 'curl-demo', 'refund-1', 'demo: could not be refunded') ON CONFLICT (kind, subject) WHERE resolved_at IS NULL DO UPDATE SET occurrences = alerts.occurrences + 1, last_seen_at = now();"
+docker exec postgres psql -U postgres -d swiftdrop -c "INSERT INTO alerts (kind, subject, order_id, message) VALUES ('refund_given_up', 'curl-demo', 'refund-1', 'demo: could not be refunded') ON CONFLICT (kind, subject) WHERE resolved_at IS NULL DO UPDATE SET occurrences = alerts.occurrences + 1, last_seen_at = now();"
+curl -s http://127.0.0.1:8080/alerts
+
+## Resolve it with a note — 200 with resolvedAt and resolvedNote
+ID=$(curl -s http://127.0.0.1:8080/alerts | sed -E 's/.*"id":([0-9]+).*/\1/')
+curl -s -X POST http://127.0.0.1:8080/alerts/$ID/resolve -H "Content-Type: application/json" -d '{"note":"refunded by hand"}'
+
+## Resolving it again — 409; an unknown id — 404; a bad id — 400
+curl -i -X POST http://127.0.0.1:8080/alerts/$ID/resolve
+curl -i -X POST http://127.0.0.1:8080/alerts/999999/resolve
+curl -i -X POST http://127.0.0.1:8080/alerts/abc/resolve
+
+## It is gone from the open list but still there with ?all=true
+curl -s http://127.0.0.1:8080/alerts
+curl -s "http://127.0.0.1:8080/alerts?all=true"
+
+
+# ---------------------------------------------------------------------------
 # CORS. Allowed origins: http://localhost:3000 and http://localhost:5173.
 # curl is not a browser, so it never enforces CORS; these show the headers
 # a browser would act on. Look for Access-Control-* and Vary in the output.

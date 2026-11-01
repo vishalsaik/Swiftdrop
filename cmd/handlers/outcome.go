@@ -36,7 +36,8 @@ func (s *Server) recordOrphanedOutcome(ctx context.Context, p domain.Payment, st
 func (s *Server) keepOutcome(w http.ResponseWriter, r *http.Request, p domain.Payment, status domain.PaymentStatus, providerPaymentID, reason string, cause error) {
 	if err := s.recordOrphanedOutcome(r.Context(), p, status, providerPaymentID, reason); err != nil {
 		// The money may have moved and we could not write it down.
-		log.Printf("NEEDS REVIEW: payment %s for order %s was answered %q after the order moved on (%v), and the answer could not be recorded: %v",
+		s.raiseAlert(r.Context(), domain.AlertUnrecordedCharge, p.ID, p.OrderID,
+			"payment %s for order %s was answered %q after the order moved on (%v), and the answer could not be recorded: %v",
 			p.ID, p.OrderID, status, cause, err)
 		writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
 		return

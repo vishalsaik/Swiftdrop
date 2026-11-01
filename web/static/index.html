@@ -31,6 +31,7 @@
 
     <div class="tools">
       <span class="live" id="live" role="status"><i></i><span id="liveText">Connecting</span></span>
+      <button class="btn ghost alertsbtn" id="alertsBtn" type="button" aria-haspopup="dialog">Alerts <span class="badge" id="alertCount" hidden>0</span></button>
       <button class="btn ghost icon" id="theme" type="button" aria-label="Switch between dark and light" title="Switch theme">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
       </button>
@@ -93,6 +94,17 @@
         <button class="btn primary" type="submit" id="sheetSubmit">Place order</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog class="sheet" id="alertsSheet" aria-labelledby="alertsTitle">
+    <div class="alerts-pane">
+      <header>
+        <h2 id="alertsTitle">Alerts</h2>
+        <button class="btn ghost icon" type="button" id="alertsClose" aria-label="Close">&times;</button>
+      </header>
+      <p class="tip">Problems the system cannot settle by itself. They stay here until someone resolves them.</p>
+      <ul class="alert-list" id="alertList"></ul>
+    </div>
   </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

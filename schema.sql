@@ -142,3 +142,21 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS payment_events_no_update ON payment_events;
 CREATE TRIGGER payment_events_no_update BEFORE UPDATE ON payment_events
     FOR EACH ROW EXECUTE FUNCTION payment_events_append_only();
+
+-- Things a person has to look at. Until now they were log lines (NEEDS REVIEW);
+-- an alert is the same signal where the dashboard can show it and someone can mark
+-- it done. An open alert is unique per (kind, subject): the same problem raised
+-- again (a webhook delivered ten times) bumps `occurrences` instead of piling up.
+CREATE TABLE IF NOT EXISTS alerts (
+    id            BIGSERIAL PRIMARY KEY,
+    kind          TEXT NOT NULL,                 -- what sort of problem
+    subject       TEXT NOT NULL,                 -- what it is about, usually a payment id
+    order_id      TEXT NOT NULL DEFAULT '',      -- the order it concerns, to open it from the dashboard
+    message       TEXT NOT NULL,
+    occurrences   INTEGER NOT NULL DEFAULT 1 CHECK (occurrences >= 1),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at   TIMESTAMPTZ,
+    resolved_note TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS alerts_one_open_per_subject ON alerts (kind, subject) WHERE resolved_at IS NULL;

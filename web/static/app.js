@@ -5,6 +5,7 @@
 import {
   COLUMNS, STATE_LABELS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline,
   noticeFor, stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent,
+  describeAlert, openAlerts,
 } from './logic.js';
 
 const POLL_MS = 3000;
@@ -26,6 +27,8 @@ const state = {
   history: new Map(),     // order id -> its payment history (the ledger)
   historyKey: new Map(),  // order id -> what the history was last read for
   lastFocus: null,
+  alerts: [],             // the open alerts, from GET /alerts
+  alertSig: '',           // what the open alerts list last drew, so a poll does not redraw it
 };
 
 // ---------- tiny helpers ----------
@@ -182,6 +185,59 @@ function renderStats() {
   ];
   if (s.attention) items.push(['Needs a look', String(s.attention), 'warn']);
   $('#stats').replaceChildren(...items.map(([label, value, cls]) => h('div', { class: `stat ${cls}` }, h('dt', { text: label }), h('dd', { text: value }))));
+}
+
+// ---------- alerts ----------
+
+function renderAlerts() {
+  const open = state.alerts;
+  const badge = $('#alertCount');
+  badge.hidden = open.length === 0;
+  badge.textContent = String(open.length);
+  $('#alertsBtn').setAttribute('aria-label', open.length ? `Alerts, ${open.length} open` : 'Alerts, none open');
+  if (!$('#alertsSheet').open) return;
+  // The list is drawn again only when it changed, so a poll never takes the
+  // focus out of a note someone is typing.
+  const sig = open.map((a) => `${a.id}:${a.occurrences}:${a.lastSeenAt}:${state.byId.has(a.orderId)}`).join('|');
+  if (sig === state.alertSig) return;
+  state.alertSig = sig;
+  if (open.length === 0) {
+    $('#alertList').replaceChildren(h('li', { class: 'alert-empty', text: 'Nothing needs a look.' }));
+    return;
+  }
+  // a note already typed survives a real change to the list
+  const notes = new Map([...$('#alertList').querySelectorAll('input')].map((i) => [i.dataset.id, i.value]));
+  $('#alertList').replaceChildren(...open.map((alert) => alertItem(alert, notes.get(String(alert.id)) || '')));
+}
+
+function alertItem(alert, note) {
+  const d = describeAlert(alert);
+  const input = h('input', { 'aria-label': 'Note for resolving', placeholder: 'What was done (optional)', dataset: { id: String(alert.id) }, value: note });
+  return h('li', {},
+    h('h3', { text: d.title }),
+    h('p', { text: d.advice }),
+    h('div', { class: 'detail', text: d.detail }),
+    h('div', { class: 'meta', text: [alert.orderId ? `order ${alert.orderId}` : '', d.seen, timeAgo(alert.lastSeenAt)].filter(Boolean).join(' / ') }),
+    h('div', { class: 'row' },
+      input,
+      alert.orderId && state.byId.has(alert.orderId)
+        ? h('button', { class: 'btn ghost', type: 'button', text: 'Open order', onclick: () => { $('#alertsSheet').close(); openDrawer(alert.orderId); } }) : null,
+      h('button', { class: 'btn primary', type: 'button', text: 'Resolve', onclick: () => resolveAlert(alert, input.value.trim()) })));
+}
+
+async function resolveAlert(alert, note) {
+  const res = await api('POST', `/alerts/${alert.id}/resolve`, note ? { note } : undefined);
+  // 409 means somebody else already did it, which is what the person wanted
+  if (res.ok || res.status === 409) toast('Alert resolved', 'ok');
+  else toast(errorMessage(res.status, res.data), 'bad');
+  await refreshAlerts();
+}
+
+async function refreshAlerts() {
+  const res = await api('GET', '/alerts');
+  if (!res.ok) return; // the board shows the offline banner; the alerts keep their last answer
+  state.alerts = openAlerts(res.data.alerts);
+  renderAlerts();
 }
 
 // ---------- customer messages ----------
@@ -523,6 +579,7 @@ async function refresh() {
     renderStats();
     renderBoard();
     if (state.selected) renderDrawer();
+    await refreshAlerts();
   } finally {
     inflight = false;
   }
@@ -547,7 +604,9 @@ function init() {
   $('#sample').addEventListener('click', fillSample);
   $('#orderForm').addEventListener('submit', submitOrder);
   $('#scrim').addEventListener('click', closeDrawer);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').open) closeDrawer(); });
+  $('#alertsBtn').addEventListener('click', () => { state.alertSig = null; $('#alertsSheet').showModal(); renderAlerts(); });
+  $('#alertsClose').addEventListener('click', () => $('#alertsSheet').close());
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').open && !$('#alertsSheet').open) closeDrawer(); });
   $('#theme').addEventListener('click', () => {
     const dark = document.documentElement.dataset.theme
       ? document.documentElement.dataset.theme === 'dark'

@@ -87,7 +87,9 @@ func main() {
 	jobDone := make(chan struct{})
 	go func() {
 		defer close(jobDone)
-		refund.NewService(dbConn, refunder).Run(ctx, refundInterval)
+		refundService := refund.NewService(dbConn, refunder)
+		refundService.Alerts = dbConn
+		refundService.Run(ctx, refundInterval)
 	}()
 	fmt.Printf("refund job running every %s\n", refundInterval)
 
