@@ -58,10 +58,14 @@ func (s *Server) PaymentWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One line per verified event, so a deployment can see that the provider's
+	// events arrive and that they name one of our payments.
 	if event.Kind == payment.EventRefundFailed {
+		log.Printf("webhook %s: refund %s of provider payment %s failed (%s)", event.ID, event.RefundID, event.ProviderPaymentID, event.Reason)
 		s.recordRefundFailure(w, r, event)
 		return
 	}
+	log.Printf("webhook %s: payment %s is %s at the provider (%s)", event.ID, event.PaymentID, event.Status, event.ProviderPaymentID)
 	s.recordEvent(w, r, event)
 }
 
@@ -77,7 +81,7 @@ func (s *Server) recordRefundFailure(w http.ResponseWriter, r *http.Request, eve
 	switch {
 	case errors.Is(err, ports.ErrPaymentNotFound):
 		log.Printf("webhook %s: no payment here has the provider id %s, nothing to record", event.ID, event.ProviderPaymentID)
-		writeWebhookAck(w, "unknown payment")
+		ackEvent(w, event, "unknown payment")
 	case err != nil:
 		log.Printf("webhook %s: database error reversing refund %s: %v", event.ID, event.RefundID, err)
 		writeError(w, http.StatusInternalServerError, "Failed to record the refund due to an internal server error")
@@ -85,19 +89,19 @@ func (s *Server) recordRefundFailure(w http.ResponseWriter, r *http.Request, eve
 		s.raiseAlert(r.Context(), domain.AlertRefundReversed, p.ID, p.OrderID,
 			"webhook %s says refund %s of payment %s for order %s failed after the provider accepted it (%s): the customer has not got their money back",
 			event.ID, event.RefundID, p.ID, p.OrderID, event.Reason)
-		writeWebhookAck(w, "recorded")
+		ackEvent(w, event, "recorded")
 	case p.RefundStatus == domain.RefundInProgress:
 		// Our own job is still making the refund and has not written it down.
 		// Answer 5xx so the provider delivers the report again once it has.
 		log.Printf("webhook %s: refund %s of payment %s failed while our refund job is still working on it; asking for a redelivery", event.ID, event.RefundID, p.ID)
 		writeError(w, http.StatusServiceUnavailable, "the refund is still being recorded, try again")
 	case p.RefundStatus == domain.RefundFailed:
-		writeWebhookAck(w, "already recorded")
+		ackEvent(w, event, "already recorded")
 	default:
 		// A refund of ours that this is not (none made, or another one's id).
 		log.Printf("webhook %s: refund %s failed but it is not the refund recorded for payment %s (%q, refund %q)",
 			event.ID, event.RefundID, p.ID, p.RefundStatus, p.RefundID)
-		writeWebhookAck(w, "not our refund")
+		ackEvent(w, event, "not our refund")
 	}
 }
 
@@ -108,7 +112,7 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 	case err == nil:
 	case errors.Is(err, ports.ErrPaymentNotFound):
 		log.Printf("webhook %s: no payment %s here, nothing to record", event.ID, event.PaymentID)
-		writeWebhookAck(w, "unknown payment")
+		ackEvent(w, event, "unknown payment")
 		return
 	default:
 		log.Printf("webhook %s: database error reading payment %s: %v", event.ID, event.PaymentID, err)
@@ -122,7 +126,7 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 			s.raiseAlert(r.Context(), domain.AlertContradictingEvent, p.ID, p.OrderID,
 				"webhook %s says payment %s is %s but we recorded %s", event.ID, p.ID, event.Status, p.Status)
 		}
-		writeWebhookAck(w, "already recorded")
+		ackEvent(w, event, "already recorded")
 		return
 	}
 
@@ -142,16 +146,23 @@ func (s *Server) recordEvent(w http.ResponseWriter, r *http.Request, event payme
 		log.Printf("webhook %s: database error recording payment %s: %v", event.ID, p.ID, err)
 		writeError(w, http.StatusInternalServerError, "Failed to record the payment due to an internal server error")
 	case result == settle.Recorded:
-		writeWebhookAck(w, "recorded")
+		ackEvent(w, event, "recorded")
 	case result == settle.AlreadyRecorded:
-		writeWebhookAck(w, "already recorded")
+		ackEvent(w, event, "already recorded")
 	default: // settle.OrderMovedOn
 		if event.Status == domain.PaymentAuthorized {
 			log.Printf("REFUND DUE: webhook %s says payment %s for order %s was authorized after the order moved on",
 				event.ID, p.ID, p.OrderID)
 		}
-		writeWebhookAck(w, "order moved on")
+		ackEvent(w, event, "order moved on")
 	}
+}
+
+// ackEvent answers a verified event with 200 and logs what was done with it, so the
+// log shows every event that arrived and what became of it, not only the problems.
+func ackEvent(w http.ResponseWriter, event payment.Event, outcome string) {
+	log.Printf("webhook %s: %s", event.ID, outcome)
+	writeWebhookAck(w, outcome)
 }
 
 // writeWebhookAck answers 200 so the provider stops retrying this event. The
