@@ -4,7 +4,7 @@
 // text nodes, never parsed as markup, so order data can never become markup.
 import {
   COLUMNS, STATE_LABELS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline,
-  noticeFor, stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo,
+  noticeFor, stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent,
 } from './logic.js';
 
 const POLL_MS = 3000;
@@ -23,6 +23,8 @@ const state = {
   method: 'pm_card_visa',
   busy: false,
   drawerSig: '',
+  history: new Map(),     // order id -> its payment history (the ledger)
+  historyKey: new Map(),  // order id -> what the history was last read for
   lastFocus: null,
 };
 
@@ -240,13 +242,28 @@ function closeDrawer() {
 }
 
 function drawerSignature(o) {
-  return `${signature(o)}|${o.payment ? o.payment.refundStatus : ''}|${state.payOpen}|${state.confirming}|${state.busy}`;
+  return `${signature(o)}|${o.payment ? o.payment.refundStatus : ''}|${state.payOpen}|${state.confirming}|${state.busy}|${(state.history.get(o.id) || []).length}`;
+}
+
+// The history is read again whenever what the order shows changes, not on every
+// poll, so an open drawer does not ask the server the same question every 3 seconds.
+function ensureHistory(order) {
+  const key = `${signature(order)}|${order.payment ? order.payment.refundStatus : ''}`;
+  if (state.historyKey.get(order.id) === key) return;
+  state.historyKey.set(order.id, key);
+  api('GET', `/orders/${encodeURIComponent(order.id)}/payment-history`).then((res) => {
+    if (!res.ok) { state.historyKey.delete(order.id); return; }
+    state.history.set(order.id, res.data.events || []);
+    state.drawerSig = '';
+    if (state.selected === order.id) renderDrawer();
+  });
 }
 
 function renderDrawer() {
   const order = state.byId.get(state.selected);
   const drawer = $('#drawer');
   if (!order) { drawer.replaceChildren(); return; }
+  ensureHistory(order);
   const sig = drawerSignature(order);
   if (sig === state.drawerSig) return;
   state.drawerSig = sig;
@@ -268,6 +285,7 @@ function renderDrawer() {
       h('section', {}, h('h3', { text: 'Journey' }), h('ol', { class: 'journey' }, rows)),
       h('section', {}, h('h3', { text: 'Items' }), itemsTable(order)),
       h('section', {}, h('h3', { text: 'Money' }), moneyList(order, pay)),
+      order.payment ? h('section', {}, h('h3', { text: 'Payment history' }), historyList(order)) : null,
       h('section', {}, h('h3', { text: 'Actions' }), actionsBlock(order))));
 }
 
@@ -291,6 +309,20 @@ function moneyList(order, pay) {
     order.foodReady ? ['Food ready', timeAgo(order.foodReady)] : null,
   ].filter(Boolean);
   return h('dl', { class: 'kv' }, entries.map(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]));
+}
+
+function historyList(order) {
+  const events = state.history.get(order.id);
+  if (!events) return h('p', { class: 'why', text: 'Loading' });
+  if (events.length === 0) return h('p', { class: 'why', text: 'Nothing recorded yet.' });
+  return h('ol', { class: 'history' }, events.map((ev) => {
+    const { label, note } = describeEvent(ev);
+    const when = new Date(ev.at);
+    return h('li', {},
+      h('time', { datetime: ev.at, text: Number.isNaN(when.getTime()) ? '' : when.toLocaleTimeString([], { hour12: false }) }),
+      h('span', { class: 'what', text: label }),
+      note ? h('span', { class: 'note', text: note }) : null);
+  }));
 }
 
 function actionsBlock(order) {

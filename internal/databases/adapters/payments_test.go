@@ -23,6 +23,8 @@ func paidOrder(t *testing.T, db *DBAdapter, orderID string) {
 	t.Helper()
 	newRow(t, db, orderID, domain.OrderCreated) // its cleanup runs last
 	t.Cleanup(func() {
+		// The history goes first: it references the payment, deliberately.
+		_, _ = db.Pool.Exec(context.Background(), "DELETE FROM payment_events WHERE payment_id IN (SELECT id FROM payments WHERE order_id = $1)", orderID)
 		_, _ = db.Pool.Exec(context.Background(), "DELETE FROM payments WHERE order_id = $1", orderID)
 	})
 }

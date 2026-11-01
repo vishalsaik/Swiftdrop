@@ -188,3 +188,14 @@ func (f *fakeDB) FinishPayment(_ context.Context, paymentID string, status domai
 	f.stateWrites = append(f.stateWrites, o.State)
 	return o, nil
 }
+
+// ListPaymentEvents returns what a test put in f.events for the order (the
+// real history is written by the database's trigger, which is tested in the adapter).
+func (f *fakeDB) ListPaymentEvents(_ context.Context, orderID string) ([]domain.PaymentEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.eventsErr != nil {
+		return nil, f.eventsErr
+	}
+	return f.events[orderID], nil
+}

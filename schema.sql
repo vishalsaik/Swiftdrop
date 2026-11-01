@@ -62,3 +62,76 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_lease_expires_at TIMESTAMPT
 -- Keeps "which refunds are due" cheap: only authorized payments not yet finished.
 CREATE INDEX IF NOT EXISTS payments_refund_due_idx ON payments (updated_at)
     WHERE status = 'authorized' AND refund_status IN ('none', 'refunding');
+
+-- The ledger: an append-only history of everything that happens to a payment.
+-- `payments` holds only the latest state of each payment; this table keeps how it
+-- got there (claimed, taken over, authorized or declined, every refund attempt).
+--
+-- It is written by a trigger on `payments`, not by application code, so it is part
+-- of the same transaction as the change it describes: a change that is rolled back
+-- leaves no trace, and no code path can forget to record one. Rows can never be
+-- updated. The foreign key has no cascade on purpose: a payment cannot be deleted
+-- while it has a history.
+CREATE TABLE IF NOT EXISTS payment_events (
+    id         BIGSERIAL PRIMARY KEY,
+    payment_id TEXT NOT NULL REFERENCES payments (id),
+    at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    kind       TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS payment_events_payment_idx ON payment_events (payment_id, id);
+
+CREATE OR REPLACE FUNCTION payment_ledger() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO payment_events (payment_id, kind, detail)
+        VALUES (NEW.id, 'claimed', 'amount_cents=' || NEW.amount_cents);
+        RETURN NEW;
+    END IF;
+
+    -- the payment itself
+    IF OLD.status IS DISTINCT FROM NEW.status THEN
+        INSERT INTO payment_events (payment_id, kind, detail)
+        VALUES (NEW.id, NEW.status,
+                CASE WHEN NEW.status = 'authorized' THEN 'provider_payment_id=' || NEW.provider_payment_id
+                     ELSE NEW.reason END);
+    ELSIF NEW.status = 'processing' AND NEW.lease_expires_at > OLD.lease_expires_at THEN
+        -- a takeover moves the deadline forward; nothing else does
+        INSERT INTO payment_events (payment_id, kind, detail) VALUES (NEW.id, 'taken_over', '');
+    END IF;
+
+    -- its refund
+    IF OLD.refund_status IS DISTINCT FROM NEW.refund_status THEN
+        INSERT INTO payment_events (payment_id, kind, detail)
+        VALUES (NEW.id,
+                CASE NEW.refund_status WHEN 'refunding' THEN 'refund_started'
+                                       WHEN 'refunded'  THEN 'refunded'
+                                       WHEN 'failed'    THEN 'refund_failed'
+                                       ELSE 'refund_' || NEW.refund_status END,
+                CASE NEW.refund_status WHEN 'refunding' THEN 'attempt ' || NEW.refund_attempts
+                                       WHEN 'refunded'  THEN 'refund_id=' || NEW.refund_id
+                                       ELSE NEW.refund_error END);
+    ELSIF NEW.refund_status = 'refunding' AND NEW.refund_attempts > OLD.refund_attempts THEN
+        INSERT INTO payment_events (payment_id, kind, detail)
+        VALUES (NEW.id, 'refund_started', 'attempt ' || NEW.refund_attempts);
+    ELSIF NEW.refund_status = 'refunding' AND OLD.refund_error IS DISTINCT FROM NEW.refund_error AND NEW.refund_error <> '' THEN
+        INSERT INTO payment_events (payment_id, kind, detail)
+        VALUES (NEW.id, 'refund_attempt_failed', NEW.refund_error);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS payments_ledger ON payments;
+CREATE TRIGGER payments_ledger AFTER INSERT OR UPDATE ON payments
+    FOR EACH ROW EXECUTE FUNCTION payment_ledger();
+
+CREATE OR REPLACE FUNCTION payment_events_append_only() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'payment_events is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS payment_events_no_update ON payment_events;
+CREATE TRIGGER payment_events_no_update BEFORE UPDATE ON payment_events
+    FOR EACH ROW EXECUTE FUNCTION payment_events_append_only();

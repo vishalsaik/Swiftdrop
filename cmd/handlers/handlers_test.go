@@ -65,6 +65,9 @@ type fakeDB struct {
 
 	getErr    error
 	listErr   error
+	// events is the payment history FakeDB answers with, keyed by ORDER id.
+	events    map[string][]domain.PaymentEvent
+	eventsErr error
 	createErr error
 	readyErr  error
 	acceptErr error

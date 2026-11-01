@@ -205,6 +205,11 @@ button, input, select { font: inherit; color: inherit; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 
+.history { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font: 500 12.5px var(--font-mono); }
+.history li { display: grid; grid-template-columns: 64px 1fr; column-gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.history time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.history .what { color: var(--text); font-weight: 600; }
+.history .note { grid-column: 2; color: var(--muted); overflow-wrap: anywhere; }
 .actions { display: grid; gap: 10px; }
 .actions .row { display: flex; gap: 10px; flex-wrap: wrap; }
 .actions .btn { padding: 12px 18px; font-size: 14px; }
