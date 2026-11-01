@@ -16,6 +16,7 @@ import (
 
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
+	"swiftdrop/internal/paying"
 )
 
 // ---------------------------------------------------------------------------
@@ -77,8 +78,8 @@ func TestNewPaymentIsRecordedAsAuthorized(t *testing.T) {
 	}
 	// the claim carries the 60 second lease; the fake stamps both times from
 	// one clock reading, so the difference is exactly the lease it was given
-	if got := p.LeaseExpiresAt.Sub(p.CreatedAt); got != paymentLease {
-		t.Errorf("lease = %v, want %v", got, paymentLease)
+	if got := p.LeaseExpiresAt.Sub(p.CreatedAt); got != paying.Lease {
+		t.Errorf("lease = %v, want %v", got, paying.Lease)
 	}
 	wantWrites(t, db, domain.OrderPaymentPending, domain.OrderPaid)
 }
@@ -250,8 +251,8 @@ func TestRetryAfterTheLeaseExpiredTakesOverWithTheSamePaymentId(t *testing.T) {
 		t.Errorf("payment = %+v, want the original id, authorized", p)
 	}
 	// the takeover renewed the lease for a full period from now
-	if renewed := time.Until(p.LeaseExpiresAt); renewed < paymentLease-5*time.Second || renewed > paymentLease {
-		t.Errorf("lease renewed to %v from now, want about %v", renewed, paymentLease)
+	if renewed := time.Until(p.LeaseExpiresAt); renewed < paying.Lease-5*time.Second || renewed > paying.Lease {
+		t.Errorf("lease renewed to %v from now, want about %v", renewed, paying.Lease)
 	}
 	if got := db.orders["o1"].State; got != domain.OrderPaid {
 		t.Errorf("order state = %s, want paid", got)

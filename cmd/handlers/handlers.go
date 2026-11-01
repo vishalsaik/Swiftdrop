@@ -8,11 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"time"
 
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/order"
+	"swiftdrop/internal/paying"
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/validation"
 
@@ -309,113 +309,21 @@ func (s *Server) AcceptOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
-// paymentLease is how long a request that has claimed a payment may work on it
-// before a later request is allowed to take it over. It must be longer than the
-// slowest legitimate provider call (the Stripe client gives up after 30s), or a
-// second request could take over a payment that is still being processed.
-const paymentLease = 60 * time.Second
-
-// paymentTakeoverCutoff is how old a payment may be and still be sent to the
-// provider again by a retry. The provider forgets an idempotency key after a
-// while (Stripe: at least 24 hours, so this stays well inside it); a send after
-// that is a brand new charge.
-const paymentTakeoverCutoff = 20 * time.Hour
-
 // PayOrder pays for an order, and is idempotent: calling it again for the same
-// order never charges twice. The payment record decides what a request is.
-//
-//	no payment for the order  -> a NEW payment: claim it, then authorize, then record the result
-//	payment authorized        -> a retry: replay the success
-//	payment declined          -> a retry: replay the decline
-//	payment abandoned         -> the provider never saw it: a NEW payment
-//	payment processing        -> a retry: 409 while its lease is live; once the
-//	                             lease has expired, take it over and ask the
-//	                             provider again with the SAME payment id, unless
-//	                             it is so old that the provider may have forgotten
-//	                             that id (then it is left for a person)
-//	payment needs_review      -> 409: a person is looking at it
-//
-// The claim comes BEFORE the provider call. It is what stops two simultaneous
-// requests from both charging: the database lets exactly one of them in.
+// order never charges twice. What a request means, and what it does, is decided by
+// internal/paying; this reads the request and writes the answer.
 func (s *Server) PayOrder(w http.ResponseWriter, r *http.Request) {
 	o, ok := s.loadOrder(w, r)
 	if !ok {
 		return
 	}
-	p, err := s.Lookup.GetPaymentByOrder(r.Context(), o.ID)
-	switch {
-	case err == nil && p.Status == domain.PaymentDeclined && o.State == domain.OrderCreated:
-		// The last attempt was declined and the order is open again (a decline
-		// returns it to created while attempts are left), so this request is a NEW
-		// attempt with a new payment, not a retry of the declined one.
-		s.startPayment(w, r, o)
-	case err == nil && p.Status == domain.PaymentAbandoned:
-		// The provider never saw the last attempt, so nothing was charged and a new
-		// payment is the right answer. If the order is no longer open (it was
-		// cancelled), startPayment refuses it like any other payment on that order.
-		s.startPayment(w, r, o)
-	case err == nil:
-		s.continuePayment(w, r, o, p)
-	case errors.Is(err, ports.ErrPaymentNotFound):
-		s.startPayment(w, r, o)
-	default:
-		log.Printf("database query error for the payment of %s: %v", o.ID, err)
-		writeError(w, http.StatusInternalServerError, "Failed to look up the payment due to an internal server error")
-	}
+	writePayOutcome(w, s.payService().Pay(r.Context(), o, func() (string, error) { return payMethod(r) }))
 }
 
-// providerFor picks the payment provider (Strategy, via the Factory) for the
-// order's payment type. If it cannot, it has already answered the request.
-func (s *Server) providerFor(w http.ResponseWriter, o domain.Order) (payment.PaymentProvider, bool) {
-	provider, err := s.Payment.For(o.PaymentType)
-	if err != nil {
-		// Our stored data, not this request, named a type we can't handle
-		// (e.g. an order created before the payment_type column existed), so
-		// this is a 500, and the real cause goes to the log, not the client.
-		log.Printf("no payment provider for order %s (payment type %q): %v", o.ID, o.PaymentType, err)
-		writeError(w, http.StatusInternalServerError, "Payment is not available for this order")
-		return nil, false
-	}
-	return provider, true
-}
-
-// startPayment handles an order that has no payment yet.
-func (s *Server) startPayment(w http.ResponseWriter, r *http.Request, o domain.Order) {
-	if !order.CanTransition(o.State, domain.OrderPaymentPending) {
-		writeIllegalTransition(w, o, domain.OrderPaid)
-		return
-	}
-	// The provider lookup can fail, so it runs before anything is saved: a
-	// failure leaves the order untouched (still "created"), not stranded in
-	// payment_pending with a payment nobody will finish.
-	provider, ok := s.providerFor(w, o)
-	if !ok {
-		return
-	}
-	// Refuse a request the provider could never fulfil before claiming anything:
-	// a claim that is then abandoned would leave the payment stuck in processing.
-	method, ok := s.paymentMethod(w, r, o, provider)
-	if !ok {
-		return
-	}
-	// The claim. The payment row and the order's move to payment_pending are
-	// written in one transaction, and only if the order has no payment yet and
-	// is still in the state we read. Of any number of simultaneous requests,
-	// exactly one gets claimed = true; the rest never reach the provider.
-	claim := domain.Payment{ID: uuid.New().String(), OrderID: o.ID, AmountCents: o.TotalCents()}
-	p, claimed, err := s.DB.StartPayment(r.Context(), claim, paymentLease, string(o.State), string(domain.OrderPaymentPending))
-	if err != nil {
-		log.Printf("database error starting the payment of %s: %v", o.ID, err)
-		writeWriteError(w, o.ID, err, "Failed to start payment due to an internal server error")
-		return
-	}
-	if !claimed {
-		// Another request claimed it between our lookup and our claim, so this
-		// one is a retry after all.
-		s.continuePayment(w, r, o, p)
-		return
-	}
-	s.authorize(w, r, p, provider, method)
+// payService builds the service from the server's current parts, so what a test
+// or main swaps in (the payment lookup, the router) is what it uses.
+func (s *Server) payService() *paying.Service {
+	return &paying.Service{DB: s.DB, Lookup: s.Lookup, Payment: s.Payment, Alert: s.raiseAlert}
 }
 
 // payBody is what /pay may carry: the payment method token the client got from
@@ -424,214 +332,41 @@ type payBody struct {
 	PaymentMethodID string `json:"paymentMethodId"`
 }
 
-// paymentMethod reads the payment method from the request body and lets the
-// provider refuse the request if it could never succeed (422), so that nothing
-// is claimed for it. A body that is not JSON is a 400, an oversized one a 413,
-// and no body at all is fine: it is just an empty method. If it cannot return
-// the method it has already answered the request.
-func (s *Server) paymentMethod(w http.ResponseWriter, r *http.Request, o domain.Order, provider payment.PaymentProvider) (string, bool) {
+// payMethod reads the payment method from the request body. A body that is not
+// JSON is a paying.BadBodyError, an oversized one paying.ErrBodyTooLarge, and no
+// body at all is fine: it is just an empty method. The service calls it only when
+// it needs the method, so a replay never reads the body.
+func payMethod(r *http.Request) (string, error) {
 	var body payBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return "", false
+			return "", paying.ErrBodyTooLarge
 		}
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return "", false
+		return "", &paying.BadBodyError{Err: err}
 	}
-	if checker, ok := provider.(payment.RequestChecker); ok {
-		req := domain.PaymentRequest{
-			OrderID: o.ID, AmountCents: o.TotalCents(), Currency: "USD", PaymentMethodID: body.PaymentMethodID,
-		}
-		if err := checker.Check(req); err != nil {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
-			return "", false
-		}
-	}
-	return body.PaymentMethodID, true
+	return body.PaymentMethodID, nil
 }
 
-// continuePayment handles an order that already has a payment, so this request
-// is a retry.
-func (s *Server) continuePayment(w http.ResponseWriter, r *http.Request, o domain.Order, p domain.Payment) {
-	switch p.Status {
-	case domain.PaymentAuthorized, domain.PaymentDeclined:
-		s.replayPayment(w, r, p)
-	case domain.PaymentProcessing:
-		s.takeOverPayment(w, r, o, p)
-	case domain.PaymentNeedsReview, domain.PaymentAbandoned:
-		s.answerUnsettled(w, r, o)
-	default:
-		log.Printf("payment %s for order %s has an unknown status %q", p.ID, p.OrderID, p.Status)
-		writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
-	}
-}
-
-// replayPayment answers a retry of a payment that is not ours to send again:
-// a finished one with its original outcome, without calling the provider again,
-// and one that is still being worked on, or checked by a person, with a 409.
-func (s *Server) replayPayment(w http.ResponseWriter, r *http.Request, p domain.Payment) {
-	switch p.Status {
-	case domain.PaymentAuthorized:
-		current, err := s.DB.GetOrderbyId(r.Context(), p.OrderID)
-		if err != nil {
-			log.Printf("database query error for %s: %v", p.OrderID, err)
-			writeWriteError(w, p.OrderID, err, "Internal database verification step failed")
-			return
-		}
-		writeJSON(w, http.StatusOK, current)
-	case domain.PaymentDeclined:
-		// Only a payment on an order that is no longer open is replayed (a
-		// declined payment on an open order starts a new attempt instead), so
-		// there is nothing left to retry.
-		writeDecline(w, declineReason(p.Reason), false, 0)
-	case domain.PaymentProcessing:
-		writeError(w, http.StatusConflict, fmt.Sprintf("the payment for order %s is still being processed, try again shortly", p.OrderID))
-	case domain.PaymentNeedsReview:
-		writeError(w, http.StatusConflict, fmt.Sprintf("the payment for order %s could not be confirmed automatically and is being checked, so it cannot be tried again yet", p.OrderID))
-	case domain.PaymentAbandoned:
-		writeError(w, http.StatusConflict, fmt.Sprintf("the earlier payment attempt for order %s ended without a charge, try again", p.OrderID))
-	default:
-		log.Printf("payment %s for order %s cannot be replayed from status %q", p.ID, p.OrderID, p.Status)
-		writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
-	}
-}
-
-// takeOverPayment handles a retry of a payment that is still processing. If
-// its lease is live, someone is working on it: say so. If the lease has run
-// out, its owner probably died, so take it over and ask the provider again with
-// the SAME payment id (the provider returns the saved answer, or runs it once),
-// never with a new one.
-func (s *Server) takeOverPayment(w http.ResponseWriter, r *http.Request, o domain.Order, p domain.Payment) {
-	// Everything that can refuse this request comes before the takeover, so a
-	// refused retry does not take the lease and leave the payment held.
-	provider, ok := s.providerFor(w, o)
-	if !ok {
-		return
-	}
-	method, ok := s.paymentMethod(w, r, o, provider)
-	if !ok {
-		return
-	}
-	// The provider keeps the answer to an idempotency key for a limited time
-	// (Stripe: at least 24 hours). Asking again after that would be a NEW
-	// charge, so a payment this old is never sent again: it is left for the
-	// reconciler to look up, and for a person if that does not settle it.
-	if time.Since(p.CreatedAt) >= paymentTakeoverCutoff {
-		_, marked, err := s.DB.MarkPaymentNeedsReview(r.Context(), p.ID, "no answer after "+paymentTakeoverCutoff.String())
-		if err != nil {
-			log.Printf("database error marking payment %s for review: %v", p.ID, err)
-			writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
-			return
-		}
-		if marked {
-			s.raiseAlert(r.Context(), domain.AlertPaymentNeedsReview, p.ID, p.OrderID,
-				"payment %s for order %s has had no answer for %s, so it was not sent again (the provider may have forgotten its key, and a second send could charge twice)",
-				p.ID, p.OrderID, time.Since(p.CreatedAt).Round(time.Minute))
-		}
-		s.answerUnsettled(w, r, o)
-		return
-	}
-	taken, ok, err := s.DB.TakeOverPayment(r.Context(), p.ID, paymentLease)
-	if err != nil {
-		log.Printf("database error taking over payment %s: %v", p.ID, err)
-		writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
-		return
-	}
-	if !ok {
-		// A live lease, or it finished while we were looking. Read it again.
-		s.answerUnsettled(w, r, o)
-		return
-	}
-	s.authorize(w, r, taken, provider, method)
-}
-
-// answerUnsettled answers a retry that cannot go on to the provider: it reads
-// the order's payment again and says what stands in the way, or replays the
-// answer if there is one by now.
-func (s *Server) answerUnsettled(w http.ResponseWriter, r *http.Request, o domain.Order) {
-	latest, err := s.DB.GetPaymentByOrder(r.Context(), o.ID)
-	if err != nil {
-		log.Printf("database query error for the payment of %s: %v", o.ID, err)
-		writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
-		return
-	}
-	s.replayPayment(w, r, latest)
-}
-
-// authorize asks the provider and records the answer. p is a payment this
-// request holds the claim on. The payment's own id is the provider's
-// idempotency key, and the amount is the one stored when it was claimed, so a
-// retry or a takeover asks the provider the very same question.
-func (s *Server) authorize(w http.ResponseWriter, r *http.Request, p domain.Payment, provider payment.PaymentProvider, method string) {
-	req := domain.PaymentRequest{
-		OrderID:         p.OrderID,
-		IdempotencyKey:  p.ID,
-		AmountCents:     p.AmountCents,
-		Currency:        "USD",
-		PaymentMethodID: method,
-	}
-	result, err := provider.Authorize(r.Context(), req)
-	if err != nil {
-		// We do not know what happened. The payment stays processing: once its
-		// lease runs out, a retry asks the provider again with the same id.
-		log.Printf("payment authorisation error for %s: %v", p.OrderID, err)
-		writeError(w, http.StatusInternalServerError, "Payment authorisation failed")
-		return
-	}
-	// A provider that returns neither a result nor an error broke its contract.
-	// We don't know what happened, so treat it like an error, not a decline.
-	if result == nil {
-		log.Printf("payment provider returned no result and no error for %s", p.OrderID)
-		writeError(w, http.StatusInternalServerError, "Payment authorisation failed")
-		return
-	}
-	switch result.Status {
-	case domain.PaymentAuthorized:
-		s.finishPayment(w, r, p, domain.PaymentAuthorized, result.PaymentID, "", domain.OrderPaid)
-	case domain.PaymentDeclined:
-		// A decline is a normal answer, not an error. The order goes back to
-		// created so the customer can try another method, until the attempts run
-		// out and it is cancelled. The client gets the reason either way.
-		s.finishPayment(w, r, p, domain.PaymentDeclined, result.PaymentID, declineReason(result.Reason), p.OrderStateAfterFailure())
-	default:
-		log.Printf("payment provider answered %q for %s, which is neither authorized nor declined", result.Status, p.OrderID)
-		writeError(w, http.StatusInternalServerError, "Payment authorisation failed")
-	}
-}
-
-// finishPayment records the outcome and moves the order, in one transaction,
-// and answers the request.
-func (s *Server) finishPayment(w http.ResponseWriter, r *http.Request, p domain.Payment, status domain.PaymentStatus, providerPaymentID, reason string, to domain.OrderState) {
-	updated, err := s.DB.FinishPayment(r.Context(), p.ID, status, providerPaymentID, reason,
-		string(domain.OrderPaymentPending), string(to))
-	switch {
-	case err == nil:
-		if status == domain.PaymentDeclined {
-			writeDecline(w, reason, to == domain.OrderCreated, max(domain.MaxPaymentAttempts-p.Attempt, 0))
-			return
-		}
-		writeJSON(w, http.StatusOK, updated)
-	case errors.Is(err, ports.ErrPaymentNotProcessing):
-		// Another request recorded the outcome first (for example a retry that
-		// took the payment over). Answer with theirs.
-		latest, getErr := s.DB.GetPaymentByOrder(r.Context(), p.OrderID)
-		if getErr != nil {
-			log.Printf("database query error for the payment of %s: %v", p.OrderID, getErr)
-			writeError(w, http.StatusInternalServerError, "Failed to read the payment due to an internal server error")
-			return
-		}
-		s.replayPayment(w, r, latest)
-	case errors.Is(err, ports.ErrStateConflict):
-		// The provider has answered but the order moved on while it was working
-		// (it was cancelled). The order stays as it is, but the provider's answer
-		// is a fact about money, so it is kept: an authorized payment on a
-		// cancelled order is what the refund job looks for.
-		s.keepOutcome(w, r, p, status, providerPaymentID, reason, err)
-	default:
-		log.Printf("database error recording payment %s for %s: %v", p.ID, p.OrderID, err)
-		writeWriteError(w, p.OrderID, err, "Failed to record the payment due to an internal server error")
+// writePayOutcome turns what became of a request to pay into the HTTP answer.
+func writePayOutcome(w http.ResponseWriter, out paying.Outcome) {
+	switch out.Kind {
+	case paying.Paid:
+		writeJSON(w, http.StatusOK, out.Order)
+	case paying.Declined:
+		writeDecline(w, out.Message, out.CanRetry, out.AttemptsLeft)
+	case paying.BadRequest:
+		writeError(w, http.StatusBadRequest, out.Message)
+	case paying.TooLarge:
+		writeError(w, http.StatusRequestEntityTooLarge, out.Message)
+	case paying.Unprocessable:
+		writeError(w, http.StatusUnprocessableEntity, out.Message)
+	case paying.Conflict:
+		writeError(w, http.StatusConflict, out.Message)
+	case paying.NotFound:
+		writeError(w, http.StatusNotFound, out.Message)
+	default: // paying.Internal
+		writeError(w, http.StatusInternalServerError, out.Message)
 	}
 }
 
@@ -641,13 +376,4 @@ func writeDecline(w http.ResponseWriter, reason string, canRetry bool, attemptsL
 	writeJSON(w, http.StatusPaymentRequired, map[string]any{
 		"error": reason, "canRetry": canRetry, "attemptsLeft": attemptsLeft,
 	})
-}
-
-// declineReason is what the client is told when a payment was declined and the
-// provider gave no reason.
-func declineReason(reason string) string {
-	if reason == "" {
-		return "payment declined"
-	}
-	return reason
 }
