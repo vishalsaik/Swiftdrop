@@ -182,6 +182,15 @@ database's clock (so servers with drifting clocks agree). It is not a cache: if 
 vanished, two requests could work on one payment, which is exactly what it
 prevents.
 
+A retry of a payment that is already `authorized` is the common case, and for it the
+first read (which payment does this order have?) is served from a small in-memory
+cache (`internal/paymentcache`, section 11). Only an authorized payment is kept: it is
+final, and while it exists the order can have no other live payment, so the entry can
+never be wrong. A payment that is processing, declined, abandoned or under review is
+always read from the database, as is "no payment yet" (the first `/pay` must see
+that), and the order view never uses the cache because a refund made later changes
+what it shows.
+
 A retry is always the **customer's** decision. No code re-sends a charge on its
 own, because that could charge someone who walked away.
 
@@ -402,8 +411,10 @@ that takes a note), or through `GET /alerts` and `POST /alerts/{id}/resolve`.
 | State as data | `legalTransitions` |
 | Observer (pub/sub, across a network) | Stripe's webhook into our handler |
 
-Not used yet but planned: Decorator (a cached payment store, retries and a circuit
-breaker around the gateway), Command, Builder, Facade (for `PayOrder`).
+Also used: Decorator (`paymentcache.Cache` wraps the payment lookup of `/pay`).
+
+Not used yet but planned: Decorator again (retries and a circuit breaker around the
+gateway), Command, Builder, Facade (for `PayOrder`).
 
 ## 12. Configuration
 
@@ -413,6 +424,7 @@ breaker around the gateway), Command, Builder, Facade (for `PayOrder`).
 | `STRIPE_WEBHOOK_SECRET` | switch on `POST /webhooks/stripe` (the `whsec_` value); unset answers `404` | unset |
 | `REFUND_INTERVAL` | how often the refund job looks for due refunds | `30s` |
 | `RECONCILE_INTERVAL` | how often the reconciler looks for payments without an answer | `1m` |
+| `PAYMENT_CACHE_SIZE` | how many paid orders' payments `/pay` keeps in memory (`0` = off) | `10000` |
 | `DATABASE_URL` | another database than the local development one | local Postgres |
 
 With no `STRIPE_KEY` the fake gateway declines a card order over 50,000 cents and a
@@ -428,6 +440,7 @@ exercised with no network.
 | The webhook handler and its signature check | `cmd/handlers/webhook.go`, `internal/payment/gateways/stripe_webhook.go` |
 | The claim, lease, takeover and the two transactions | `internal/databases/adapters/payments.go` |
 | Refunds: storage, provider call, job | `adapters/refunds.go`, `gateways/stripe_refund.go`, `internal/refund/service.go` |
+| The payment cache and its benchmark | `internal/paymentcache/cache.go`, `bench_test.go` |
 | Payments without an answer: lookup, job, recording | `gateways/stripe_lookup.go`, `internal/reconcile/service.go`, `internal/settle/settle.go` |
 | What a screen is told | `internal/domain/issue.go`, `cmd/handlers/view.go` |
 | Alerts: raising, listing, resolving | `cmd/handlers/alerts.go`, `adapters/alerts.go`, `internal/domain/alert.go` |
