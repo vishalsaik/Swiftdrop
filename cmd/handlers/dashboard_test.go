@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -168,20 +171,47 @@ func TestTheDashboardIsServedFromTheServer(t *testing.T) {
 	}
 }
 
+// localRefs are the files index.html loads from the server itself, cleaned
+// ("./assets/x.js" is "assets/x.js"). The build gives them hashed names, so the tests
+// read them from the page instead of knowing them.
+func localRefs(t *testing.T) []string {
+	t.Helper()
+	index, err := fs.ReadFile(web.Static(), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, m := range regexp.MustCompile(`(?:src|href)="([^"]+)"`).FindAllStringSubmatch(string(index), -1) {
+		ref := m[1]
+		if strings.HasPrefix(ref, "http") || strings.HasPrefix(ref, "data:") || strings.HasPrefix(ref, "#") {
+			continue
+		}
+		out = append(out, path.Clean(ref))
+	}
+	return out
+}
+
 func TestEveryDashboardFileIsServedWithItsOwnType(t *testing.T) {
-	for path, wantType := range map[string]string{
-		"/dashboard/app.js":    "javascript",
-		"/dashboard/logic.js":  "javascript",
-		"/dashboard/style.css": "text/css",
-	} {
-		rec := do(t, newFakeDB(), http.MethodGet, path, "")
+	refs := localRefs(t)
+	var sawScript, sawStyle bool
+	for _, ref := range refs {
+		wantType := map[string]string{".js": "javascript", ".css": "text/css"}[path.Ext(ref)]
+		if wantType == "" {
+			continue
+		}
+		sawScript = sawScript || wantType == "javascript"
+		sawStyle = sawStyle || wantType == "text/css"
+		rec := do(t, newFakeDB(), http.MethodGet, "/dashboard/"+ref, "")
 		wantStatus(t, rec, http.StatusOK)
 		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, wantType) {
-			t.Errorf("%s: Content-Type = %q, want %q", path, ct, wantType)
+			t.Errorf("%s: Content-Type = %q, want %q", ref, ct, wantType)
 		}
 		if rec.Body.Len() == 0 {
-			t.Errorf("%s is empty", path)
+			t.Errorf("%s is empty", ref)
 		}
+	}
+	if !sawScript || !sawStyle {
+		t.Errorf("the page loads %v: want a script and a stylesheet, so there is something to check", refs)
 	}
 }
 
@@ -234,60 +264,52 @@ func TestTheAPIStillWorksBesideTheDashboard(t *testing.T) {
 // The page may only load files that exist, so it is never half broken.
 func TestTheDashboardPageOnlyReferencesFilesThatExist(t *testing.T) {
 	static := web.Static()
-	index, err := fs.ReadFile(static, "index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	refs := regexp.MustCompile(`(?:src|href)="([^"]+)"`).FindAllStringSubmatch(string(index), -1)
-	local := 0
-	for _, m := range refs {
-		ref := m[1]
-		if strings.HasPrefix(ref, "http") || strings.HasPrefix(ref, "data:") || strings.HasPrefix(ref, "#") {
-			continue
-		}
-		local++
+	refs := localRefs(t)
+	for _, ref := range refs {
 		if _, err := fs.Stat(static, ref); err != nil {
-			t.Errorf("index.html references %q, which is not in the dashboard: %v", ref, err)
+			t.Errorf("index.html references %q, which is not in the dashboard: %v (run npm run build in web/ui)", ref, err)
 		}
 	}
-	if local < 2 {
-		t.Errorf("found %d local references, want at least the stylesheet and the script", local)
+	if len(refs) < 2 {
+		t.Errorf("found %d local references, want at least the stylesheet and the script", len(refs))
 	}
 }
 
-// The script imports logic.js by name; if that name changed it would break silently.
-func TestTheScriptImportsAFileThatExists(t *testing.T) {
-	static := web.Static()
-	app, err := fs.ReadFile(static, "app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	imports := regexp.MustCompile(`from '\./([^']+)'`).FindAllStringSubmatch(string(app), -1)
-	if len(imports) == 0 {
-		t.Fatal("app.js imports nothing, so the check below proves nothing")
-	}
-	for _, m := range imports {
-		if _, err := fs.Stat(static, m[1]); err != nil {
-			t.Errorf("app.js imports %q, which is not in the dashboard: %v", m[1], err)
-		}
-	}
-}
-
-// The page must never build markup or code from order data. The names are
-// joined from pieces so that this test does not itself contain them.
-func TestTheScriptNeverTurnsTextIntoMarkupOrCode(t *testing.T) {
+// The page must never build markup or code from order data. React draws text as text
+// unless the source asks otherwise, so the source (not the bundle, which holds React's
+// own internals) is checked for the ways of asking otherwise. The names are joined from
+// pieces so that this test does not itself contain them.
+func TestTheSourceNeverTurnsTextIntoMarkupOrCode(t *testing.T) {
 	banned := []string{
-		"inner" + "HTML", "outer" + "HTML", "insertAdjacent" + "HTML", "document." + "write", "ev" + "al(", "new " + "Function",
+		"dangerously" + "SetInnerHTML", "inner" + "HTML", "outer" + "HTML", "insertAdjacent" + "HTML", "document." + "write", "ev" + "al(", "new " + "Function",
 	}
-	for _, file := range []string{"app.js", "logic.js"} {
-		src, err := fs.ReadFile(web.Static(), file)
-		if err != nil {
-			t.Fatal(err)
+	root := filepath.Join("..", "..", "web", "ui", "src")
+	checked := 0
+	err := filepath.WalkDir(root, func(file string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
 		}
+		switch filepath.Ext(file) {
+		case ".ts", ".tsx", ".js", ".mjs":
+		default:
+			return nil
+		}
+		src, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		checked++
 		for _, name := range banned {
 			if strings.Contains(string(src), name) {
 				t.Errorf("%s uses %s, which turns text into markup or code", file, name)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked < 10 {
+		t.Errorf("checked %d source files, want the whole dashboard (is web/ui/src where the test looks?)", checked)
 	}
 }

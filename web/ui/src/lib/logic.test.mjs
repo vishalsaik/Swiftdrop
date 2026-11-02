@@ -5,7 +5,7 @@ import {
   COLUMNS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline, noticeFor,
   stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent, describeAlert, openAlerts,
   capabilities, authErrorMessage, lockoutMessage, fieldErrors, validateSignup, greeting, initials,
-} from '../static/logic.js';
+} from './logic.js';
 
 const order = (over = {}) => ({
   id: 'SD-1', state: 'created', paymentType: 'card',

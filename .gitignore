@@ -10,3 +10,7 @@
 .idea/
 *.swp
 .DS_Store
+
+# Dashboard tooling (the build output in web/static is committed; see web/web.go)
+web/ui/node_modules/
+web/ui/*.log
