@@ -5,7 +5,7 @@
 import {
   COLUMNS, STATE_LABELS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline,
   noticeFor, stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent,
-  describeAlert, openAlerts,
+  describeAlert, openAlerts, capabilities, authErrorMessage, fieldErrors, validateSignup, greeting, initials,
 } from './logic.js';
 
 const POLL_MS = 3000;
@@ -29,6 +29,11 @@ const state = {
   lastFocus: null,
   alerts: [],             // the open alerts, from GET /alerts
   alertSig: '',           // what the open alerts list last drew, so a poll does not redraw it
+  user: null,             // who is signed in: { id, email, name, role }, or null
+  csrf: '',               // the token the server wants back on every change
+  caps: capabilities(null),
+  signUp: false,          // the sign-in screen is showing its "create account" tab
+  pollTimer: null,
 };
 
 // ---------- tiny helpers ----------
@@ -59,15 +64,22 @@ function store(key, value) {
 }
 
 async function api(method, path, body) {
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  // The server wants the CSRF token back on everything that changes something.
+  if (method !== 'GET' && state.csrf) headers['X-CSRF-Token'] = state.csrf;
   try {
     const res = await fetch(path, {
-      method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
+      method, headers, credentials: 'same-origin', body: body ? JSON.stringify(body) : undefined,
     });
     let data = null;
     try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
-    return { status: res.status, ok: res.ok, data };
+    const retryAfter = Number(res.headers.get('Retry-After')) || 0;
+    // Signed out behind our back (expired, or ended from another device): go to the sign-in screen.
+    if (res.status === 401 && state.user && !path.startsWith('/auth/')) sessionEnded();
+    return { status: res.status, ok: res.ok, data, retryAfter };
   } catch {
-    return { status: 0, ok: false, data: null };
+    return { status: 0, ok: false, data: null, retryAfter: 0 };
   }
 }
 
@@ -304,6 +316,7 @@ function drawerSignature(o) {
 // The history is read again whenever what the order shows changes, not on every
 // poll, so an open drawer does not ask the server the same question every 3 seconds.
 function ensureHistory(order) {
+  if (!state.caps.history) return; // the payment history is for staff
   const key = `${signature(order)}|${order.payment ? order.payment.refundStatus : ''}`;
   if (state.historyKey.get(order.id) === key) return;
   state.historyKey.set(order.id, key);
@@ -341,7 +354,7 @@ function renderDrawer() {
       h('section', {}, h('h3', { text: 'Journey' }), h('ol', { class: 'journey' }, rows)),
       h('section', {}, h('h3', { text: 'Items' }), itemsTable(order)),
       h('section', {}, h('h3', { text: 'Money' }), moneyList(order, pay)),
-      order.payment ? h('section', {}, h('h3', { text: 'Payment history' }), historyList(order)) : null,
+      order.payment && state.caps.history ? h('section', {}, h('h3', { text: 'Payment history' }), historyList(order)) : null,
       h('section', {}, h('h3', { text: 'Actions' }), actionsBlock(order))));
 }
 
@@ -383,8 +396,10 @@ function historyList(order) {
 }
 
 function actionsBlock(order) {
-  const actions = actionsFor(order);
-  if (actions.length === 0) return h('p', { class: 'why', text: 'This order is finished. There is nothing left to do.' });
+  const actions = actionsFor(order, state.user ? state.user.role : 'staff');
+  if (actions.length === 0) {
+    return h('p', { class: 'why', text: state.caps.kitchen ? 'This order is finished. There is nothing left to do.' : 'Nothing for you to do on this order right now.' });
+  }
   const buttons = actions.map((a) => {
     const confirming = state.confirming === a.key;
     return h('button', {
@@ -501,6 +516,9 @@ function showFormErrors(errors) {
 function openSheet() {
   const f = $('#orderForm');
   f.elements.id.value = newOrderId();
+  // A customer orders for themselves; only staff choose whose order it is.
+  $('#customerRow').hidden = !state.caps.placeForOthers;
+  f.elements.customerId.value = state.caps.placeForOthers ? 'cust-1' : state.user.id;
   f.elements.paymentType.value = 'card';
   $('#rows').replaceChildren(itemRow({ name: 'Smash burger', quantity: '1', price: '9.50' }));
   showFormErrors({});
@@ -543,7 +561,7 @@ async function createSamples() {
   ];
   for (const [paymentType, items] of samples) {
     await api('POST', '/orders', {
-      id: newOrderId(), customerId: 'cust-1', restaurantId: 'rest-1', paymentType,
+      id: newOrderId(), customerId: state.caps.placeForOthers ? 'cust-1' : state.user.id, restaurantId: 'rest-1', paymentType,
       items: items.map(([name, quantity, unitPriceCents]) => ({ sku: name.replace(/\W/g, '').toUpperCase().slice(0, 8), name, quantity, unitPriceCents })),
     });
   }
@@ -579,9 +597,213 @@ async function refresh() {
     renderStats();
     renderBoard();
     if (state.selected) renderDrawer();
-    await refreshAlerts();
+    if (state.caps.alerts) await refreshAlerts();
   } finally {
     inflight = false;
+  }
+}
+
+// ---------- signing in ----------
+
+function showAuth() {
+  stopPolling();
+  closeDrawerQuietly();
+  for (const d of document.querySelectorAll('dialog[open]')) d.close();
+  state.user = null;
+  state.csrf = '';
+  state.caps = capabilities(null);
+  $('#appView').hidden = true;
+  $('#authView').hidden = false;
+  setAuthMode(false);
+  $('#authForm').reset();
+  clearAuthErrors();
+  $('#authForm').elements.email.focus({ preventScroll: true });
+}
+
+function closeDrawerQuietly() {
+  state.selected = null;
+  $('#scrim').hidden = true;
+  $('#drawer').classList.remove('open');
+  $('#drawer').setAttribute('aria-hidden', 'true');
+}
+
+// Everything the last person saw is dropped, so nothing of theirs shows to the next.
+function forgetBoard() {
+  state.orders = []; state.byId = new Map(); state.loaded = false; state.online = null;
+  state.issues.clear(); state.sigs.clear(); state.history.clear(); state.historyKey.clear();
+  state.alerts = []; state.alertSig = ''; state.drawerSig = ''; state.confirming = null; state.payOpen = false;
+  for (const el of ticketEls.values()) el.remove();
+  ticketEls.clear();
+  for (const el of noticeEls.values()) el.remove();
+  noticeEls.clear();
+  $('#drawer').replaceChildren();
+  renderAlerts();
+  renderStats();
+  renderBoard();
+}
+
+function sessionEnded() {
+  if (!state.user) return;
+  showAuth();
+  forgetBoard();
+  showAuthError('Your session ended. Sign in again.');
+}
+
+function enterApp(session) {
+  state.user = session.user;
+  state.csrf = session.csrfToken || '';
+  state.caps = capabilities(session.user.role);
+
+  $('#authView').hidden = true;
+  $('#appView').hidden = false;
+  $('#alertsBtn').hidden = !state.caps.alerts;
+
+  $('#hello').textContent = `${greeting()}, ${firstName(session.user.name)}`;
+  $('#helloSub').textContent = state.caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.';
+  const letters = initials(session.user.name);
+  $('#userBtn').textContent = letters;
+  $('#userBtn').setAttribute('aria-label', `Your account, ${session.user.name}`);
+
+  forgetBoard();
+  startPolling();
+}
+
+function firstName(name) {
+  return String(name ?? '').trim().split(/\s+/)[0] || 'there';
+}
+
+function startPolling() {
+  stopPolling();
+  refresh();
+  state.pollTimer = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
+}
+
+function stopPolling() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
+}
+
+function setAuthMode(signUp) {
+  state.signUp = signUp;
+  const form = $('#authForm');
+  $('#tabSignIn').setAttribute('aria-selected', String(!signUp));
+  $('#tabSignUp').setAttribute('aria-selected', String(signUp));
+  $('#nameRow').hidden = !signUp;
+  $('#pwHint').hidden = !signUp;
+  $('#authTitle').textContent = signUp ? 'Create your account' : 'Welcome back';
+  $('#authSub').textContent = signUp ? 'Order food and follow it to your door.' : 'Sign in to see your orders.';
+  $('#authSubmit').textContent = signUp ? 'Create account' : 'Sign in';
+  $('#authFoot').hidden = signUp;
+  form.elements.password.autocomplete = signUp ? 'new-password' : 'current-password';
+  clearAuthErrors();
+}
+
+function clearAuthErrors() {
+  $('#authError').hidden = true;
+  $('#authError').textContent = '';
+  $('#authForm').querySelectorAll('[data-err]').forEach((el) => { el.textContent = ''; });
+  for (const input of $('#authForm').elements) input.removeAttribute?.('aria-invalid');
+}
+
+function showAuthError(message) {
+  const el = $('#authError');
+  el.textContent = message;
+  el.hidden = false;
+}
+
+function showFieldProblems(form, problems) {
+  form.querySelectorAll('[data-err]').forEach((el) => { el.textContent = problems[el.dataset.err] || ''; });
+  for (const name of ['name', 'email', 'password']) {
+    const input = form.elements[name];
+    if (input) input.setAttribute('aria-invalid', problems[name] ? 'true' : 'false');
+  }
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const form = $('#authForm');
+  clearAuthErrors();
+  const values = { email: form.elements.email.value, name: form.elements.name.value, password: form.elements.password.value };
+
+  let path = '/auth/login';
+  let body = { email: values.email.trim(), password: values.password };
+  if (state.signUp) {
+    const check = validateSignup(values);
+    showFieldProblems(form, check.errors);
+    if (!check.ok) return;
+    path = '/auth/signup';
+    body = check.payload;
+  } else if (!body.email || !body.password) {
+    showAuthError('Enter your email and password.');
+    return;
+  }
+
+  $('#authSubmit').disabled = true;
+  const res = await api('POST', path, body);
+  $('#authSubmit').disabled = false;
+
+  if (!res.ok) {
+    if (res.status === 422) showFieldProblems(form, fieldErrors(res.data));
+    else showAuthError(authErrorMessage(res.status, res.data, res.retryAfter));
+    return;
+  }
+  form.reset();
+  enterApp(res.data);
+}
+
+async function signOut() {
+  $('#signOut').disabled = true;
+  // Even if the server cannot be reached, this screen stops showing the account.
+  await api('POST', '/auth/logout');
+  $('#signOut').disabled = false;
+  showAuth();
+  forgetBoard();
+}
+
+function openAccount() {
+  const u = state.user;
+  $('#accountAvatar').textContent = initials(u.name);
+  $('#accountName').textContent = u.name;
+  $('#accountEmail').textContent = u.email;
+  $('#accountRole').textContent = u.role;
+  $('#passwordForm').reset();
+  showPasswordProblems({}, '');
+  $('#accountSheet').showModal();
+}
+
+function showPasswordProblems(problems, general) {
+  const form = $('#passwordForm');
+  form.querySelectorAll('[data-err]').forEach((el) => { el.textContent = problems[el.dataset.err] || ''; });
+  for (const name of ['currentPassword', 'newPassword']) form.elements[name].setAttribute('aria-invalid', problems[name] ? 'true' : 'false');
+  $('#passwordError').hidden = !general;
+  $('#passwordError').textContent = general;
+}
+
+async function submitPassword(event) {
+  event.preventDefault();
+  const form = $('#passwordForm');
+  const currentPassword = form.elements.currentPassword.value;
+  const newPassword = form.elements.newPassword.value;
+  const problems = {};
+  if (!currentPassword) problems.currentPassword = 'Enter your current password';
+  if ([...newPassword].length < 10) problems.newPassword = 'Use at least 10 characters';
+  if (Object.keys(problems).length) { showPasswordProblems(problems, ''); return; }
+
+  $('#passwordSubmit').disabled = true;
+  const res = await api('POST', '/auth/password', { currentPassword, newPassword });
+  $('#passwordSubmit').disabled = false;
+
+  if (res.status === 204 || res.ok) {
+    form.reset();
+    showPasswordProblems({}, '');
+    $('#accountSheet').close();
+    toast('Password changed. Other devices were signed out.', 'ok');
+  } else if (res.status === 403) {
+    showPasswordProblems({ currentPassword: 'That is not your current password' }, '');
+  } else if (res.status === 422) {
+    showPasswordProblems(fieldErrors(res.data), '');
+  } else if (res.status !== 401) { // a 401 has already sent them to the sign-in screen
+    showPasswordProblems({}, authErrorMessage(res.status, res.data, res.retryAfter));
   }
 }
 
@@ -591,13 +813,30 @@ function applyTheme(theme) {
   if (theme) document.documentElement.dataset.theme = theme;
 }
 
-function init() {
-  applyTheme(store('sd.theme'));
-  buildBoard();
-  renderFirstRun();
-  renderStats();
+function isDark() {
+  const set = document.documentElement.dataset.theme;
+  return set === 'dark'; // light unless they chose dark
+}
+
+function bind() {
+  $('#tabSignIn').addEventListener('click', () => setAuthMode(false));
+  $('#tabSignUp').addEventListener('click', () => setAuthMode(true));
+  $('#authForm').addEventListener('submit', submitAuth);
+  $('#showPw').addEventListener('click', () => {
+    const input = $('#authForm').elements.password;
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    $('#showPw').textContent = show ? 'Hide' : 'Show';
+    $('#showPw').setAttribute('aria-pressed', String(show));
+  });
+
+  $('#userBtn').addEventListener('click', openAccount);
+  $('#accountClose').addEventListener('click', () => $('#accountSheet').close());
+  $('#passwordForm').addEventListener('submit', submitPassword);
+  $('#signOut').addEventListener('click', signOut);
 
   $('#newOrder').addEventListener('click', openSheet);
+  $('#newOrderTop').addEventListener('click', openSheet);
   $('#sheetClose').addEventListener('click', () => $('#sheet').close());
   $('#sheetCancel').addEventListener('click', () => $('#sheet').close());
   $('#addRow').addEventListener('click', () => { $('#rows').append(itemRow()); updateFormTotal(); });
@@ -606,19 +845,32 @@ function init() {
   $('#scrim').addEventListener('click', closeDrawer);
   $('#alertsBtn').addEventListener('click', () => { state.alertSig = null; $('#alertsSheet').showModal(); renderAlerts(); });
   $('#alertsClose').addEventListener('click', () => $('#alertsSheet').close());
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').open && !$('#alertsSheet').open) closeDrawer(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.querySelector('dialog[open]')) closeDrawer();
+  });
   $('#theme').addEventListener('click', () => {
-    const dark = document.documentElement.dataset.theme
-      ? document.documentElement.dataset.theme === 'dark'
-      : !matchMedia('(prefers-color-scheme: light)').matches;
-    const next = dark ? 'light' : 'dark';
+    const next = isDark() ? 'light' : 'dark';
     applyTheme(next);
     store('sd.theme', next);
   });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && state.user) refresh(); });
+}
 
-  refresh();
-  setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+// Ask who we are. A live cookie goes straight to the board; otherwise the sign-in screen.
+async function boot() {
+  const res = await api('GET', '/auth/me');
+  if (res.ok && res.data && res.data.user) { enterApp(res.data); return; }
+  showAuth();
+  if (res.status === 0) showAuthError(authErrorMessage(0));
+}
+
+function init() {
+  applyTheme(store('sd.theme'));
+  buildBoard();
+  renderFirstRun();
+  renderStats();
+  bind();
+  boot();
 }
 
 init();
