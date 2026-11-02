@@ -148,3 +148,15 @@ func TestGeneratedPasswordsAreLongAndDifferent(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryProblemIsListedInAlphabeticalOrder(t *testing.T) {
+	svc, _ := service()
+	code, _, errOut := runCmd(svc, map[string]string{"SWIFTDROP_NEW_PASSWORD": "short"}, "-email", "nope", "-name", "Eve")
+	if code != 1 {
+		t.Fatalf("exit %d, %q", code, errOut)
+	}
+	e, p := strings.Index(errOut, "email "), strings.Index(errOut, "password ")
+	if e < 0 || p < 0 || e > p {
+		t.Errorf("problems = %q, want email before password", errOut)
+	}
+}

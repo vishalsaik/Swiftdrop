@@ -79,3 +79,17 @@ func TestAFullTableDropsKeysThatAgedOutFirst(t *testing.T) {
 		t.Errorf("keys = %v, want only the new one", l.hits)
 	}
 }
+
+func TestAFullTableThatCanMakeRoomByForgettingExpiredKeysForgetsNothingElse(t *testing.T) {
+	l := newLimiter(2, time.Hour)
+	l.maxKeys = 3
+	l.hit("a", t0)
+	l.hit("b", t0.Add(50*time.Minute))
+	l.hit("c", t0.Add(51*time.Minute))
+	l.hit("d", t0.Add(61*time.Minute)) // "a" has aged out, which makes room
+	for _, k := range []string{"b", "c", "d"} {
+		if _, ok := l.hits[k]; !ok {
+			t.Errorf("key %q was forgotten although there was room", k)
+		}
+	}
+}
