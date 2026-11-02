@@ -1,6 +1,7 @@
 import { COLUMNS, columnOf, itemsSummary, money, STATE_LABELS, timeAgo, totalCents } from '../lib/logic';
 import { STAGE_STYLE, stampFor } from '../lib/present';
 import type { Order } from '../lib/types';
+import { PaymentOrb } from './Effects';
 import { Icon } from './Icon';
 import { Pill, Waiting } from './ui';
 
@@ -65,7 +66,7 @@ function OrderRow({ order, selected, showCustomer, onSelect }: { order: Order; s
         <span className={`tile ${style.tint}`}><Icon name={style.icon} size={20} /></span>
         <span className="row-main">
           <span className="row-title"><span className="mono">{order.id}</span>
-            {order.state === 'payment_pending' && <Waiting label="Confirming the payment" />}
+            {order.state === 'payment_pending' && <PaymentOrb />}
           </span>
           <span className="row-sub">{itemsSummary(order) || 'No items'}</span>
           <span className="row-meta">{meta}</span>

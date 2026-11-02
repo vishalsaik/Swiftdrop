@@ -251,7 +251,7 @@ button { cursor: pointer; }
 .detail-bar { display: flex; align-items: center; gap: 10px; padding: 18px 18px 12px; }
 .detail-bar .titles { flex: 1; min-width: 0; display: grid; }
 .detail-bar h2 { font-size: 22px; font-weight: 700; }
-.detail-scroll { flex: 1; overflow-y: auto; padding: 6px 16px 16px; display: grid; gap: 22px; align-content: start; }
+.detail-scroll { flex: 1; overflow-y: auto; padding: 6px 16px 16px; display: grid; gap: 22px; align-content: start; grid-auto-rows: max-content; }
 .detail-scroll section > .group-title { padding-top: 0; }
 .callout { display: grid; gap: 4px; padding: 14px 16px; border-radius: 16px; background: color-mix(in srgb, var(--orange) calc(var(--tint-bg) * 100%), transparent); }
 .callout small { color: var(--label-2); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -334,6 +334,10 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
 @keyframes rise { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 .tabbar { display: none; }
+
+/* libraries.dev effects */
+.orb { width: 20px; height: 20px; flex: none; vertical-align: middle; }
+.wait-beam { border-radius: 16px; }
 
 /* ---------- phones and small windows: a tab bar and a bottom sheet ---------- */
 

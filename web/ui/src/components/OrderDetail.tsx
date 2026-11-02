@@ -7,8 +7,9 @@ import {
 import { signature } from '../lib/present';
 import type { LedgerEvent, Order, Role } from '../lib/types';
 import { useToast } from '../toasts';
+import { PaymentOrb, WaitBeam } from './Effects';
 import { Icon } from './Icon';
-import { Pill, Waiting } from './ui';
+import { Pill } from './ui';
 
 const ENDPOINT: Record<string, string> = { accept: 'accept', ready: 'ready', pickup: 'pickup', deliver: 'deliver', cancel: 'cancel' };
 const DONE: Record<string, string> = {
@@ -108,11 +109,13 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
 
       <div className="detail-scroll">
         {notice && (
-          <section className={`callout ${notice.tone}`} aria-label="What the customer sees">
-            <small>{role === 'staff' ? 'What the customer sees' : 'About your payment'}</small>
-            <strong>{notice.title}</strong>
-            <p>{notice.body}</p>
-          </section>
+          <WaitBeam active={notice.issue === 'confirming'}>
+            <section className={`callout ${notice.tone}`} aria-label="What the customer sees" aria-busy={notice.issue === 'confirming'}>
+              <small>{role === 'staff' ? 'What the customer sees' : 'About your payment'}</small>
+              <strong>{notice.title}</strong>
+              <p>{notice.body}</p>
+            </section>
+          </WaitBeam>
         )}
 
         <section>
@@ -122,7 +125,7 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
               <li key={step.key} className={step.status}>
                 <span className="dot">{step.status === 'done' && <Icon name="check" size={12} />}</span>
                 <span className="label">{step.label}</span>
-                {step.note && <span className="note"><Waiting label={step.note} /> {step.note}</span>}
+                {step.note && <span className="note"><PaymentOrb /> {step.note}</span>}
               </li>
             ))}
           </ol>
