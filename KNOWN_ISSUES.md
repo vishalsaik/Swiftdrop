@@ -52,9 +52,11 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 ## The dashboard
 
 - It polls every 3 seconds. Pushing changes to the screen (server-sent events) is not built.
-- Only its rules (`logic.js`) have automated tests. The drawing code (`app.js`) was checked by hand in a browser, so a change to it needs a look in a browser.
+- Its rules (`logic.js`) and its screens (in a simulated browser, against a fake server) have automated tests. How it looks, the animation and the phone layout were checked by hand in a browser, so a change to those needs a look in a browser.
+- The build output in `web/static` is committed, because the Go server embeds it and `go run` must work without Node. After a change in `web/ui`, run `npm run build` there and commit the result; a stale build is the one thing no test can tell, because both halves are valid on their own.
+- The dashboard is React only through its own build. The effect libraries from libraries.dev (border beam, thinking orbs, bot avatars) are not installed yet; the waiting dots are plain CSS.
 - The customer messages are shown to the dispatcher, as a preview of what the customer would see. Nothing is sent to a customer: there is no customer app, email or push yet.
-- The fonts come from Google Fonts. Offline the stylesheet falls back to the system fonts it names (not tried offline).
+- It uses the system font (SF on Apple devices, Segoe UI on Windows, Roboto elsewhere), so there is nothing to download and it looks different from device to device.
 - Shutting down on Ctrl+C (the server stops, then the refund job finishes what it is doing) is in `main.go`, which has no automated test.
 
 ## Performance and structure

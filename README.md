@@ -29,7 +29,7 @@ Early stage. Working today:
 - **A refund Stripe accepted can still fail later** (an expired or closed card, for one), and then the customer has not got their money back while we say they have. The webhook also reads `refund.failed` (and `refund.updated` when the refund ended up `failed` or `canceled`), matched on the payment intent the refund belongs to (Stripe changes a refund on its own, so the event is not caused by a request of ours and carries no idempotency key we can use). The refund we recorded as done, and only that one (a refund someone made by hand failing says nothing about ours), moves to `failed` with the provider's reason, a `refund_reversed` alert tells a person to refund by hand, and the customer is told to contact support like for any refund we gave up on. Nothing refunds a second time on its own: the provider said why it failed, and a second refund could pay out twice. A report that arrives while our own job is still making the refund is answered `503`, so Stripe delivers it again once it is recorded.
 - A charged order that is cancelled is refunded, whichever way it got there: cancelled after paying, or cancelled while the payment was in flight (the provider's answer is kept even when the order has moved on, as an authorized payment on a cancelled order). A refund is **due** when a payment is authorized, its order is cancelled, it was charged online (cash moves no money through us) and its refund is not done; that is derived from the data, so cancelling needs no extra step. A background job (`internal/refund`, started by `main`, every `REFUND_INTERVAL`, default `30s`) claims each due refund with a lease (the same pattern as claiming a charge), asks the provider through the small `payment.Refunder` interface (`StripeGateway` and `FakeGateway` implement it, with the idempotency key `refund-<payment id>`), and records the result. A failed attempt waits for its lease and is retried; after 5 attempts the refund is marked `failed` and logged `NEEDS REVIEW`. Any number of servers can run the job and a payment is still refunded once. A refund that goes through is recorded even while the server is shutting down
 - `GET /orders/{id}` and `GET /orders` answer with the order, a `payment` summary (no provider ids or error text) and a `paymentIssue` derived on every read from the order and its payment: `confirming`, `refund_pending`, `refunded` or `refund_failed`. It is the message a customer-facing screen shows ("your money is on its way back")
-- A dispatch dashboard at `/` (served by the API itself, compiled into the binary, no build step): a board of kitchen tickets by stage, an order drawer with the journey, the money and the actions that make sense, a new-order form, rubber-stamp markers for payment and refund states, and the pop-up message a customer would see when their money situation changes. Night and daylight themes. Its rules (`web/static/logic.js`) are plain functions tested with `node --test`
+- A dispatch dashboard at `/` (a React app in `web/ui`, built with Vite, and compiled into the binary so the API serves it): a SwiftUI-style layout with a sidebar of stages (a tab bar on a phone), grouped order lists, an order inspector with the journey, the money and the actions that make sense, sheets for a new order and the account, status pills for payment and refund states, and the pop-up message a customer would see when their money situation changes. Light by default, with a dark mode chosen under Account. Its rules (`web/ui/src/lib/logic.js`) are plain functions tested with `node --test`
 - **A declined payment can be retried.** A decline does not close the order: it returns to `created` and `/pay` again starts a new attempt (a new payment row, its own idempotency key, `attempt` 2, 3). Each attempt keeps its own ledger. `paymentIssue` is `declined`, with how many attempts are left. The third decline cancels the order, and after that a decline is replayed. Paying while another attempt is still `processing` is as before: a `409`, or a takeover after the lease
 - **A payment that never got an answer is settled by asking, never by charging again.** The claim comes before the provider call, so a crash or a lost reply used to leave a payment `processing` for ever unless the customer retried. A reconciler job (`internal/reconcile`, every `RECONCILE_INTERVAL`, default 1 minute) now asks the provider what became of it (`payment.Looker`; Stripe finds the intent by the `metadata[payment_id]` the charge carries) and acts on the answer: succeeded or refused is recorded exactly as a webhook would record it (both go through `internal/settle`); no record at the provider after 30 minutes means the attempt is **abandoned** (a new final status, no money moved, the order is open again for another attempt or cancelled after the last); an answer that never comes, or a provider that cannot be asked, for 20 hours hands it to a person (**needs_review**, an alert, and no new attempt for that order until it is settled; the provider's answer, if it ever arrives, still settles it). Re-sending the charge is never how this is done: the customer may have walked away, and once Stripe forgets the idempotency key (at least 24 hours) a second send is a new charge. For the same reason a customer's retry of a payment older than 20 hours is no longer sent: it is handed to a person and answered `409`. The customer sees `abandoned` ("you were not charged, try again") or, for a payment under review, `confirming`.
 - Problems only a person can fix are kept as **alerts**, not just logged: money taken that could not be written down (`unrecorded_charge`), a provider report that contradicts our record (`contradicting_event`), a refund the job gave up on (`refund_given_up`) and a refund the provider made that we could not record (`refund_unrecorded`). There is one open alert per kind and subject (usually a payment id): the same problem raised again only counts another occurrence, so a webhook delivered a hundred times is one alert. An alert is written even if the request that found it was cancelled, and failing to write it is logged and never changes the answer. The dashboard shows them under **Alerts**, with a Resolve button that takes a note; `GET /alerts` and `POST /alerts/{id}/resolve` do the same by API. The log line `NEEDS REVIEW` is still written.
@@ -45,7 +45,7 @@ Stand-ins for now: wallet payments go to the same Stripe gateway as cards, `/acc
 - [pgx](https://github.com/jackc/pgx) for Postgres access
 - [google/uuid](https://github.com/google/uuid) for the stand-in driver IDs and the fake payment IDs
 - PostgreSQL 16 (via Docker for local dev)
-- The dashboard is plain HTML, CSS and JavaScript (ES modules, no framework, no build step). Node 20+ is only needed to run its tests
+- The dashboard is React 19 and TypeScript, built with Vite (`web/ui`). Its build output is committed in `web/static`, so `go run ./cmd/api` needs no Node. Node 20+ is only needed to change or test the dashboard
 
 ## Project layout
 
@@ -65,7 +65,8 @@ internal/
     ports/        IDatabase — the storage interface handlers depend on
     adapters/     Postgres implementation of IDatabase
 docs/             architecture notes (PAYMENT_FLOW.md)
-web/              the dashboard (static files compiled into the binary) and its tests
+web/ui/           the dashboard's source (React, TypeScript, Vite) and its tests
+web/static/       the dashboard as built (committed, compiled into the binary)
 schema.sql        database schema
 curls.txt         example curl commands for manual API testing
 KNOWN_ISSUES.md   what we chose not to build yet, and the production problems that leaves
@@ -136,13 +137,16 @@ SWIFTDROP_TEST_DSN="postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?s
 
 (PowerShell: `$env:SWIFTDROP_TEST_DSN = "postgres://postgres:postgres@127.0.0.1:5434/swiftdrop_test?sslmode=disable"` first, then `go test ./... -cover`.)
 
-The dashboard's rules (actions, notices, money, form validation) run without a browser:
+The dashboard has its own tests, run from `web/ui` (`npm install` once first):
 
 ```bash
-node --test web/test/logic.test.mjs
+cd web/ui
+npm test          # its rules with node --test, then the screens with Vitest
+npm run typecheck
+npm run build     # refreshes web/static, which Go embeds; commit the result
 ```
 
-Its drawing code (`web/static/app.js`) is checked by hand in a browser, not by automated tests.
+The screens are tested in a simulated browser against a fake server (sign-in, roles, the order actions, signing out). A change to how it looks still needs a look in a real browser: `npm run dev` serves the page on port 5173 and sends API calls to the Go server on 8080. The Go tests check that `web/static` is a whole build (every file the page loads is there) and that the dashboard's source never turns text into markup or code.
 
 ## API
 
