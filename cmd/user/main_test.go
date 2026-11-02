@@ -109,7 +109,7 @@ func TestAnEmailThatIsInUseAndAWeakPasswordAreRefusedClearly(t *testing.T) {
 		t.Fatal(e)
 	}
 	code, _, errOut := runCmd(svc, nil, "-email", "D@example.com", "-name", "Other")
-	if code != 1 || !strings.Contains(errOut, "already exists") {
+	if code != 1 || !strings.Contains(errOut, "an account for D@example.com already exists") {
 		t.Errorf("duplicate: exit %d, %q", code, errOut)
 	}
 	code, _, errOut = runCmd(svc, map[string]string{"SWIFTDROP_NEW_PASSWORD": "short"}, "-email", "e@example.com", "-name", "Eve")

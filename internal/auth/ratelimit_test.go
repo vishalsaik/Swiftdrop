@@ -93,3 +93,17 @@ func TestAFullTableThatCanMakeRoomByForgettingExpiredKeysForgetsNothingElse(t *t
 		}
 	}
 }
+
+func TestHittingAKeyThatIsAlreadyKnownNeverMakesRoomByForgettingAnother(t *testing.T) {
+	l := newLimiter(5, time.Hour)
+	l.maxKeys = 3
+	l.hit("a", t0)
+	l.hit("b", t0.Add(time.Minute))
+	l.hit("c", t0.Add(2*time.Minute))
+	l.hit("c", t0.Add(3*time.Minute)) // the table is full, but "c" is already in it
+	for _, k := range []string{"a", "b", "c"} {
+		if _, ok := l.hits[k]; !ok {
+			t.Errorf("key %q was forgotten to make room for a key that needed none", k)
+		}
+	}
+}

@@ -332,6 +332,11 @@ func TestSigningOutEndsTheSessionAndClearsTheCookie(t *testing.T) {
 	if c := cookieNamed(rec, sessionCookie); c == nil || c.MaxAge >= 0 || c.Value != "" {
 		t.Errorf("cookie after signing out = %+v, want it cleared", c)
 	}
+	// The cleared cookie has the attributes of the one it replaces: a browser will not
+	// let a cookie that is not Secure replace one that is.
+	if c := cookieNamed(rec, sessionCookie); !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
+		t.Errorf("cleared cookie = %+v, want HttpOnly, SameSite=Strict and the same path", c)
+	}
 	// the old cookie is worthless now, even if someone kept a copy
 	b.cookie = oldCookie
 	wantStatus(t, b.do(http.MethodGet, "/auth/me", ""), http.StatusUnauthorized)
@@ -710,5 +715,26 @@ func TestAWaitIsRoundedUpToWholeSeconds(t *testing.T) {
 	wantStatus(t, rec, http.StatusTooManyRequests)
 	if got := rec.Header().Get("Retry-After"); got != "2" {
 		t.Errorf("Retry-After = %q, want 2: 1.5 seconds must not be said as 1", got)
+	}
+}
+
+func TestTheClearedCookieIsSecureWhereTheSessionCookieWas(t *testing.T) {
+	w := newWorld(t)
+	w.s.SecureCookies = true
+	b := w.customer(t, "ada@example.com")
+	rec := b.do(http.MethodPost, "/auth/logout", "")
+	if c := cookieNamed(rec, sessionCookie); c == nil || !c.Secure || c.MaxAge >= 0 {
+		t.Errorf("cleared cookie = %+v, want Secure and expired", c)
+	}
+
+	// and over TLS without the setting
+	w2 := newWorld(t)
+	b2 := w2.customer(t, "ada@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.TLS = &tls.ConnectionState{}
+	req.AddCookie(b2.cookie)
+	req.Header.Set(csrfHeader, b2.csrf)
+	if c := cookieNamed(serve(w2.s, req), sessionCookie); c == nil || !c.Secure {
+		t.Errorf("over TLS the cleared cookie = %+v, want Secure", c)
 	}
 }
