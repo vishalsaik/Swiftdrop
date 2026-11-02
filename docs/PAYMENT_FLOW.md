@@ -62,6 +62,26 @@ flowchart LR
 Dependencies point inward: handlers depend on interfaces in `ports` and `payment`,
 and only `cmd/api/main.go` knows which concrete adapters are wired in.
 
+### Who may call it
+
+Everything here sits behind sign-in, except `GET /health`, the dashboard's files,
+`POST /auth/signup` and `/auth/login`, and `POST /webhooks/stripe` (which proves
+itself by Stripe's signature instead). A request names its account with the
+`sd_session` cookie; one that changes something must also carry that session's
+`X-CSRF-Token`. See `internal/auth` and `cmd/handlers/auth.go`.
+
+| | Customer | Staff |
+|---|---|---|
+| Place an order | only for themselves | for anyone |
+| See, pay, cancel an order | only their own (another's order answers `404`, the same as a missing one) | any |
+| Accept, ready, pickup, deliver | no (`403`) | yes |
+| Payment history, alerts | no (`403`) | yes |
+
+So payment money-moves (`/pay`, a cancel that triggers a refund) are checked for
+ownership **before** the flow in section 4 starts, and a customer cannot learn
+whether someone else's order exists. The webhook and the reconciler act as the
+system, not as an account, and so are not limited by role.
+
 ## 3. State
 
 ### The order
@@ -139,7 +159,7 @@ sequenceDiagram
   participant P as Provider
   participant S as Stripe
 
-  C->>H: POST /orders/:id/pay with paymentMethodId
+  C->>H: POST /orders/:id/pay with paymentMethodId<br/>(signed in; a customer only for their own order)
   H->>DB: read the order and any payment
   H->>P: Check the request (422 if it could never succeed)
   H->>DB: StartPayment, one transaction:<br/>insert payment (processing, lease 60s)<br/>and move the order created to payment_pending
@@ -379,6 +399,8 @@ order and its payment, so it cannot go out of date:
 
 The dashboard shows these as a message in the order drawer and a pop-up when an
 order's issue changes while someone is watching. Nothing is sent to a customer yet.
+A customer's list and drawer hold only their own orders; the payment history and the
+alerts below are for staff.
 
 The people running the service see the alerts of section 8 under **Alerts** in the
 dashboard header (a count badge, then a list with what to do and a Resolve button
@@ -398,6 +420,9 @@ that takes a note), or through `GET /alerts` and `POST /alerts/{id}/resolve`.
 6. Nothing re-sends a charge on its own; a retry is the customer's decision.
 7. A refund is made **once per payment**, however many workers run the job.
 8. Errors never leak: the cause goes to the log, the client gets a generic message.
+9. An order can be paid, cancelled or read only by its owner or by staff, and that
+   is decided on the server: the dashboard hiding a button is a convenience, not the
+   check.
 
 ## 11. Patterns, where they are
 
@@ -428,6 +453,7 @@ gateway), Command, Builder.
 | `RECONCILE_INTERVAL` | how often the reconciler looks for payments without an answer | `1m` |
 | `PAYMENT_CACHE_SIZE` | how many paid orders' payments `/pay` keeps in memory (`0` = off) | `10000` |
 | `DATABASE_URL` | another database than the local development one | local Postgres |
+| `COOKIE_SECURE` | `true` marks the session cookie `Secure`; set it when a proxy ends TLS (the cookie is `Secure` anyway on a TLS connection) | unset |
 
 With no `STRIPE_KEY` the fake gateway declines a card order over 50,000 cents and a
 wallet order over 10,000 cents, and refunds everything, so every path above can be
@@ -446,5 +472,8 @@ exercised with no network.
 | Payments without an answer: lookup, job, recording | `gateways/stripe_lookup.go`, `internal/reconcile/service.go`, `internal/settle/settle.go` |
 | What a screen is told | `internal/domain/issue.go`, `cmd/handlers/view.go` |
 | Alerts: raising, listing, resolving | `cmd/handlers/alerts.go`, `adapters/alerts.go`, `internal/domain/alert.go` |
+| Accounts, sessions, the sign-in limits | `internal/auth`, `adapters/auth.go` |
+| Who may call what: the guard, CSRF, ownership | `cmd/handlers/auth.go`, `routes()` in `cmd/handlers/handlers.go` |
+| Making the first staff account | `cmd/user/main.go` |
 | The schema | `schema.sql` |
 | Try it by hand | `curls.txt` |
