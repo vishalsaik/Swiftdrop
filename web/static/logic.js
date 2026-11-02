@@ -50,7 +50,7 @@ const CANCELLABLE = ['created', 'payment_pending', 'paid', 'preparing'];
 // actionsFor lists what can be done to an order now, mirroring the server's
 // state machine. The server is still the judge: it answers 409 for anything
 // else. Each action says why it is unavailable instead of silently hiding.
-export function actionsFor(order) {
+export function actionsFor(order, role = 'staff') {
   const actions = [];
   const s = order.state;
   const charged = order.payment && order.payment.status === 'authorized' && order.paymentType !== 'cash';
@@ -105,7 +105,27 @@ export function actionsFor(order) {
       note: charged ? 'The customer was charged. The refund starts on its own.' : '',
     });
   }
+  if (role === 'customer') return forCustomer(actions, charged);
   return actions;
+}
+
+// A customer can pay for and cancel their own order. The kitchen and delivery steps
+// are staff's, so they are not offered at all (the server refuses them anyway).
+function forCustomer(actions, charged) {
+  return actions.filter((a) => a.key === 'pay' || a.key === 'cancel').map((a) => {
+    if (a.key === 'pay' && a.label === 'Take payment') return { ...a, label: 'Pay now' };
+    if (a.key === 'cancel') return { ...a, note: charged ? 'You were charged. The refund starts on its own.' : '' };
+    if (a.key === 'pay' && a.note && a.note.startsWith('Only if the customer')) {
+      return { ...a, note: 'The same payment is reused, so you are never charged twice.' };
+    }
+    return a;
+  });
+}
+
+// What each role is shown. The server enforces all of it; this only decides what to draw.
+export function capabilities(role) {
+  const staff = role === 'staff';
+  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff };
 }
 
 // timeline is the order's journey as rows a departure board can show. A
@@ -371,11 +391,79 @@ export function validateOrderForm(form) {
 // errorMessage is what the screen says when a call fails. The server's own words
 // win; otherwise something honest for the status.
 export function errorMessage(status, body) {
+  if (status === 401) return 'Your session ended. Sign in again.';
   if (body && typeof body.error === 'string' && body.error) return body.error;
   if (status === 0) return "Can't reach the server. Is it running?";
   if (status === 404) return 'That order no longer exists.';
   if (status >= 500) return 'The server had a problem. Try again in a moment.';
   return `The request failed (HTTP ${status}).`;
+}
+
+// authErrorMessage is what the sign-in form says when a call fails. It says as much
+// as the server does and no more: a wrong password and an unknown email read the same.
+export function authErrorMessage(status, body, retryAfterSeconds) {
+  if (status === 0) return "Can't reach the server. Is it running?";
+  if (status === 401) return 'That email and password do not match.';
+  if (status === 409) return 'That email already has an account. Sign in instead.';
+  if (status === 429) return lockoutMessage(retryAfterSeconds);
+  if (status >= 500) return 'The server had a problem. Try again in a moment.';
+  if (body && typeof body.error === 'string' && body.error) return body.error;
+  return `That did not work (HTTP ${status}).`;
+}
+
+// lockoutMessage says how long to wait, rounded up so it is never too short.
+export function lockoutMessage(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return 'Too many attempts. Try again in a little while.';
+  if (s < 90) return `Too many attempts. Try again in ${Math.ceil(s)} seconds.`;
+  const m = Math.ceil(s / 60);
+  return `Too many attempts. Try again in ${m} ${m === 1 ? 'minute' : 'minutes'}.`;
+}
+
+const FIELD_LABELS = { email: 'Email', name: 'Name', password: 'Password', newPassword: 'New password', currentPassword: 'Current password' };
+
+// fieldErrors turns the server's {fields: {email: "must be ..."}} into sentences
+// for each field: "Password must be at least 10 characters".
+export function fieldErrors(body) {
+  const out = {};
+  const fields = body && body.fields && typeof body.fields === 'object' ? body.fields : {};
+  for (const [field, why] of Object.entries(fields)) {
+    out[field] = `${FIELD_LABELS[field] || field} ${why}`;
+  }
+  return out;
+}
+
+const SIGNUP_MIN_PASSWORD = 10;
+
+// validateSignup mirrors the server's easy rules so mistakes show next to the field
+// before anything is sent. The server decides: it also refuses common passwords.
+export function validateSignup(form) {
+  const errors = {};
+  const email = String(form.email ?? '').trim();
+  const name = String(form.name ?? '').trim();
+  const password = String(form.password ?? '');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address';
+  if (!name) errors.name = 'Enter your name';
+  if ([...password].length < SIGNUP_MIN_PASSWORD) errors.password = `Use at least ${SIGNUP_MIN_PASSWORD} characters`;
+  return { ok: Object.keys(errors).length === 0, errors, payload: { email, name, password } };
+}
+
+// greeting is the hello on the top of the board, by the hour on the viewer's clock.
+export function greeting(date = new Date()) {
+  const h = date.getHours();
+  if (h < 5) return 'Good night';
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+// initials are the one or two letters in the account's avatar.
+export function initials(name) {
+  const words = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  const first = [...words[0]][0];
+  const last = words.length > 1 ? [...words[words.length - 1]][0] : '';
+  return (first + last).toUpperCase();
 }
 
 // timeAgo is a short relative time for a card.
