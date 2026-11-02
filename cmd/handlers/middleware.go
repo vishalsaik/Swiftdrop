@@ -59,13 +59,16 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 2. Allowed origin. Set required headers.
+			// 2. Allowed origin. Set required headers. Credentials are allowed so the
+			// browser sends the session cookie; that is only safe because the origin
+			// is one we named, never "*".
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 			// 3. Preflight check.
 			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+csrfHeader)
 				w.Header().Set("Access-Control-Max-Age", "600")
 
 				w.WriteHeader(http.StatusNoContent)

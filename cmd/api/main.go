@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swiftdrop/cmd/handlers"
+	"swiftdrop/internal/auth"
 	"swiftdrop/internal/databases/adapters"
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/payment/gateways"
@@ -91,6 +92,14 @@ func main() {
 	)
 	s := handlers.NewServer(dbConn, payRouter)
 
+	// Accounts and sign-ins. COOKIE_SECURE=true marks the session cookie Secure, for
+	// when TLS is ended by a proxy in front of the server (a direct TLS connection
+	// is detected by itself).
+	authService := auth.New(dbConn)
+	s.Accounts = authService
+	s.SecureCookies = os.Getenv("COOKIE_SECURE") == "true"
+	fmt.Println("sign-in is required. Make the first staff account with: go run ./cmd/user -email you@example.com -name \"Your Name\"")
+
 	// A retried /pay on a paid order is answered from memory: an authorized payment
 	// never changes, so it is the one kind of payment worth keeping.
 	cacheSize := defaultPaymentCacheSize
@@ -128,6 +137,13 @@ func main() {
 	}()
 	fmt.Printf("refund job running every %s\n", refundInterval)
 
+	// Old sessions (ended or unused for a day) are removed once an hour.
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		authService.RunCleanup(ctx, time.Hour)
+	}()
+
 	// The reconciler settles payments that never got an answer by asking the
 	// provider what became of them. It never sends a charge again.
 	reconcileDone := make(chan struct{})
@@ -154,6 +170,7 @@ func main() {
 		stop() // the server died on its own: stop the jobs too
 		<-jobDone
 		<-reconcileDone
+		<-cleanupDone
 		panic(err)
 	case <-ctx.Done():
 	}
@@ -166,4 +183,5 @@ func main() {
 	}
 	<-jobDone
 	<-reconcileDone
+	<-cleanupDone
 }

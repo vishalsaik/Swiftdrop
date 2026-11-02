@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"swiftdrop/internal/domain"
 	"swiftdrop/web"
 )
 
@@ -26,7 +27,13 @@ func (s *Server) ListOrders(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	rows, err := s.DB.ListOrders(r.Context(), limit)
+	var rows []domain.OrderWithPayment
+	var err error
+	if p := principalFrom(r); p.User.Role == domain.RoleStaff {
+		rows, err = s.DB.ListOrders(r.Context(), limit)
+	} else { // a customer's board is their own orders and nothing else
+		rows, err = s.DB.ListOrdersByCustomer(r.Context(), p.User.ID, limit)
+	}
 	if err != nil {
 		log.Printf("database query error listing orders: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to list orders due to an internal server error")

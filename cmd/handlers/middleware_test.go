@@ -131,8 +131,11 @@ func TestCORSPreflight(t *testing.T) {
 	for header, want := range map[string]string{
 		"Access-Control-Allow-Origin":  "http://localhost:3000",
 		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-		"Access-Control-Allow-Headers": "Content-Type",
-		"Vary":                         "Origin",
+		"Access-Control-Allow-Headers": "Content-Type, X-CSRF-Token",
+		// the session cookie is sent only because credentials are allowed, and only
+		// to an origin we named
+		"Access-Control-Allow-Credentials": "true",
+		"Vary":                             "Origin",
 	} {
 		if got := rec.Header().Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
@@ -233,7 +236,7 @@ func TestCORSPreflightFromDisallowedOrigin(t *testing.T) {
 // preflight is a 405 (mux never matches OPTIONS on a POST-only route, so no
 // middleware runs); through Handler() it is answered with 204.
 func TestHandlerWrapsTheWholeRouter(t *testing.T) {
-	s := NewServer(newFakeDB(), testPayRouter())
+	s := newTestServer(newFakeDB(), testPayRouter())
 	preflight := func() *http.Request {
 		req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
 		req.Header.Set("Origin", "http://localhost:3000")
@@ -256,7 +259,7 @@ func TestHandlerWrapsTheWholeRouter(t *testing.T) {
 // End to end through the real chain: a 415 from RequireJSON, a 422 from the
 // validator and a 404 from a handler all carry the CORS header.
 func TestHandlerErrorResponsesCarryCORS(t *testing.T) {
-	s := NewServer(newFakeDB(), testPayRouter())
+	s := newTestServer(newFakeDB(), testPayRouter())
 	tests := []struct {
 		name        string
 		method      string
