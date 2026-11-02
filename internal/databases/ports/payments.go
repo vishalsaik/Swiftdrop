@@ -103,4 +103,5 @@ type Store interface {
 	PaymentStore
 	AlertStore
 	RefundReversalStore
+	AuthStore
 }

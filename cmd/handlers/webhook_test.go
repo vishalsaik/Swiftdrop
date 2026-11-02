@@ -52,7 +52,7 @@ func eventFor(paymentID string, status domain.PaymentStatus) *stubParser {
 }
 
 func webhookServer(db ports.Store, parser payment.EventParser) *Server {
-	s := NewServer(db, testPayRouter())
+	s := newTestServer(db, testPayRouter())
 	s.Webhook = parser
 	return s
 }
@@ -84,7 +84,7 @@ func wantAck(t *testing.T, rec *httptest.ResponseRecorder, want string) {
 // ---- recording an outcome ----------------------------------------------------
 
 func TestAWebhookWithoutAParserIsNotFound(t *testing.T) {
-	s := NewServer(newFakeDB(), testPayRouter())
+	s := newTestServer(newFakeDB(), testPayRouter())
 	rec := postWebhook(s, `{}`)
 	wantStatus(t, rec, http.StatusNotFound)
 	wantErrorContains(t, rec, "not enabled")

@@ -172,3 +172,34 @@ CREATE TABLE IF NOT EXISTS alerts (
     resolved_note TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_one_open_per_subject ON alerts (kind, subject) WHERE resolved_at IS NULL;
+
+-- Accounts and sign-ins. Emails are stored lower case and are unique. Only a slow
+-- salted hash of a password is kept. A session stores the SHA-256 of its token, never
+-- the token, so a copy of this table cannot be used to act as anyone.
+CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    email         TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    role          TEXT NOT NULL CHECK (role IN ('customer', 'staff')),
+    password_hash TEXT NOT NULL,
+    disabled_at   TIMESTAMPTZ,                       -- NULL for a working account
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_email_lower;
+ALTER TABLE users ADD CONSTRAINT users_email_lower CHECK (email = lower(email));
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (email);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    token_hash   TEXT NOT NULL UNIQUE,
+    csrf_token   TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    expires_at   TIMESTAMPTZ NOT NULL CHECK (expires_at > created_at)
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expires_at);
+
+-- An order is found by its customer when a customer lists their own orders.
+CREATE INDEX IF NOT EXISTS orders_customer_idx ON orders (customer_id, created_at DESC);

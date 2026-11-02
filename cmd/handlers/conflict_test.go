@@ -98,7 +98,7 @@ func TestReadyOnAnOrderThatVanishesIsA404(t *testing.T) {
 func TestFiftySimultaneousReadiesSetOneTimestamp(t *testing.T) {
 	db := newFakeDB()
 	db.seed("o1", domain.OrderPreparing)
-	s := NewServer(db, testPayRouter())
+	s := newTestServer(db, testPayRouter())
 
 	stamps := make([]string, racers)
 	fireTogether(racers, func(i int) {
@@ -236,7 +236,7 @@ func TestFiftySimultaneousPaysChargeExactlyOnce(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 2000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 
 	codes := make([]int, racers)
 	fireTogether(racers, func(i int) { codes[i] = post(s, "/orders/o1/pay") })
@@ -264,7 +264,7 @@ func TestFiftySimultaneousPaysChargeExactlyOnce(t *testing.T) {
 func TestFiftySimultaneousCancelsCancelOnce(t *testing.T) {
 	db := newFakeDB()
 	db.seed("o1", domain.OrderCreated)
-	s := NewServer(db, testPayRouter())
+	s := newTestServer(db, testPayRouter())
 
 	codes := make([]int, racers)
 	fireTogether(racers, func(i int) { codes[i] = post(s, "/orders/o1/cancel") })
@@ -279,7 +279,7 @@ func TestFiftySimultaneousCancelsCancelOnce(t *testing.T) {
 func TestFiftySimultaneousAcceptsAssignOneDriver(t *testing.T) {
 	db := newFakeDB()
 	db.seed("o1", domain.OrderPaid)
-	s := NewServer(db, testPayRouter())
+	s := newTestServer(db, testPayRouter())
 
 	codes := make([]int, racers)
 	fireTogether(racers, func(i int) { codes[i] = post(s, "/orders/o1/accept") })
@@ -306,7 +306,7 @@ func TestPayAndCancelRacingChargeAtMostOnce(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 2000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 
 	codes := make([]int, racers)
 	fireTogether(racers, func(i int) {

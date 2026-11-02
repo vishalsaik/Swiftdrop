@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 
+	"swiftdrop/internal/auth"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/order"
@@ -38,6 +39,18 @@ type Server struct {
 	// /pay is the one that is asked most, and for a paid order its answer never
 	// changes. Everything else reads DB, so a screen never sees a stale refund.
 	Lookup PaymentLookup
+
+	// Accounts signs people up and in. Without it nobody can sign in, so every
+	// route that needs an account answers 401 (it fails closed).
+	Accounts Accounts
+	// Identify says who a request is from: the signed-in account behind its cookie,
+	// with the CSRF check for requests that change something. NewServer sets it;
+	// it is a field so a test can say who is signed in without a cookie.
+	Identify func(r *http.Request) (auth.Principal, error)
+	// SecureCookies marks the session cookie Secure, so a browser only sends it over
+	// HTTPS. It is on whenever the connection itself is TLS; set it too when TLS is
+	// ended by a proxy in front of the server.
+	SecureCookies bool
 }
 
 // PaymentLookup reads the payment of an order.
@@ -73,24 +86,35 @@ func NewServer(db ports.Store, pay *payment.Router) *Server {
 	// The middleware chain: links run in this order for every route.
 	s.Router.Use(MaxBody(maxBodyBytes))
 	s.Router.Use(RequireJSON)
+	s.Identify = s.identifyFromCookie
 	s.routes()
 	return s
 }
 
 func (s *Server) routes() {
 	s.Router.HandleFunc("/health", GetHealth).Methods("GET")
-	s.Router.HandleFunc("/orders", s.CreateOrder).Methods("POST")
-	s.Router.HandleFunc("/orders", s.ListOrders).Methods("GET")
-	s.Router.HandleFunc("/orders/{id}", s.GetOrderByID).Methods("GET")
-	s.Router.HandleFunc("/orders/{id}/cancel", s.CancelOrder).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/ready", s.ReadyState).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/deliver", s.DeliverOrder).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/pickup", s.PickupOrder).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/accept", s.AcceptOrder).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/pay", s.PayOrder).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/payment-history", s.PaymentHistory).Methods("GET")
-	s.Router.HandleFunc("/alerts", s.ListAlerts).Methods("GET")
-	s.Router.HandleFunc("/alerts/{id}/resolve", s.ResolveAlert).Methods("POST")
+	// Who may call what. A customer places orders and sees, pays for and cancels
+	// their own; staff run the kitchen and the delivery and see everything. The
+	// health check, the sign-in endpoints, the dashboard's files and Stripe's webhook
+	// (which proves itself by its signature) need no account.
+	s.Router.HandleFunc("/auth/signup", s.SignUp).Methods("POST")
+	s.Router.HandleFunc("/auth/login", s.SignIn).Methods("POST")
+	s.Router.HandleFunc("/auth/logout", s.signedIn(s.SignOut)).Methods("POST")
+	s.Router.HandleFunc("/auth/me", s.signedIn(s.Me)).Methods("GET")
+	s.Router.HandleFunc("/auth/password", s.signedIn(s.ChangePassword)).Methods("POST")
+
+	s.Router.HandleFunc("/orders", s.signedIn(s.CreateOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders", s.signedIn(s.ListOrders)).Methods("GET")
+	s.Router.HandleFunc("/orders/{id}", s.signedIn(s.GetOrderByID)).Methods("GET")
+	s.Router.HandleFunc("/orders/{id}/cancel", s.signedIn(s.CancelOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/pay", s.signedIn(s.PayOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/ready", s.staffOnly(s.ReadyState)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/deliver", s.staffOnly(s.DeliverOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/pickup", s.staffOnly(s.PickupOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/accept", s.staffOnly(s.AcceptOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/payment-history", s.staffOnly(s.PaymentHistory)).Methods("GET")
+	s.Router.HandleFunc("/alerts", s.staffOnly(s.ListAlerts)).Methods("GET")
+	s.Router.HandleFunc("/alerts/{id}/resolve", s.staffOnly(s.ResolveAlert)).Methods("POST")
 	s.Router.HandleFunc("/webhooks/stripe", s.PaymentWebhook).Methods("POST")
 	s.dashboardRoutes()
 }
@@ -130,6 +154,12 @@ func (s *Server) loadOrder(w http.ResponseWriter, r *http.Request) (domain.Order
 			return domain.Order{}, false
 		}
 		writeError(w, http.StatusInternalServerError, "Internal database verification step failed")
+		return domain.Order{}, false
+	}
+	// Someone else's order does not exist as far as a customer can tell: the same
+	// answer as a missing one, so ids cannot be probed.
+	if !mayAccess(r, o) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Order %s could not be found", orderID))
 		return domain.Order{}, false
 	}
 	return o, true
@@ -202,6 +232,16 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
+	}
+
+	// A customer orders for themselves, whatever the body says; staff may place an
+	// order for any customer.
+	if p := principalFrom(r); p.User.Role == domain.RoleCustomer {
+		if orderItem.CustomerID != "" && orderItem.CustomerID != p.User.ID {
+			writeError(w, http.StatusForbidden, "an order can only be placed for your own account")
+			return
+		}
+		orderItem.CustomerID = p.User.ID
 	}
 
 	// The validator chain: first failing rule wins.

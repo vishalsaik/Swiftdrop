@@ -17,6 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"swiftdrop/internal/auth"
+	"swiftdrop/internal/auth/authtest"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/payment"
@@ -32,6 +34,10 @@ import (
 var _ ports.Store = (*fakeDB)(nil)
 
 type fakeDB struct {
+	// Store is the accounts and sign-ins half, an in-memory store that follows the
+	// Postgres contract (see internal/auth/authtest).
+	*authtest.Store
+
 	// mu makes the fake safe for the concurrent-request tests, and makes each
 	// method atomic the way a single SQL statement (or transaction) is.
 	mu     sync.Mutex
@@ -75,6 +81,7 @@ type fakeDB struct {
 	alertBlock  bool // RaiseAlert waits for its context, like a database that hangs
 
 	// unsettledErr and markErr make the stuck-payment calls fail.
+	listedFor    []string // the customers whose own orders were listed
 	unsettledErr error
 	markErr      error
 	reverseErr   error // makes ReverseRefund fail
@@ -90,8 +97,23 @@ type fakeDB struct {
 	acceptDriverIDs []string
 }
 
+// staffPrincipal is who every test server says is signed in, unless a test says
+// otherwise: a staff member, so the tests of the order and payment behaviour are
+// not also tests of signing in. The sign-in rules have their own tests.
+var staffPrincipal = auth.Principal{
+	User:      domain.User{ID: "staff-1", Email: "staff@example.test", Name: "Test Staff", Role: domain.RoleStaff},
+	SessionID: "test-session", CSRFToken: "test-csrf",
+}
+
+// newTestServer is NewServer with a signed-in staff member.
+func newTestServer(db ports.Store, pay *payment.Router) *Server {
+	s := NewServer(db, pay)
+	s.Identify = func(*http.Request) (auth.Principal, error) { return staffPrincipal, nil }
+	return s
+}
+
 func newFakeDB() *fakeDB {
-	return &fakeDB{orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
+	return &fakeDB{Store: authtest.New(), orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
 }
 
 // notFound and the duplicate error below use the same ports sentinels as the
@@ -138,12 +160,30 @@ func (f *fakeDB) GetOrderbyId(_ context.Context, id string) (domain.Order, error
 func (f *fakeDB) ListOrders(_ context.Context, limit int) ([]domain.OrderWithPayment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.listLocked(limit, func(domain.Order) bool { return true })
+}
+
+// ListOrdersByCustomer follows the adapter: one customer's orders, and an empty
+// customer id is refused instead of meaning everyone.
+func (f *fakeDB) ListOrdersByCustomer(_ context.Context, customerID string, limit int) ([]domain.OrderWithPayment, error) {
+	if customerID == "" {
+		return nil, errors.New("the customer id is required")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listedFor = append(f.listedFor, customerID)
+	return f.listLocked(limit, func(o domain.Order) bool { return o.CustomerID == customerID })
+}
+
+func (f *fakeDB) listLocked(limit int, keep func(domain.Order) bool) ([]domain.OrderWithPayment, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	all := make([]domain.Order, 0, len(f.orders))
 	for _, o := range f.orders {
-		all = append(all, o)
+		if keep(o) {
+			all = append(all, o)
+		}
 	}
 	sort.Slice(all, func(i, j int) bool {
 		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
@@ -300,7 +340,7 @@ func doWith(t *testing.T, db *fakeDB, method, path, body, contentType string) *h
 		req.Header.Set("Content-Type", contentType)
 	}
 	rec := httptest.NewRecorder()
-	NewServer(db, testPayRouter()).Router.ServeHTTP(rec, req)
+	newTestServer(db, testPayRouter()).Router.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -428,7 +468,7 @@ func TestRouting(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadOrderMissingIDParam(t *testing.T) {
-	s := NewServer(newFakeDB(), testPayRouter())
+	s := newTestServer(newFakeDB(), testPayRouter())
 	rec := httptest.NewRecorder()
 	// Not routed through mux, so there is no {id} variable at all.
 	_, ok := s.loadOrder(rec, httptest.NewRequest(http.MethodGet, "/orders/", nil))
@@ -1110,7 +1150,7 @@ func seedPayable(db *fakeDB, id string, pt domain.PaymentType, totalCents int64)
 func payWith(t *testing.T, db *fakeDB, router *payment.Router, id string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	NewServer(db, router).Router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders/"+id+"/pay", nil))
+	newTestServer(db, router).Router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders/"+id+"/pay", nil))
 	return rec
 }
 

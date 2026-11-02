@@ -37,7 +37,7 @@ func payJSON(t *testing.T, db *fakeDB, router *payment.Router, id, body string) 
 	req := httptest.NewRequest(http.MethodPost, "/orders/"+id+"/pay", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	NewServer(db, router).Router.ServeHTTP(rec, req)
+	newTestServer(db, router).Router.ServeHTTP(rec, req)
 	return rec
 }
 

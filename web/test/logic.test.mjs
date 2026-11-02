@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   COLUMNS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline, noticeFor,
   stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent, describeAlert, openAlerts,
+  capabilities, authErrorMessage, lockoutMessage, fieldErrors, validateSignup, greeting, initials,
 } from '../static/logic.js';
 
 const order = (over = {}) => ({
@@ -403,4 +404,114 @@ test('timeAgo is short and ignores the unset timestamp', () => {
   assert.equal(timeAgo('', now), '');
   assert.equal(timeAgo('garbage', now), '');
   assert.equal(timeAgo(new Date(now + 5000).toISOString(), now), 'just now');
+});
+
+// ---------------------------------------------------------------------------
+// accounts: what each role is offered, and what the sign-in form says
+// ---------------------------------------------------------------------------
+
+test('a customer is offered paying and cancelling their own order and nothing of the kitchen', () => {
+  const keys = (o, role) => actionsFor(o, role).map((a) => a.key);
+  assert.deepEqual(keys(order({ state: 'created' }), 'customer'), ['pay', 'cancel']);
+  assert.deepEqual(keys(order({ state: 'paid' }), 'customer'), ['cancel']);
+  assert.deepEqual(keys(order({ state: 'preparing', foodReady: '2026-01-01T00:00:00Z', assignedDriverId: 'd' }), 'customer'), ['cancel']);
+  assert.deepEqual(keys(order({ state: 'picked_up' }), 'customer'), []);
+  assert.deepEqual(keys(order({ state: 'delivered' }), 'customer'), []);
+  // staff still get the whole kitchen, and that is the default
+  assert.deepEqual(keys(order({ state: 'paid' }), 'staff'), ['accept', 'cancel']);
+  assert.deepEqual(keys(order({ state: 'paid' })), ['accept', 'cancel']);
+});
+
+test('a customer is spoken to as the customer: "Pay now", and their own refund', () => {
+  const [pay] = actionsFor(order({ state: 'created' }), 'customer');
+  assert.equal(pay.label, 'Pay now');
+  assert.equal(actionsFor(order({ state: 'created' }), 'staff')[0].label, 'Take payment');
+
+  const retry = actionsFor(order({ state: 'payment_pending', payment: { status: 'processing' } }), 'customer')[0];
+  assert.match(retry.note, /never charged twice/);
+  const again = actionsFor(order({ state: 'created', payment: { status: 'declined', attempt: 1, maxAttempts: 3 } }), 'customer')[0];
+  assert.equal(again.label, 'Try payment again');
+
+  const charged = order({ state: 'paid', paymentType: 'card', payment: { status: 'authorized', amountCents: 1000 } });
+  const cancel = actionsFor(charged, 'customer').find((a) => a.key === 'cancel');
+  assert.match(cancel.note, /You were charged/);
+  assert.equal(cancel.label, 'Cancel and refund');
+  assert.equal(actionsFor(order({ state: 'created' }), 'customer').find((a) => a.key === 'cancel').note, '');
+});
+
+test('only staff are shown the alerts, the history and everyone\'s orders', () => {
+  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true });
+  for (const role of ['customer', 'admin', '', undefined]) {
+    assert.ok(Object.values(capabilities(role)).every((v) => v === false), String(role));
+  }
+});
+
+test('the sign-in form speaks plainly and never says which half was wrong', () => {
+  assert.match(authErrorMessage(0), /reach the server/);
+  assert.equal(authErrorMessage(401, { error: 'email or password is incorrect' }), 'That email and password do not match.');
+  assert.match(authErrorMessage(409), /already has an account/);
+  assert.match(authErrorMessage(500), /server had a problem/);
+  assert.equal(authErrorMessage(400, { error: 'invalid request body' }), 'invalid request body');
+  assert.match(authErrorMessage(418, null), /HTTP 418/);
+  assert.match(authErrorMessage(429, null, 600), /10 minutes/);
+});
+
+test('a lockout says how long, rounded up and never too short', () => {
+  assert.equal(lockoutMessage(30), 'Too many attempts. Try again in 30 seconds.');
+  assert.equal(lockoutMessage(29.2), 'Too many attempts. Try again in 30 seconds.');
+  assert.equal(lockoutMessage(89), 'Too many attempts. Try again in 89 seconds.');
+  assert.equal(lockoutMessage(90), 'Too many attempts. Try again in 2 minutes.');
+  assert.equal(lockoutMessage(899), 'Too many attempts. Try again in 15 minutes.');
+  assert.equal(lockoutMessage(901), 'Too many attempts. Try again in 16 minutes.');
+  for (const bad of [undefined, null, 'soon', 0, -5, NaN]) {
+    assert.equal(lockoutMessage(bad), 'Too many attempts. Try again in a little while.', String(bad));
+  }
+});
+
+test('the server\'s field problems become sentences next to the field', () => {
+  assert.deepEqual(fieldErrors({ error: 'x', fields: { email: 'must be a valid email address', password: 'must be at least 10 characters', newPassword: 'must be different from the current one', other: 'is odd' } }), {
+    email: 'Email must be a valid email address',
+    password: 'Password must be at least 10 characters',
+    newPassword: 'New password must be different from the current one',
+    other: 'other is odd',
+  });
+  for (const none of [null, undefined, {}, { fields: null }, { fields: 'x' }]) assert.deepEqual(fieldErrors(none), {});
+});
+
+test('the sign-up form catches the easy mistakes before anything is sent', () => {
+  const ok = validateSignup({ email: '  ada@example.com ', name: ' Ada Lovelace ', password: 'a long enough phrase' });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.payload, { email: 'ada@example.com', name: 'Ada Lovelace', password: 'a long enough phrase' });
+  const bad = validateSignup({ email: 'nope', name: '  ', password: 'short' });
+  assert.equal(bad.ok, false);
+  assert.deepEqual(Object.keys(bad.errors).sort(), ['email', 'name', 'password']);
+  for (const email of ['a@b', 'a b@c.co', '@c.co', 'a@.co']) assert.ok(validateSignup({ email, name: 'A', password: 'x'.repeat(10) }).errors.email, email);
+  // letters are counted, not bytes: nine accented letters are nine characters
+  assert.equal(validateSignup({ email: 'a@b.co', name: 'A', password: 'ééééééééé' }).errors.password, 'Use at least 10 characters');
+  assert.equal(validateSignup({ email: 'a@b.co', name: 'A', password: 'éééééééééé' }).ok, true);
+  assert.equal(validateSignup({}).ok, false);
+});
+
+test('the board greets by the hour and the avatar shows initials', () => {
+  const at = (h) => new Date(2026, 10, 2, h, 0, 0);
+  assert.equal(greeting(at(0)), 'Good night');
+  assert.equal(greeting(at(4)), 'Good night');
+  assert.equal(greeting(at(5)), 'Good morning');
+  assert.equal(greeting(at(11)), 'Good morning');
+  assert.equal(greeting(at(12)), 'Good afternoon');
+  assert.equal(greeting(at(17)), 'Good afternoon');
+  assert.equal(greeting(at(18)), 'Good evening');
+  assert.equal(greeting(at(23)), 'Good evening');
+  assert.match(greeting(), /^Good (night|morning|afternoon|evening)$/);
+
+  assert.equal(initials('Ada Lovelace'), 'AL');
+  assert.equal(initials('  ada  '), 'A');
+  assert.equal(initials('Jean Luc Picard'), 'JP');
+  assert.equal(initials('élan vital'), 'ÉV');
+  for (const none of ['', '   ', null, undefined]) assert.equal(initials(none), '?');
+});
+
+test('a signed-out answer anywhere says the session ended, whatever else it says', () => {
+  assert.equal(errorMessage(401, { error: 'sign in required' }), 'Your session ended. Sign in again.');
+  assert.equal(errorMessage(403, { error: 'this needs a staff account' }), 'this needs a staff account');
 });

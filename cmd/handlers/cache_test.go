@@ -36,7 +36,7 @@ func TestARetriedPayOnAPaidOrderStopsReadingThePaymentFromTheDatabase(t *testing
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 	cache := paymentcache.New(db, 100)
 	s.Lookup = cache
 
@@ -69,7 +69,7 @@ func TestTheOrderViewIsNeverServedFromTheCache(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 	s.Lookup = paymentcache.New(db, 100)
 	payOnce(t, s, "o1")
 	payOnce(t, s, "o1") // now cached
@@ -93,7 +93,7 @@ func TestAPaymentThatIsStillProcessingIsReadFreshOnEveryRetry(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedProcessing(db, "o1", "pay-1", 1000, 1<<40) // a live lease for a very long time
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 	s.Lookup = paymentcache.New(db, 100)
 
 	for range 3 {
@@ -117,7 +117,7 @@ func TestWithoutACacheTheServerReadsTheDatabase(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 	payOnce(t, s, "o1")
 	before := db.payGetCalls
 	payOnce(t, s, "o1")

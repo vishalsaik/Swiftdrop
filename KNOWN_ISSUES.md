@@ -42,7 +42,12 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 
 - Nothing sweeps old `payment_pending` orders.
 - A `payment_pending` order whose payment never gets an answer (the request never reached Stripe, or its event was lost) stays pending until someone cancels it.
-- There is no authentication. Anyone who can reach the server can pay, accept or cancel any order, and the dashboard has no login.
+- Orders made before accounts existed carry a free-text `customerId` (like `cust-1`) that belongs to no account, so only staff can see them. A customer's own orders are the ones placed after they signed up.
+- **Accounts are basic.** No email address checking (an account can be made with any address), no password reset, no two-factor sign-in, no screen for staff to make, disable or delete accounts (a disabled account is a database change, and it ends its sessions at the next request). Staff are made with `go run ./cmd/user`.
+- **The sign-in limits live in the server's memory.** Several servers each count for themselves, and a restart forgets the counts. They are per email (5 in 15 minutes), per address (30) and for sign-ups per address (10 an hour).
+- **The address that is limited is the connection's, not a forwarding header.** Behind a proxy that is the proxy's address, so every person would share one limit until the server is told which proxy to trust.
+- **Sessions use the application's clock.** Their lifetimes are days and hours, so a few seconds of drift between servers does not matter, unlike the payment leases, which use the database's.
+- **One CSRF token per session, kept for the session's life.** The cookie is `SameSite=Strict` as well, which already stops other sites from sending it, so the token is the second layer.
 
 ## The dashboard
 
@@ -61,5 +66,4 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 
 - Wallet payments go to the same Stripe gateway as cards.
 - `/accept` assigns a random UUID as the driver. No driver registry, no dispatch.
-- No authentication.
 - Without `STRIPE_KEY` the fake gateway is used. Use only Stripe **test-mode** keys while developing.

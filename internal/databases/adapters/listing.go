@@ -63,6 +63,18 @@ func derefInt64(n *int64) int64 {
 }
 
 func (db *DBAdapter) ListOrders(ctx context.Context, limit int) ([]domain.OrderWithPayment, error) {
+	return db.listOrders(ctx, false, "", limit)
+}
+
+func (db *DBAdapter) ListOrdersByCustomer(ctx context.Context, customerID string, limit int) ([]domain.OrderWithPayment, error) {
+	if customerID == "" {
+		return nil, errors.New("failed to list orders: the customer id is required")
+	}
+	return db.listOrders(ctx, true, customerID, limit)
+}
+
+// listOrders is both listings: of everyone's orders, or of one customer's.
+func (db *DBAdapter) listOrders(ctx context.Context, onlyCustomer bool, customerID string, limit int) ([]domain.OrderWithPayment, error) {
 	if limit <= 0 {
 		return nil, errors.New("failed to list orders: limit must be positive")
 	}
@@ -76,9 +88,10 @@ func (db *DBAdapter) ListOrders(ctx context.Context, limit int) ([]domain.OrderW
 		LEFT JOIN LATERAL (
 			SELECT ` + paymentColumns + ` FROM payments WHERE order_id = o.id ORDER BY attempt DESC LIMIT 1
 		) p ON true
+		WHERE (NOT $2::boolean OR o.customer_id = $3)
 		ORDER BY o.created_at DESC, o.id
 		LIMIT $1`
-	rows, err := db.Pool.Query(ctx, query, limit)
+	rows, err := db.Pool.Query(ctx, query, limit, onlyCustomer, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list orders: %w", err)
 	}

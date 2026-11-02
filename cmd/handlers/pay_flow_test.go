@@ -122,7 +122,7 @@ func TestAnIdempotencyKeyHeaderFromTheClientIsIgnored(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 	req := newPost("/orders/o1/pay")
 	req.Header.Set("Idempotency-Key", "client-chosen")
 	rec := serve(s, req)
@@ -299,7 +299,7 @@ func TestFiftySimultaneousTakeoversOfAnExpiredPaymentCallTheProviderOnce(t *test
 	g := approving()
 	db := newFakeDB()
 	seedProcessing(db, "o1", "pay-orig", 1000, -time.Minute)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 
 	codes := make([]int, racers)
 	fireTogether(racers, func(i int) { codes[i] = post(s, "/orders/o1/pay") })
@@ -320,7 +320,7 @@ func TestFiftySimultaneousRetriesAfterSuccessAllReplay(t *testing.T) {
 	g := approving()
 	db := newFakeDB()
 	seedPayable(db, "o1", domain.PaymentCard, 1000)
-	s := NewServer(db, routerOf(g, g))
+	s := newTestServer(db, routerOf(g, g))
 	if post(s, "/orders/o1/pay") != http.StatusOK {
 		t.Fatal("the first payment failed")
 	}
