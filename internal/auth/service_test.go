@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"swiftdrop/internal/auth/authtest"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 )
@@ -19,176 +20,6 @@ import (
 // ---------------------------------------------------------------------------
 // fakes
 // ---------------------------------------------------------------------------
-
-// memStore follows the Postgres adapter's contract: emails are unique, a session
-// is found by its token hash together with its user, and ending a gone session is
-// not an error.
-type memStore struct {
-	mu       sync.Mutex
-	users    map[string]*stored // by email
-	sessions map[string]domain.Session
-	// errors to return, by call
-	createUserErr, getUserErr, updateErr, createSessErr, getSessErr, touchErr, deleteSessErr, deleteUserSessErr, deleteExpiredErr error
-	touches                                                                                                                       int
-}
-
-type stored struct {
-	user domain.User
-	hash string
-}
-
-func newMemStore() *memStore {
-	return &memStore{users: map[string]*stored{}, sessions: map[string]domain.Session{}}
-}
-
-func (m *memStore) CreateUser(_ context.Context, u domain.User, hash string) (domain.User, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.createUserErr != nil {
-		return domain.User{}, m.createUserErr
-	}
-	if _, taken := m.users[u.Email]; taken {
-		return domain.User{}, ports.ErrEmailTaken
-	}
-	u.CreatedAt = time.Now()
-	m.users[u.Email] = &stored{user: u, hash: hash}
-	return u, nil
-}
-
-func (m *memStore) GetUserByEmail(_ context.Context, email string) (domain.User, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.getUserErr != nil {
-		return domain.User{}, "", m.getUserErr
-	}
-	s, ok := m.users[email]
-	if !ok {
-		return domain.User{}, "", ports.ErrUserNotFound
-	}
-	return s.user, s.hash, nil
-}
-
-func (m *memStore) GetUserByID(_ context.Context, id string) (domain.User, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, s := range m.users {
-		if s.user.ID == id {
-			return s.user, nil
-		}
-	}
-	return domain.User{}, ports.ErrUserNotFound
-}
-
-func (m *memStore) UpdatePasswordHash(_ context.Context, id, hash string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.updateErr != nil {
-		return m.updateErr
-	}
-	for _, s := range m.users {
-		if s.user.ID == id {
-			s.hash = hash
-			return nil
-		}
-	}
-	return ports.ErrUserNotFound
-}
-
-func (m *memStore) CreateSession(_ context.Context, s domain.Session) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.createSessErr != nil {
-		return m.createSessErr
-	}
-	m.sessions[s.TokenHash] = s
-	return nil
-}
-
-func (m *memStore) GetSession(_ context.Context, tokenHash string) (domain.Session, domain.User, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.getSessErr != nil {
-		return domain.Session{}, domain.User{}, m.getSessErr
-	}
-	s, ok := m.sessions[tokenHash]
-	if !ok {
-		return domain.Session{}, domain.User{}, ports.ErrSessionNotFound
-	}
-	for _, u := range m.users {
-		if u.user.ID == s.UserID {
-			return s, u.user, nil
-		}
-	}
-	return domain.Session{}, domain.User{}, ports.ErrSessionNotFound
-}
-
-func (m *memStore) TouchSession(_ context.Context, id string, at time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.touches++
-	if m.touchErr != nil {
-		return m.touchErr
-	}
-	for h, s := range m.sessions {
-		if s.ID == id {
-			s.LastSeenAt = at
-			m.sessions[h] = s
-		}
-	}
-	return nil
-}
-
-func (m *memStore) DeleteSession(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.deleteSessErr != nil {
-		return m.deleteSessErr
-	}
-	for h, s := range m.sessions {
-		if s.ID == id {
-			delete(m.sessions, h)
-		}
-	}
-	return nil
-}
-
-func (m *memStore) DeleteUserSessions(_ context.Context, userID, except string) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.deleteUserSessErr != nil {
-		return 0, m.deleteUserSessErr
-	}
-	var n int64
-	for h, s := range m.sessions {
-		if s.UserID == userID && s.ID != except {
-			delete(m.sessions, h)
-			n++
-		}
-	}
-	return n, nil
-}
-
-func (m *memStore) DeleteExpiredSessions(_ context.Context, now, idleBefore time.Time) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.deleteExpiredErr != nil {
-		return 0, m.deleteExpiredErr
-	}
-	var n int64
-	for h, s := range m.sessions {
-		if !s.ExpiresAt.After(now) || s.LastSeenAt.Before(idleBefore) {
-			delete(m.sessions, h)
-			n++
-		}
-	}
-	return n, nil
-}
-
-func (m *memStore) sessionCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.sessions)
-}
 
 // clock is a settable time.
 type clock struct {
@@ -210,12 +41,12 @@ func (c *clock) advance(d time.Duration) {
 
 type rig struct {
 	svc   *Service
-	store *memStore
+	store *authtest.Store
 	clock *clock
 }
 
 func newRig() *rig {
-	st := newMemStore()
+	st := authtest.New()
 	c := &clock{t: t0}
 	s := New(st)
 	s.Params = cheap
@@ -282,9 +113,9 @@ func TestSigningUpMakesACustomerWhoseEmailIsNormalisedAndPasswordHashed(t *testi
 	if u.Email != "ada@example.com" || u.Name != "Ada Lovelace" || u.Role != domain.RoleCustomer || u.ID == "" {
 		t.Errorf("user = %+v", u)
 	}
-	stored := r.store.users["ada@example.com"]
-	if stored == nil || strings.Contains(stored.hash, goodPassword) || !strings.HasPrefix(stored.hash, "$argon2id$") {
-		t.Errorf("stored hash = %q, want an argon2id hash and never the password", stored.hash)
+	stored := r.store.Users["ada@example.com"]
+	if stored == nil || strings.Contains(stored.Hash, goodPassword) || !strings.HasPrefix(stored.Hash, "$argon2id$") {
+		t.Errorf("stored hash = %v, want an argon2id hash and never the password", stored)
 	}
 }
 
@@ -314,7 +145,7 @@ func TestSigningUpNamesEveryFieldThatIsWrong(t *testing.T) {
 	if !strings.Contains(inv.Error(), "email") {
 		t.Errorf("message = %q", inv.Error())
 	}
-	if len(r.store.users) != 0 {
+	if len(r.store.Users) != 0 {
 		t.Error("an account was made from invalid input")
 	}
 }
@@ -347,7 +178,7 @@ func TestAnEmailThatIsTakenIsSaidSoAndABrokenStoreIsPassedOn(t *testing.T) {
 	if _, err := r.svc.SignUp(ctx, "9.9.9.9", "ADA@example.com", "Other Ada", goodPassword); !errors.Is(err, ports.ErrEmailTaken) {
 		t.Errorf("error = %v, want ErrEmailTaken", err)
 	}
-	r.store.createUserErr = errors.New("connection refused")
+	r.store.CreateUserErr = errors.New("connection refused")
 	if _, err := r.svc.SignUp(ctx, "9.9.9.9", "new@example.com", "New Person", goodPassword); err == nil || errors.Is(err, ports.ErrEmailTaken) {
 		t.Errorf("error = %v, want the store's failure", err)
 	}
@@ -391,7 +222,7 @@ func TestSigningInGivesATokenThatIsNeverStoredAndIdentifiesTheUser(t *testing.T)
 	if p.User.Email != "ada@example.com" || p.SessionID == "" || len(p.CSRFToken) != tokenLength {
 		t.Errorf("principal = %+v", p)
 	}
-	for hash, s := range r.store.sessions {
+	for hash, s := range r.store.Sessions {
 		if hash == token || s.TokenHash == token || strings.Contains(hash, token) {
 			t.Error("the token itself is stored: only its hash may be")
 		}
@@ -410,9 +241,9 @@ func TestEveryFailedSignInSaysTheSameThing(t *testing.T) {
 	r := newRig()
 	r.signedUp(t, "ada@example.com")
 	r.signedUp(t, "off@example.com")
-	disabled := r.store.users["off@example.com"]
+	disabled := r.store.Users["off@example.com"]
 	now := t0
-	disabled.user.DisabledAt = &now
+	disabled.User.DisabledAt = &now
 
 	for name, c := range map[string]struct{ email, password string }{
 		"wrong password":                     {"ada@example.com", "not the password at all"},
@@ -425,7 +256,7 @@ func TestEveryFailedSignInSaysTheSameThing(t *testing.T) {
 			t.Errorf("%s: error = %v, want ErrBadCredentials", name, err)
 		}
 	}
-	if r.store.sessionCount() != 0 {
+	if r.store.SessionCount() != 0 {
 		t.Error("a failed sign-in started a session")
 	}
 }
@@ -492,15 +323,15 @@ func TestAWeakOldHashIsReplacedAtSignInAndAFailureToDoSoIsOnlyLogged(t *testing.
 	r := newRig()
 	weak := Params{Time: 1, MemoryKiB: 8, Threads: 1, KeyLen: 16, SaltLen: 8}
 	h, _ := Hash(goodPassword, weak)
-	r.store.users["ada@example.com"] = &stored{user: domain.User{ID: "u1", Email: "ada@example.com", Name: "Ada", Role: domain.RoleCustomer}, hash: h}
+	r.store.Users["ada@example.com"] = &authtest.Stored{User: domain.User{ID: "u1", Email: "ada@example.com", Name: "Ada", Role: domain.RoleCustomer}, Hash: h}
 
 	r.signedIn(t, "ada@example.com")
-	if got := r.store.users["ada@example.com"].hash; got == h || !strings.Contains(got, "m=64,") {
+	if got := r.store.Users["ada@example.com"].Hash; got == h || !strings.Contains(got, "m=64,") {
 		t.Errorf("hash = %q, want it replaced with the current cost", got)
 	}
 
-	r.store.users["ada@example.com"].hash = h
-	r.store.updateErr = errors.New("connection refused")
+	r.store.Users["ada@example.com"].Hash = h
+	r.store.UpdateErr = errors.New("connection refused")
 	if _, _, err := r.svc.SignIn(ctx, "1.1.1.1", "ada@example.com", goodPassword); err != nil {
 		t.Errorf("a failed upgrade stopped the sign-in: %v", err)
 	}
@@ -511,7 +342,7 @@ func TestAWeakOldHashIsReplacedAtSignInAndAFailureToDoSoIsOnlyLogged(t *testing.
 
 func TestAHashWeCannotReadIsAFailedSignInNotACrash(t *testing.T) {
 	r := newRig()
-	r.store.users["ada@example.com"] = &stored{user: domain.User{ID: "u1", Email: "ada@example.com", Role: domain.RoleCustomer}, hash: "garbage"}
+	r.store.Users["ada@example.com"] = &authtest.Stored{User: domain.User{ID: "u1", Email: "ada@example.com", Role: domain.RoleCustomer}, Hash: "garbage"}
 	if _, _, err := r.svc.SignIn(ctx, "1.1.1.1", "ada@example.com", goodPassword); !errors.Is(err, ErrBadCredentials) {
 		t.Errorf("error = %v, want ErrBadCredentials", err)
 	}
@@ -520,12 +351,12 @@ func TestAHashWeCannotReadIsAFailedSignInNotACrash(t *testing.T) {
 func TestStoreFailuresWhileSigningInArePassedOnAndNeverLookLikeABadPassword(t *testing.T) {
 	r := newRig()
 	r.signedUp(t, "ada@example.com")
-	r.store.getUserErr = errors.New("connection refused")
+	r.store.GetUserErr = errors.New("connection refused")
 	if _, _, err := r.svc.SignIn(ctx, "1.1.1.1", "ada@example.com", goodPassword); err == nil || errors.Is(err, ErrBadCredentials) {
 		t.Errorf("error = %v, want the store's failure", err)
 	}
-	r.store.getUserErr = nil
-	r.store.createSessErr = errors.New("connection refused")
+	r.store.GetUserErr = nil
+	r.store.CreateSessionErr = errors.New("connection refused")
 	if _, _, err := r.svc.SignIn(ctx, "1.1.1.1", "ada@example.com", goodPassword); err == nil || errors.Is(err, ErrBadCredentials) {
 		t.Errorf("error = %v, want the store's failure", err)
 	}
@@ -579,7 +410,7 @@ func TestASessionEndsWhenItsLifetimeOrItsIdleTimeIsUp(t *testing.T) {
 	if _, err := r.svc.Authenticate(ctx, token); !errors.Is(err, ErrUnauthenticated) {
 		t.Errorf("after the idle time: %v, want ErrUnauthenticated", err)
 	}
-	if r.store.sessionCount() != 0 {
+	if r.store.SessionCount() != 0 {
 		t.Error("an ended session was left in the store")
 	}
 
@@ -602,7 +433,7 @@ func TestADisabledAccountsSessionStopsWorking(t *testing.T) {
 	r.signedUp(t, "ada@example.com")
 	token, _ := r.signedIn(t, "ada@example.com")
 	now := r.clock.now()
-	r.store.users["ada@example.com"].user.DisabledAt = &now
+	r.store.Users["ada@example.com"].User.DisabledAt = &now
 	if _, err := r.svc.Authenticate(ctx, token); !errors.Is(err, ErrUnauthenticated) {
 		t.Errorf("error = %v, want ErrUnauthenticated", err)
 	}
@@ -616,13 +447,13 @@ func TestLastSeenIsWrittenAtMostOncePerMinute(t *testing.T) {
 		r.clock.advance(2 * time.Second)
 		r.svc.Authenticate(ctx, token)
 	}
-	if r.store.touches != 0 {
-		t.Errorf("%d writes within a minute, want none", r.store.touches)
+	if r.store.Touches != 0 {
+		t.Errorf("%d writes within a minute, want none", r.store.Touches)
 	}
 	r.clock.advance(time.Minute)
 	r.svc.Authenticate(ctx, token)
-	if r.store.touches != 1 {
-		t.Errorf("%d writes after a minute, want 1", r.store.touches)
+	if r.store.Touches != 1 {
+		t.Errorf("%d writes after a minute, want 1", r.store.Touches)
 	}
 }
 
@@ -632,21 +463,21 @@ func TestStoreFailuresWhileCheckingASessionAreNotASignOut(t *testing.T) {
 	r.signedUp(t, "ada@example.com")
 	token, _ := r.signedIn(t, "ada@example.com")
 
-	r.store.getSessErr = errors.New("connection refused")
+	r.store.GetSessionErr = errors.New("connection refused")
 	if _, err := r.svc.Authenticate(ctx, token); err == nil || errors.Is(err, ErrUnauthenticated) {
 		t.Errorf("error = %v, want the store's failure, not 'signed out'", err)
 	}
-	r.store.getSessErr = nil
+	r.store.GetSessionErr = nil
 
 	r.clock.advance(time.Hour)
-	r.store.touchErr = errors.New("connection refused")
+	r.store.TouchErr = errors.New("connection refused")
 	if _, err := r.svc.Authenticate(ctx, token); err != nil {
 		t.Errorf("a failed 'last seen' write signed the person out: %v", err)
 	}
-	r.store.touchErr = nil
+	r.store.TouchErr = nil
 
 	r.clock.advance(DefaultSessionLifetime)
-	r.store.deleteSessErr = errors.New("connection refused")
+	r.store.DeleteSessionErr = errors.New("connection refused")
 	if _, err := r.svc.Authenticate(ctx, token); !errors.Is(err, ErrUnauthenticated) {
 		t.Errorf("error = %v, want ErrUnauthenticated", err)
 	}
@@ -745,23 +576,23 @@ func TestStoreFailuresWhileChangingThePasswordArePassedOn(t *testing.T) {
 	_, p := r.signedIn(t, "ada@example.com")
 	boom := errors.New("connection refused")
 
-	r.store.getUserErr = boom
+	r.store.GetUserErr = boom
 	if err := r.svc.ChangePassword(ctx, p, goodPassword, "a brand new passphrase"); !errors.Is(err, boom) {
 		t.Errorf("reading the account: %v", err)
 	}
-	r.store.getUserErr = nil
-	r.store.updateErr = boom
+	r.store.GetUserErr = nil
+	r.store.UpdateErr = boom
 	if err := r.svc.ChangePassword(ctx, p, goodPassword, "a brand new passphrase"); !errors.Is(err, boom) {
 		t.Errorf("saving: %v", err)
 	}
-	r.store.updateErr = nil
-	r.store.deleteUserSessErr = boom
+	r.store.UpdateErr = nil
+	r.store.DeleteUserSessionsErr = boom
 	if err := r.svc.ChangePassword(ctx, p, goodPassword, "a brand new passphrase"); !errors.Is(err, boom) {
 		t.Errorf("ending the other sign-ins: %v", err)
 	}
 	// a hash we cannot read is an error, not "wrong password"
-	r.store.deleteUserSessErr = nil
-	r.store.users["ada@example.com"].hash = "garbage"
+	r.store.DeleteUserSessionsErr = nil
+	r.store.Users["ada@example.com"].Hash = "garbage"
 	if err := r.svc.ChangePassword(ctx, p, goodPassword, "a brand new passphrase"); err == nil || errors.Is(err, ErrWrongPassword) {
 		t.Errorf("an unreadable hash: %v", err)
 	}
@@ -778,8 +609,8 @@ func TestOldSessionsAreCleanedUp(t *testing.T) {
 	r.clock.advance(DefaultIdleTimeout + time.Hour)
 	r.signedIn(t, "ada@example.com") // a fresh one
 	n, err := r.svc.Cleanup(ctx)
-	if err != nil || n != 1 || r.store.sessionCount() != 1 {
-		t.Errorf("removed %d (%v), %d left, want 1 removed and 1 left", n, err, r.store.sessionCount())
+	if err != nil || n != 1 || r.store.SessionCount() != 1 {
+		t.Errorf("removed %d (%v), %d left, want 1 removed and 1 left", n, err, r.store.SessionCount())
 	}
 }
 
@@ -794,15 +625,13 @@ func TestTheCleanupLoopRunsNowAndOnEveryTickAndStops(t *testing.T) {
 	done := make(chan struct{})
 	go func() { r.svc.RunCleanup(runCtx, 5*time.Millisecond); close(done) }()
 	deadline := time.Now().Add(3 * time.Second)
-	for r.store.sessionCount() != 0 && time.Now().Before(deadline) {
+	for r.store.SessionCount() != 0 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if r.store.sessionCount() != 0 {
+	if r.store.SessionCount() != 0 {
 		t.Error("the loop did not remove the old session")
 	}
-	r.store.mu.Lock()
-	r.store.deleteExpiredErr = errors.New("connection refused")
-	r.store.mu.Unlock()
+	r.store.FailDeleteExpired(errors.New("connection refused"))
 	for !strings.Contains(logs.String(), "removing old sessions") && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -880,7 +709,7 @@ func TestEachStepOfSigningInStopsIfRandomnessFails(t *testing.T) {
 			if _, _, err := r.svc.SignIn(ctx, "1.1.1.1", "ada@example.com", goodPassword); err == nil || errors.Is(err, ErrBadCredentials) {
 				t.Errorf("error = %v, want the randomness failure", err)
 			}
-			if r.store.sessionCount() != 0 {
+			if r.store.SessionCount() != 0 {
 				t.Error("a session was started anyway")
 			}
 		})

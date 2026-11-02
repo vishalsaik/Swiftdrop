@@ -29,6 +29,11 @@ type IDatabase interface {
 	// are never from two different moments. limit must be positive.
 	ListOrders(ctx context.Context, limit int) ([]domain.OrderWithPayment, error)
 
+	// ListOrdersByCustomer is ListOrders for one customer's orders only. An empty
+	// customer id is an error, never "everyone": a bug that loses the id must not
+	// turn into showing every customer's orders.
+	ListOrdersByCustomer(ctx context.Context, customerID string, limit int) ([]domain.OrderWithPayment, error)
+
 	// UpdateOrderState is a compare-and-set: it moves the order from `from`
 	// to `to` only if it is still in `from`, and returns ErrStateConflict if
 	// it is not (or ErrOrderNotFound if there is no such order). Of two
