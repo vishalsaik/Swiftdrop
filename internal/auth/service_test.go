@@ -154,7 +154,7 @@ func TestEmailAndNameRules(t *testing.T) {
 	for email, ok := range map[string]bool{
 		"a@b.co": true, "first.last+tag@sub.example.org": true,
 		"": false, "a@b": false, "@b.co": false, "a@": false, "a b@c.co": false,
-		"Ada <a@b.co>": false, "a@b.co.": false, "a@@b.co": false,
+		"Ada <a@b.co>": false, "<a@b.co>": false, "a@b.co.": false, "a@@b.co": false,
 		strings.Repeat("a", 250) + "@b.co": false,
 	} {
 		if got := validEmail(email); got != ok {
@@ -163,6 +163,9 @@ func TestEmailAndNameRules(t *testing.T) {
 	}
 	if validName("") == "" || validName(strings.Repeat("x", 81)) == "" || validName("tab\there") == "" {
 		t.Error("an empty, over-long or control-character name was accepted")
+	}
+	if validName(strings.Repeat("x", 80)) != "" || validName(strings.Repeat("é", 80)) != "" {
+		t.Error("a name of exactly 80 characters was refused")
 	}
 	if validName("Zoë Ångström-Ñ") != "" {
 		t.Error("a name with accents was refused")
@@ -416,15 +419,16 @@ func TestASessionEndsWhenItsLifetimeOrItsIdleTimeIsUp(t *testing.T) {
 
 	// absolute: used every few hours, but 14 days is the most
 	token, _ = r.signedIn(t, "ada@example.com")
-	for range 13 * 4 { // 13 days of use every 6 hours
+	for range 55 { // 13 days and 18 hours of use every 6 hours
 		r.clock.advance(6 * time.Hour)
 		if _, err := r.svc.Authenticate(ctx, token); err != nil {
 			t.Fatalf("an active session ended early: %v", err)
 		}
 	}
-	r.clock.advance(48 * time.Hour)
+	// used 6 hours ago, so nowhere near idle, but this is exactly 14 days after it began
+	r.clock.advance(6 * time.Hour)
 	if _, err := r.svc.Authenticate(ctx, token); !errors.Is(err, ErrUnauthenticated) {
-		t.Errorf("past 14 days: %v, want ErrUnauthenticated however active", err)
+		t.Errorf("at 14 days: %v, want ErrUnauthenticated however recently it was used", err)
 	}
 }
 
@@ -736,5 +740,65 @@ func TestAPasswordChangeStopsIfTheNewHashCannotBeMade(t *testing.T) {
 	withEntropy(t, 1<<20)
 	if _, _, err := r.svc.SignIn(ctx, "1.1.1.1", "ada@example.com", goodPassword); err != nil {
 		t.Errorf("the old password after a failed change: %v", err)
+	}
+}
+
+func TestTheDefaultLifetimesAreTheOnesDocumented(t *testing.T) {
+	if DefaultSessionLifetime != 14*24*time.Hour || DefaultIdleTimeout != 24*time.Hour || touchEvery != time.Minute {
+		t.Errorf("lifetime %v, idle %v, touch %v: want 14 days, 24 hours and 1 minute", DefaultSessionLifetime, DefaultIdleTimeout, touchEvery)
+	}
+	s := New(authtest.New())
+	if s.SessionLifetime != DefaultSessionLifetime || s.IdleTimeout != DefaultIdleTimeout {
+		t.Errorf("New gives %v and %v, want the defaults", s.SessionLifetime, s.IdleTimeout)
+	}
+}
+
+func TestLastSeenIsWrittenOnceAMinuteHasPassedExactly(t *testing.T) {
+	r := newRig()
+	r.signedUp(t, "ada@example.com")
+	token, _ := r.signedIn(t, "ada@example.com")
+	r.clock.advance(time.Minute)
+	if _, err := r.svc.Authenticate(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if r.store.Touches != 1 {
+		t.Errorf("%d writes after exactly a minute, want 1", r.store.Touches)
+	}
+}
+
+func TestASignInWithAnUpToDateHashLeavesTheHashAlone(t *testing.T) {
+	r := newRig()
+	r.signedUp(t, "ada@example.com")
+	before := r.store.Users["ada@example.com"].Hash
+	r.signedIn(t, "ada@example.com")
+	if got := r.store.Users["ada@example.com"].Hash; got != before {
+		t.Error("a hash already at the current cost was rewritten at sign-in")
+	}
+}
+
+func TestChangingThePasswordForgetsTheMistakesBeforeIt(t *testing.T) {
+	r := newRig()
+	r.signedUp(t, "ada@example.com")
+	_, p := r.signedIn(t, "ada@example.com")
+	for range 4 {
+		r.svc.ChangePassword(ctx, p, "a wrong guess here", "a brand new passphrase")
+	}
+	if err := r.svc.ChangePassword(ctx, p, goodPassword, "a brand new passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 { // five more in all would lock it if the first four still counted
+		if err := r.svc.ChangePassword(ctx, p, "a wrong guess here", "another new passphrase"); !errors.Is(err, ErrWrongPassword) {
+			t.Fatalf("error = %v, want a plain wrong password", err)
+		}
+	}
+}
+
+func TestATokenOfTheWrongSizeIsNotEvenLookedUp(t *testing.T) {
+	r := newRig()
+	r.store.GetSessionErr = errors.New("the database is down")
+	for _, token := range []string{"", "short", strings.Repeat("a", tokenLength+1)} {
+		if _, err := r.svc.Authenticate(ctx, token); !errors.Is(err, ErrUnauthenticated) {
+			t.Errorf("Authenticate(%q) = %v, want ErrUnauthenticated without asking the store", token, err)
+		}
 	}
 }

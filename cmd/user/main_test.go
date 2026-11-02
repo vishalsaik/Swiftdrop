@@ -109,7 +109,7 @@ func TestAnEmailThatIsInUseAndAWeakPasswordAreRefusedClearly(t *testing.T) {
 		t.Fatal(e)
 	}
 	code, _, errOut := runCmd(svc, nil, "-email", "D@example.com", "-name", "Other")
-	if code != 1 || !strings.Contains(errOut, "already exists") {
+	if code != 1 || !strings.Contains(errOut, "an account for D@example.com already exists") {
 		t.Errorf("duplicate: exit %d, %q", code, errOut)
 	}
 	code, _, errOut = runCmd(svc, map[string]string{"SWIFTDROP_NEW_PASSWORD": "short"}, "-email", "e@example.com", "-name", "Eve")
@@ -146,5 +146,17 @@ func TestGeneratedPasswordsAreLongAndDifferent(t *testing.T) {
 		if why := auth.ValidatePassword(p, "a@b.co", "A"); why != "" {
 			t.Errorf("a generated password fails our own rules: %q %s", p, why)
 		}
+	}
+}
+
+func TestEveryProblemIsListedInAlphabeticalOrder(t *testing.T) {
+	svc, _ := service()
+	code, _, errOut := runCmd(svc, map[string]string{"SWIFTDROP_NEW_PASSWORD": "short"}, "-email", "nope", "-name", "Eve")
+	if code != 1 {
+		t.Fatalf("exit %d, %q", code, errOut)
+	}
+	e, p := strings.Index(errOut, "email "), strings.Index(errOut, "password ")
+	if e < 0 || p < 0 || e > p {
+		t.Errorf("problems = %q, want email before password", errOut)
 	}
 }

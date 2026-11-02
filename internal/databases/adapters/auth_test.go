@@ -431,3 +431,31 @@ func TestListingByCustomerRefusesNonsenseInsteadOfListingEveryone(t *testing.T) 
 		t.Error("a limit of 0 was accepted")
 	}
 }
+
+func TestCleanupKeepsASessionUntilItsExactEndOrIdleLimit(t *testing.T) {
+	db := authDB(t)
+	ctx := context.Background()
+	newUser(t, db, "ada", domain.RoleCustomer)
+	now := time.Now().UTC().Truncate(time.Microsecond) // what Postgres stores
+
+	// ends exactly now, and was seen just inside the idle limit
+	s := domain.Session{ID: "au-ends-now", UserID: "au-ada", TokenHash: "th-ends-now", CSRFToken: "c",
+		CreatedAt: now.Add(-time.Hour), LastSeenAt: now.Add(-time.Minute), ExpiresAt: now}
+	if err := db.CreateSession(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	// still live, and last seen exactly at the idle limit
+	idle := newSession(t, db, "au-idle-edge", "au-ada", now.Add(-time.Hour))
+	if _, err := db.Pool.Exec(ctx, "UPDATE sessions SET last_seen_at = $1 WHERE id = $2", now.Add(-24*time.Hour), idle.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.DeleteExpiredSessions(ctx, now, now.Add(-24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got := sessionIDs(t, db, "au-ada")
+	// a session that ends at this very moment has ended; one seen exactly at the limit has not gone idle yet
+	if len(got) != 1 || got[0] != "au-idle-edge" {
+		t.Errorf("sessions left = %v, want only au-idle-edge", got)
+	}
+}
