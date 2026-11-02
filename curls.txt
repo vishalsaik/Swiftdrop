@@ -2,6 +2,55 @@
 # Server: go run ./cmd/api  (listens on 127.0.0.1:8080)
 # DB: docker run --name postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=swiftdrop -p 5434:5432 -d postgres:16-alpine
 
+# ---------------------------------------------------------------------------
+# Sign in first. Every route except /health, /auth/signup and /auth/login needs a
+# session cookie, and anything that changes something needs the CSRF token too.
+# The wrapper below adds both to every curl in this file for the rest of your shell,
+# so the sections further down work as they are written. Use a bash-like shell.
+#
+# Staff can place orders for anyone and run the kitchen, so sign in as staff for the
+# sections below. Make one (it prints a password once):
+#   go run ./cmd/user -email staff@example.com -name "Sam Staff" -role staff
+# ---------------------------------------------------------------------------
+
+JAR=$(mktemp)                       # the cookie jar: curl keeps the session cookie here
+CSRF=""                             # the token the server hands back at sign-in
+curl() { command curl -b "$JAR" -c "$JAR" ${CSRF:+-H "X-CSRF-Token: $CSRF"} "$@"; }
+
+## Sign in as staff - 200, sets the sd_session cookie (HttpOnly, SameSite=Strict) and returns csrfToken
+curl -i -X POST http://127.0.0.1:8080/auth/login   -H "Content-Type: application/json"   -d '{"email":"staff@example.com","password":"PASTE-THE-PASSWORD-HERE"}'
+
+## Keep the token for the wrapper (copy csrfToken out of the answer above)
+CSRF="PASTE-THE-csrfToken-HERE"
+
+## Who am I - 200 with the user and the token (401 "sign in required" with no session)
+curl -i http://127.0.0.1:8080/auth/me
+
+## A wrong password and an unknown email give the same 401, so neither can be probed
+curl -i -X POST http://127.0.0.1:8080/auth/login -H "Content-Type: application/json"   -d '{"email":"staff@example.com","password":"not the password"}'
+
+## Five wrong tries for one email in 15 minutes - 429 with Retry-After
+
+## Create a customer account - 201 and signed in. A common password is 422 with the reason.
+curl -i -X POST http://127.0.0.1:8080/auth/signup -H "Content-Type: application/json"   -d '{"email":"ada@example.com","name":"Ada Lovelace","password":"analytical engine 1843"}'
+
+## The same email again (any capitals) - 409
+curl -i -X POST http://127.0.0.1:8080/auth/signup -H "Content-Type: application/json"   -d '{"email":"ADA@example.com","name":"Ada","password":"analytical engine 1843"}'
+
+## No CSRF token on a change - 403 (use command curl to skip the wrapper)
+command curl -i -b "$JAR" -X POST http://127.0.0.1:8080/orders/order-1/cancel
+
+## Change the password - 204, and every other session of this account ends
+curl -i -X POST http://127.0.0.1:8080/auth/password -H "Content-Type: application/json"   -d '{"currentPassword":"the old one","newPassword":"a new long passphrase"}'
+
+## Sign out - 204, the cookie is cleared
+curl -i -X POST http://127.0.0.1:8080/auth/logout
+
+## A customer is limited to their own orders (a customer session gets these answers):
+##   POST /orders with another customerId -> 403;  GET another customer's order -> 404
+##   POST /orders/{id}/accept, ready, pickup, deliver, GET /alerts, payment-history -> 403
+
+
 ## Health check
 curl -i http://127.0.0.1:8080/health
 
