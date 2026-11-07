@@ -567,3 +567,37 @@ curl -i -X POST http://127.0.0.1:8080/orders \
 
 ## No Origin header (curl, server-to-server) — no Allow-Origin, but Vary: Origin is still set
 curl -i http://127.0.0.1:8080/health
+
+
+# ---------------------------------------------------------------------------
+# Record a refund a person made by hand (staff only; needs the sign-in wrapper at the top)
+# A refund that FAILED (the job gave up, or Stripe reversed it) waits for a person, who
+# refunds the customer outside the system. This writes that down. It moves no money.
+# ---------------------------------------------------------------------------
+
+## Make a charged, cancelled order whose refund failed, to try it on (a demo database)
+curl -s -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" \
+  -d '{"id":"hand-1","customerId":"cust-1","restaurantId":"rest-1","paymentType":"card","items":[{"sku":"S1","name":"Burger","quantity":1,"unitPriceCents":1200}]}'
+curl -s -X POST http://127.0.0.1:8080/orders/hand-1/pay
+curl -s -X POST http://127.0.0.1:8080/orders/hand-1/cancel
+# make the refund fail, as if the job had given up (a person would see the alert):
+docker exec postgres psql -U postgres -d swiftdrop -c "UPDATE payments SET refund_status = 'failed', refund_error = 'gave up after 5 attempts' WHERE order_id = 'hand-1';"
+
+## Record it — 200 with the order: payment.refundStatus "refunded", paymentIssue "refunded"
+curl -s -X POST http://127.0.0.1:8080/orders/hand-1/refund -H "Content-Type: application/json" \
+  -d '{"reference":"re_demo_123","note":"paid from the Stripe dashboard"}'
+
+## The ledger names who and what — the last event is "refunded_by_hand"
+curl -s http://127.0.0.1:8080/orders/hand-1/payment-history
+
+## Again — 409 "the refund of this order is already recorded as done"
+curl -i -X POST http://127.0.0.1:8080/orders/hand-1/refund -H "Content-Type: application/json" -d '{"reference":"another"}'
+
+## No reference — 422 with fields.reference; a field it does not know — 400
+curl -i -X POST http://127.0.0.1:8080/orders/hand-1/refund -H "Content-Type: application/json" -d '{"note":"no reference"}'
+curl -i -X POST http://127.0.0.1:8080/orders/hand-1/refund -H "Content-Type: application/json" -d '{"reference":"r","by":"someone else"}'
+
+## An order whose refund did not fail — 409 says why (not tried yet, still being made, never charged)
+curl -i -X POST http://127.0.0.1:8080/orders/order-1/refund -H "Content-Type: application/json" -d '{"reference":"r"}'
+
+## A customer — 403 (staff only), even for their own order
