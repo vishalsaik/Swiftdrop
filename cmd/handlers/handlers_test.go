@@ -85,6 +85,9 @@ type fakeDB struct {
 	unsettledErr error
 	markErr      error
 	reverseErr   error // makes ReverseRefund fail
+	// manualRefundErr makes RecordManualRefund fail; manualRefunds records what was asked of it.
+	manualRefundErr error
+	manualRefunds   []manualRefundCall
 	beforeMark   func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
 	createErr error
 	readyErr  error

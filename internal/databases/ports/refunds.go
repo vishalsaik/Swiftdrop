@@ -24,6 +24,24 @@ type RefundReversalStore interface {
 	ReverseRefund(ctx context.Context, providerPaymentID, refundID, reason string) (payment domain.Payment, reversed bool, err error)
 }
 
+// ManualRefundStore records a refund a person made outside the system. The handler
+// for it needs it, so it is part of Store.
+type ManualRefundStore interface {
+	// RecordManualRefund records that a person refunded the order's payment by hand,
+	// at the provider's dashboard or by some other way, and says so with reference
+	// (the provider's refund id, or whatever finds the transfer) and an optional note.
+	// by is who is recording it.
+	//
+	// It does something only for a payment that was taken and whose refund FAILED (the
+	// job gave up, or the provider reversed it): that refund becomes refunded, the ledger
+	// says it was done by hand and by whom, and the open alerts about that payment's refund
+	// are closed, all in one transaction. recorded = false means nothing was changed, and
+	// payment is the payment as it stands: its refund may be in progress, already done,
+	// not yet tried, or the payment never taken. ErrPaymentNotFound if the order has no
+	// payment.
+	RecordManualRefund(ctx context.Context, orderID, reference, by, note string) (payment domain.Payment, recorded bool, err error)
+}
+
 // RefundStore is what the refund job needs from storage. A refund is DUE when a
 // payment was authorized (money taken), its order is cancelled, it was charged
 // online (cash moves no money through us) and its refund has not been done. The

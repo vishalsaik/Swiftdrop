@@ -48,7 +48,7 @@ func (db *DBAdapter) ReverseRefund(ctx context.Context, providerPaymentID, refun
 	// Only the refund we recorded as done, and only that very refund: another one
 	// failing (made by hand in the provider's dashboard) says nothing about ours.
 	p, err := scanPayment(db.Pool.QueryRow(ctx, `
-		UPDATE payments SET refund_status = 'failed', refund_error = $3, updated_at = now()
+		UPDATE payments SET refund_status = 'failed', refund_error = $3, refund_manual_by = '', refund_manual_note = '', updated_at = now()
 		WHERE provider_payment_id = $1 AND refund_status = 'refunded' AND refund_id = $2
 		RETURNING `+paymentColumns, providerPaymentID, refundID, reason))
 	if err == nil {
@@ -177,4 +177,59 @@ func (db *DBAdapter) refundWriteResult(ctx context.Context, rows int64, err erro
 		return fmt.Errorf("%w: %s", ports.ErrPaymentNotFound, paymentID)
 	}
 	return fmt.Errorf("%w: %s", ports.ErrRefundNotInProgress, paymentID)
+}
+
+var _ ports.ManualRefundStore = (*DBAdapter)(nil)
+
+// refundAlertKinds are the alerts that say "a person must get this customer their money":
+// recording the refund answers them.
+var refundAlertKinds = []string{domain.AlertRefundGivenUp, domain.AlertRefundReversed, domain.AlertRefundUnrecorded}
+
+func (db *DBAdapter) RecordManualRefund(ctx context.Context, orderID, reference, by, note string) (domain.Payment, bool, error) {
+	if orderID == "" || reference == "" || by == "" {
+		return domain.Payment{}, false, errors.New("failed to record the refund: the order, the reference and who is recording it are required")
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return domain.Payment{}, false, fmt.Errorf("failed to record the refund: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // does nothing once committed
+
+	// Only a refund that failed, of a payment that was taken. The status is compared in the
+	// same statement that changes it, so of two people recording it at once exactly one
+	// does, and a refund the job is making cannot be recorded over.
+	p, err := scanPayment(tx.QueryRow(ctx, `
+		UPDATE payments
+		SET refund_status = 'refunded', refund_id = $2, refund_error = '', refund_lease_expires_at = NULL,
+		    refund_manual_by = $3, refund_manual_note = $4, updated_at = now()
+		WHERE order_id = $1 AND status = 'authorized' AND refund_status = 'failed'
+		RETURNING `+paymentColumns, orderID, reference, by, note))
+	if err == nil {
+		resolved := "refunded by hand (" + reference + "), recorded by " + by
+		if note != "" {
+			resolved += ": " + note
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE alerts SET resolved_at = now(), resolved_note = $2
+			WHERE subject = $1 AND kind = ANY($3) AND resolved_at IS NULL`, p.ID, resolved, refundAlertKinds); err != nil {
+			return domain.Payment{}, false, fmt.Errorf("failed to record the refund: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return domain.Payment{}, false, fmt.Errorf("failed to record the refund: %w", err)
+		}
+		return p, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, fmt.Errorf("failed to record the refund: %w", err)
+	}
+	// Nothing changed: say how the payment stands, so the caller can say why.
+	p, err = scanPayment(tx.QueryRow(ctx,
+		`SELECT `+paymentColumns+` FROM payments WHERE order_id = $1 ORDER BY attempt DESC LIMIT 1`, orderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, fmt.Errorf("%w: order %s", ports.ErrPaymentNotFound, orderID)
+	}
+	if err != nil {
+		return domain.Payment{}, false, fmt.Errorf("failed to record the refund: %w", err)
+	}
+	return p, false, nil
 }

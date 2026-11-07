@@ -189,3 +189,73 @@ describe('leaving', () => {
     expect(localStorage.getItem('sd.theme')).toBe('dark');
   });
 });
+
+describe('recording a refund done by hand', () => {
+  const failed = order({
+    id: 'o1', state: 'cancelled', paymentIssue: 'refund_failed',
+    payment: { status: 'authorized', amountCents: 1900, attempt: 1, maxAttempts: 3, refundStatus: 'failed' },
+  });
+
+  async function open(user: ReturnType<typeof userEvent.setup>, extra: Record<string, Handler> = {}, who = staff) {
+    const server = board(who, [failed], { 'GET /orders/o1/payment-history': () => ({ body: { events: [] } }), ...extra });
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /order o1/i }));
+    return { server, panel: await screen.findByLabelText('Order details') };
+  }
+
+  it('opens a form on the first tap and sends nothing until a reference is given', async () => {
+    const user = userEvent.setup();
+    const { server, panel } = await open(user);
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    expect(within(panel).getByLabelText('Reference')).toBeTruthy();
+    expect(within(panel).getByText(/does not send any money/)).toBeTruthy();
+
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    expect(await within(panel).findByText('Enter the refund id or reference')).toBeTruthy();
+    expect(server.callsTo('POST', '/orders/o1/refund')).toHaveLength(0);
+  });
+
+  it('sends the reference and note with the CSRF token, and says it was recorded', async () => {
+    const user = userEvent.setup();
+    const { server, panel } = await open(user, { 'POST /orders/o1/refund': () => ({ body: {} }) });
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    await user.type(within(panel).getByLabelText('Reference'), '  re_hand_1 ');
+    await user.type(within(panel).getByLabelText(/Note/), 'paid from the dashboard');
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+
+    await waitFor(() => expect(server.callsTo('POST', '/orders/o1/refund')).toHaveLength(1));
+    const call = server.callsTo('POST', '/orders/o1/refund')[0];
+    expect(call.body).toEqual({ reference: 're_hand_1', note: 'paid from the dashboard' });
+    expect(call.headers['X-CSRF-Token']).toBe('csrf-u-staff');
+    expect(await screen.findByText('o1: Refund recorded')).toBeTruthy();
+  });
+
+  it('puts the server\'s problem with a field next to the form', async () => {
+    const user = userEvent.setup();
+    const { panel } = await open(user, {
+      'POST /orders/o1/refund': () => ({ status: 422, body: { error: 'x', fields: { reference: 'must be at most 200 characters' } } }),
+    });
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    await user.type(within(panel).getByLabelText('Reference'), 'r');
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    expect(await within(panel).findByText('Reference must be at most 200 characters')).toBeTruthy();
+  });
+
+  it('says why when the server refuses', async () => {
+    const user = userEvent.setup();
+    const { panel } = await open(user, {
+      'POST /orders/o1/refund': () => ({ status: 409, body: { error: 'the refund of this order is already recorded as done' } }),
+    });
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    await user.type(within(panel).getByLabelText('Reference'), 'r');
+    await user.click(within(panel).getByRole('button', { name: 'Record a refund done by hand' }));
+    expect(await screen.findByText('o1: the refund of this order is already recorded as done')).toBeTruthy();
+  });
+
+  it('is not offered to a customer, who is only told what happened', async () => {
+    const user = userEvent.setup();
+    const { panel } = await open(user, {}, customer);
+    expect(within(panel).queryByRole('button', { name: /record a refund/i })).toBeNull();
+    expect(within(panel).getByText(/contact support/)).toBeTruthy();
+  });
+});

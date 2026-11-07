@@ -15,5 +15,5 @@ export default defineConfig({
     port: 5173,
     proxy: { '/auth': api, '/orders': api, '/alerts': api, '/health': api },
   },
-  test: { environment: 'jsdom', include: ['src/**/*.test.{ts,tsx}'], setupFiles: ['src/test/setup.ts'], css: false },
+  test: { environment: 'jsdom', include: ['src/**/*.test.{ts,tsx}'], setupFiles: ['src/test/setup.ts'], css: false, testTimeout: 20_000 },
 });

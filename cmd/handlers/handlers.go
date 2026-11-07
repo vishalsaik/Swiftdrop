@@ -112,6 +112,7 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/orders/{id}/deliver", s.staffOnly(s.DeliverOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/pickup", s.staffOnly(s.PickupOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/accept", s.staffOnly(s.AcceptOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/refund", s.staffOnly(s.RecordRefund)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/payment-history", s.staffOnly(s.PaymentHistory)).Methods("GET")
 	s.Router.HandleFunc("/alerts", s.staffOnly(s.ListAlerts)).Methods("GET")
 	s.Router.HandleFunc("/alerts/{id}/resolve", s.staffOnly(s.ResolveAlert)).Methods("POST")

@@ -105,6 +105,14 @@ export function actionsFor(order, role = 'staff') {
       note: charged ? 'The customer was charged. The refund starts on its own.' : '',
     });
   }
+  // The system gave up on the refund, or the provider reversed it, and a person has
+  // since paid the customer back some other way: this is where that is written down.
+  if (order.payment && order.payment.status === 'authorized' && order.payment.refundStatus === 'failed') {
+    actions.push({
+      key: 'record_refund', label: 'Record a refund done by hand', enabled: true,
+      note: 'Only after the customer really got their money back outside the system, for example in the provider dashboard. This records it; it does not send any money.',
+    });
+  }
   if (role === 'customer') return forCustomer(actions, charged);
   return actions;
 }
@@ -243,6 +251,7 @@ const EVENT_LABELS = {
   refund_started: 'Refund started',
   refund_attempt_failed: 'Refund attempt failed',
   refunded: 'Refund sent',
+  refunded_by_hand: 'Refund recorded as done by hand',
   refund_failed: 'Refund given up, needs a person',
 };
 
@@ -420,7 +429,10 @@ export function lockoutMessage(seconds) {
   return `Too many attempts. Try again in ${m} ${m === 1 ? 'minute' : 'minutes'}.`;
 }
 
-const FIELD_LABELS = { email: 'Email', name: 'Name', password: 'Password', newPassword: 'New password', currentPassword: 'Current password' };
+const FIELD_LABELS = {
+  email: 'Email', name: 'Name', password: 'Password', newPassword: 'New password', currentPassword: 'Current password',
+  reference: 'Reference', note: 'Note',
+};
 
 // fieldErrors turns the server's {fields: {email: "must be ..."}} into sentences
 // for each field: "Password must be at least 10 characters".

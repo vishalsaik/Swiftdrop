@@ -288,3 +288,36 @@ func (f *fakeDB) ListPaymentEvents(_ context.Context, orderID string) ([]domain.
 	}
 	return f.events[orderID], nil
 }
+
+// manualRefundCall is one RecordManualRefund, as the handler made it.
+type manualRefundCall struct{ orderID, reference, by, note string }
+
+// RecordManualRefund follows the adapter: only a taken payment whose refund FAILED
+// becomes refunded, and then the open alerts about that payment's refund are closed;
+// otherwise the payment is handed back as it is. The ledger is the database's own, so the
+// fake only checks what the handler asked for.
+func (f *fakeDB) RecordManualRefund(_ context.Context, orderID, reference, by, note string) (domain.Payment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.manualRefunds = append(f.manualRefunds, manualRefundCall{orderID, reference, by, note})
+	if f.manualRefundErr != nil {
+		return domain.Payment{}, false, f.manualRefundErr
+	}
+	p, ok := f.payments[orderID]
+	if !ok {
+		return domain.Payment{}, false, paymentNotFound(orderID)
+	}
+	if p.Status != domain.PaymentAuthorized || p.RefundStatus != domain.RefundFailed {
+		return p, false, nil
+	}
+	p.RefundStatus, p.RefundID, p.RefundError, p.UpdatedAt = domain.RefundDone, reference, "", time.Now()
+	f.payments[orderID] = p
+	for i, a := range f.alerts {
+		refundKind := a.Kind == domain.AlertRefundGivenUp || a.Kind == domain.AlertRefundReversed || a.Kind == domain.AlertRefundUnrecorded
+		if a.Subject == p.ID && refundKind && a.Open() {
+			now := time.Now()
+			f.alerts[i].ResolvedAt, f.alerts[i].ResolvedNote = &now, "refunded by hand ("+reference+"), recorded by "+by
+		}
+	}
+	return p, true, nil
+}

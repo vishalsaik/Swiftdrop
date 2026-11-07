@@ -319,6 +319,30 @@ for a second refund: it said why the first failed, and a second could pay out tw
 If the report arrives while our own job is still making the refund and has not
 written it down, the webhook answers `503` so Stripe delivers it again.
 
+### A refund a person made by hand
+
+A refund that is `failed` (the job gave up, or the provider reversed it) waits for a
+person, who refunds the customer outside the system. `POST /orders/{id}/refund` (staff
+only; the dashboard's **Record a refund done by hand**) writes that down. It takes the
+refund's **reference** (the provider's refund id, or whatever finds a transfer) and an
+optional note, and in **one transaction**:
+
+* moves the refund of the payment that was taken from `failed` to `refunded`, with the
+  reference as its refund id;
+* lets the ledger trigger write `refunded_by_hand`, whose detail names the reference, the
+  signed-in account that recorded it and the note: the by-hand refund is told apart from
+  one the job made, and who did it is never something the request can say;
+* closes the open `refund_given_up`, `refund_reversed` and `refund_unrecorded` alerts
+  about that payment, with a note saying so.
+
+The status is compared in the same statement that changes it, so of two people recording
+at once exactly one does, and a refund the job is making cannot be recorded over (`409`
+"still working"). Anything but a failed refund is refused with its reason. The system
+does not check the reference with the provider: it trusts the person, and the ledger shows
+who. If the provider later reverses a refund whose id was recorded, it becomes `failed`
+again, the manual record is cleared, and it can be recorded anew. After recording, the
+customer sees "your refund has been sent", so it must be true.
+
 ## 8. What can break, and what recovers it
 
 | Where it breaks | Money moved? | What we have | What recovers it |
@@ -488,6 +512,7 @@ exercised with no network.
 | Payments without an answer: lookup, job, recording | `gateways/stripe_lookup.go`, `internal/reconcile/service.go`, `internal/settle/settle.go` |
 | What a screen is told | `internal/domain/issue.go`, `cmd/handlers/view.go` |
 | Alerts: raising, listing, resolving | `cmd/handlers/alerts.go`, `adapters/alerts.go`, `internal/domain/alert.go` |
+| A refund recorded by hand | `cmd/handlers/manual_refund.go`, `adapters/refunds.go` (`RecordManualRefund`), the `payment_ledger` trigger in `schema.sql` |
 | Alerts sent out: the job, the webhook, the claim | `internal/alertnotify`, `adapters/alerts.go` (`ClaimAlertsToNotify`) |
 | Accounts, sessions, the sign-in limits | `internal/auth`, `adapters/auth.go` |
 | Who may call what: the guard, CSRF, ownership | `cmd/handlers/auth.go`, `routes()` in `cmd/handlers/handlers.go` |
