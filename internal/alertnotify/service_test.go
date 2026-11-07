@@ -101,12 +101,30 @@ func claim(id int64, reminder bool, failures int) ports.AlertClaim {
 	}
 }
 
-func captureLog(t *testing.T) *bytes.Buffer {
+// syncBuf is a log buffer the job's goroutine can write to while a test reads it.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureLog(t *testing.T) *syncBuf {
 	t.Helper()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
+	buf := &syncBuf{}
+	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return &buf
+	return buf
 }
 
 // ---------------------------------------------------------------------------
@@ -344,4 +362,16 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting")
+}
+
+// Being told to stop can make a read fail; that is not worth a log line.
+func TestAReadThatFailsBecauseWeAreStoppingIsNotLogged(t *testing.T) {
+	logs := captureLog(t)
+	store := &fakeStore{claimErr: errors.New("context canceled while reading")}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	NewService(store, &fakeSink{}).Run(ctx, time.Hour) // runs once, sees it is stopped, returns
+	if strings.Contains(logs.String(), "context canceled while reading") {
+		t.Errorf("a failure caused by stopping was logged:\n%s", logs)
+	}
 }

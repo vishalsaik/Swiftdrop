@@ -299,3 +299,26 @@ func TestARequestThatCannotBeBuiltIsAFailureNotAPanic(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestTheWebhookGivesUpAfterTenSeconds(t *testing.T) {
+	w, _ := NewWebhook("https://example.com/x")
+	if w.client.Timeout != 10*time.Second {
+		t.Errorf("timeout = %v, want 10s: it must be longer than a send and shorter than the lease", w.client.Timeout)
+	}
+}
+
+func TestTwoSightingsAreSaidAsTwo(t *testing.T) {
+	w, _ := NewWebhook("https://example.com/x")
+	a := alert()
+	a.Occurrences = 2
+	if got := w.text(Message{Alert: a}); !strings.Contains(got, "Seen 2 times.") {
+		t.Errorf("text = %q", got)
+	}
+}
+
+func TestTheHostForALogLineLeavesOutThePort(t *testing.T) {
+	w, _ := NewWebhook("https://hooks.example.com:8443" + secretPath)
+	if w.Host() != "hooks.example.com" {
+		t.Errorf("host = %q", w.Host())
+	}
+}
