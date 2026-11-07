@@ -77,6 +77,11 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_attempts INTEGER NOT NULL D
     CHECK (refund_attempts >= 0);
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_error TEXT NOT NULL DEFAULT '';
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_lease_expires_at TIMESTAMPTZ;   -- NULL unless refunding
+-- A refund a person made outside the system and recorded afterwards (see RecordManualRefund):
+-- who recorded it and what they wrote. Empty for a refund the job made. The ledger trigger
+-- reads them; the application only writes them.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_manual_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_manual_note TEXT NOT NULL DEFAULT '';
 
 -- Keeps "which refunds are due" cheap: only authorized payments not yet finished.
 CREATE INDEX IF NOT EXISTS payments_refund_due_idx ON payments (updated_at)
@@ -124,11 +129,14 @@ BEGIN
         INSERT INTO payment_events (payment_id, kind, detail)
         VALUES (NEW.id,
                 CASE NEW.refund_status WHEN 'refunding' THEN 'refund_started'
-                                       WHEN 'refunded'  THEN 'refunded'
+                                       WHEN 'refunded'  THEN CASE WHEN NEW.refund_manual_by <> '' THEN 'refunded_by_hand' ELSE 'refunded' END
                                        WHEN 'failed'    THEN 'refund_failed'
                                        ELSE 'refund_' || NEW.refund_status END,
                 CASE NEW.refund_status WHEN 'refunding' THEN 'attempt ' || NEW.refund_attempts
-                                       WHEN 'refunded'  THEN 'refund_id=' || NEW.refund_id
+                                       WHEN 'refunded'  THEN CASE WHEN NEW.refund_manual_by <> ''
+                                                                  THEN NEW.refund_id || ' recorded by ' || NEW.refund_manual_by
+                                                                       || CASE WHEN NEW.refund_manual_note <> '' THEN ': ' || NEW.refund_manual_note ELSE '' END
+                                                                  ELSE 'refund_id=' || NEW.refund_id END
                                        ELSE NEW.refund_error END);
     ELSIF NEW.refund_status = 'refunding' AND NEW.refund_attempts > OLD.refund_attempts THEN
         INSERT INTO payment_events (payment_id, kind, detail)

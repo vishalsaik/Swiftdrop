@@ -10,7 +10,7 @@ export function totalCents(order: Order): number;
 export function itemsSummary(order: Order, max?: number): string;
 
 export interface OrderAction {
-  key: 'pay' | 'accept' | 'ready' | 'pickup' | 'deliver' | 'cancel';
+  key: 'pay' | 'accept' | 'ready' | 'pickup' | 'deliver' | 'cancel' | 'record_refund';
   label: string;
   enabled: boolean;
   primary?: boolean;

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import {
-  actionsFor, describeEvent, errorMessage, money, noticeFor, STATE_LABELS, timeAgo, timeline, totalCents,
+  actionsFor, describeEvent, errorMessage, fieldErrors, money, noticeFor, STATE_LABELS, timeAgo, timeline, totalCents,
   type OrderAction,
 } from '../lib/logic';
 import { signature } from '../lib/present';
@@ -14,6 +14,7 @@ import { Pill } from './ui';
 const ENDPOINT: Record<string, string> = { accept: 'accept', ready: 'ready', pickup: 'pickup', deliver: 'deliver', cancel: 'cancel' };
 const DONE: Record<string, string> = {
   pay: 'Payment taken', accept: 'Order accepted', ready: 'Marked ready', pickup: 'Picked up', deliver: 'Delivered', cancel: 'Order cancelled',
+  record_refund: 'Refund recorded',
 };
 
 interface Props {
@@ -30,11 +31,18 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
   const [payOpen, setPayOpen] = useState(false);
   const [method, setMethod] = useState('pm_card_visa');
   const [busy, setBusy] = useState(false);
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [reference, setReference] = useState('');
+  const [refundNote, setRefundNote] = useState('');
+  const [refundProblems, setRefundProblems] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<LedgerEvent[] | null>(null);
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // A different order starts with nothing half-done.
-  useEffect(() => { setConfirming(null); setPayOpen(false); setHistory(null); }, [order.id]);
+  useEffect(() => {
+    setConfirming(null); setPayOpen(false); setHistory(null);
+    setRefundOpen(false); setReference(''); setRefundNote(''); setRefundProblems({});
+  }, [order.id]);
   useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   // The history is read again when what the order shows changes, not on every poll.
@@ -55,7 +63,25 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
     ? ({ refunding: 'in progress', refunded: 'sent back', failed: 'could not be sent' } as Record<string, string>)[pay.refundStatus] ?? pay.refundStatus
     : null;
 
+  async function recordRefund() {
+    if (!refundOpen) { setRefundOpen(true); return; } // the first click opens the form
+    if (!reference.trim()) { setRefundProblems({ reference: 'Enter the refund id or reference' }); return; }
+    setBusy(true);
+    setRefundProblems({});
+    const res = await api('POST', `/orders/${encodeURIComponent(order.id)}/refund`, { reference: reference.trim(), note: refundNote.trim() });
+    setBusy(false);
+    if (res.status === 422) { setRefundProblems(fieldErrors(res.data)); return; }
+    if (res.ok) {
+      toast(`${order.id}: ${DONE.record_refund}`, 'ok');
+      setRefundOpen(false); setReference(''); setRefundNote('');
+    } else {
+      toast(`${order.id}: ${errorMessage(res.status, res.data)}`, 'bad');
+    }
+    await onChanged();
+  }
+
   async function run(action: OrderAction) {
+    if (action.key === 'record_refund') { await recordRefund(); return; }
     if (action.key === 'pay' && !payOpen && order.paymentType !== 'cash') { setPayOpen(true); return; } // the first click opens the form
     if (action.danger && confirming !== action.key) {
       setConfirming(action.key); // two taps to cancel, with no browser dialog
@@ -82,7 +108,7 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
     await onChanged();
   }
 
-  const hints = actions.filter((a) => (a.why && !a.enabled) || (a.note && (confirming === a.key || a.key === 'pay'))).map((a) => a.why || a.note);
+  const hints = actions.filter((a) => (a.why && !a.enabled) || (a.note && (confirming === a.key || a.key === 'pay' || a.key === 'record_refund'))).map((a) => a.why || a.note);
 
   const details: [string, string][] = [
     ['Pays by', order.paymentType],
@@ -184,6 +210,21 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
               <input id="method" value={method} spellCheck={false} autoComplete="off" autoFocus onChange={(e) => setMethod(e.target.value)} />
             </label>
             <small>Stripe needs a test token such as pm_card_visa (a decline is pm_card_visa_chargeDeclined). The built-in fake gateway ignores it.</small>
+          </div>
+        )}
+        {refundOpen && (
+          <div className="payform">
+            <label className="field stacked">
+              <span>Reference</span>
+              <input name="reference" value={reference} spellCheck={false} autoComplete="off" autoFocus placeholder="The provider's refund id, or a transfer number"
+                aria-invalid={Boolean(refundProblems.reference)} onChange={(e) => setReference(e.target.value)} />
+            </label>
+            <label className="field stacked">
+              <span>Note (optional)</span>
+              <input name="note" value={refundNote} autoComplete="off" placeholder="What was done" aria-invalid={Boolean(refundProblems.note)}
+                onChange={(e) => setRefundNote(e.target.value)} />
+            </label>
+            {Object.entries(refundProblems).map(([k, t]) => <p key={k} className="form-error">{t}</p>)}
           </div>
         )}
         {hints.map((h) => <p key={h} className="why">{h}</p>)}
