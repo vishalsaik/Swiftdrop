@@ -515,3 +515,47 @@ test('a signed-out answer anywhere says the session ended, whatever else it says
   assert.equal(errorMessage(401, { error: 'sign in required' }), 'Your session ended. Sign in again.');
   assert.equal(errorMessage(403, { error: 'this needs a staff account' }), 'this needs a staff account');
 });
+
+// ---------------------------------------------------------------------------
+// a refund a person made by hand
+// ---------------------------------------------------------------------------
+
+const failedRefund = (over = {}) => order({
+  state: 'cancelled', paymentType: 'card',
+  payment: { status: 'authorized', amountCents: 1000, attempt: 1, maxAttempts: 3, refundStatus: 'failed' }, ...over,
+});
+
+test('staff can record a refund done by hand only when the refund failed', () => {
+  const keys = (o, role) => actionsFor(o, role).map((a) => a.key);
+  assert.deepEqual(keys(failedRefund(), 'staff'), ['record_refund']);
+  assert.deepEqual(keys(failedRefund()), ['record_refund']); // staff is the default
+  const a = actionsFor(failedRefund(), 'staff')[0];
+  assert.equal(a.enabled, true);
+  assert.match(a.note, /does not send any money/);
+
+  for (const refundStatus of ['none', 'refunding', 'refunded', undefined]) {
+    const o = failedRefund({ payment: { status: 'authorized', amountCents: 1000, attempt: 1, maxAttempts: 3, refundStatus } });
+    assert.ok(!keys(o, 'staff').includes('record_refund'), String(refundStatus));
+  }
+  // a payment that was never taken has no refund to record
+  const declined = failedRefund({ payment: { status: 'declined', amountCents: 1000, attempt: 1, maxAttempts: 3, refundStatus: 'failed' } });
+  assert.ok(!keys(declined, 'staff').includes('record_refund'));
+  assert.ok(!keys(order({ state: 'created' }), 'staff').includes('record_refund')); // no payment at all
+});
+
+test('a customer is never offered it', () => {
+  assert.deepEqual(actionsFor(failedRefund(), 'customer'), []);
+});
+
+test('the history names a refund recorded by hand', () => {
+  assert.deepEqual(
+    describeEvent({ kind: 'refunded_by_hand', detail: 're_1 recorded by dee@example.com: paid from the dashboard' }),
+    { label: 'Refund recorded as done by hand', note: 're_1 recorded by dee@example.com: paid from the dashboard' },
+  );
+});
+
+test('the server\'s problems with the reference and the note are said next to them', () => {
+  assert.deepEqual(fieldErrors({ fields: { reference: 'is required', note: 'must be at most 500 characters' } }), {
+    reference: 'Reference is required', note: 'Note must be at most 500 characters',
+  });
+});
