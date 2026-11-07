@@ -173,6 +173,15 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_one_open_per_subject ON alerts (kind, subject) WHERE resolved_at IS NULL;
 
+-- Sending an alert out (a webhook), so it does not wait for someone to look at the
+-- dashboard. notified_at is the last time it was sent; notify_lease_until holds it for
+-- the notifier that claimed it, and after a failed send it is the wait before the next
+-- try; notify_failures counts failures in a row, which sets how long that wait is.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notify_lease_until TIMESTAMPTZ;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notify_failures INTEGER NOT NULL DEFAULT 0 CHECK (notify_failures >= 0);
+CREATE INDEX IF NOT EXISTS alerts_open_by_id ON alerts (id) WHERE resolved_at IS NULL;
+
 -- Accounts and sign-ins. Emails are stored lower case and are unique. Only a slow
 -- salted hash of a password is kept. A session stores the SHA-256 of its token, never
 -- the token, so a copy of this table cannot be used to act as anyone.

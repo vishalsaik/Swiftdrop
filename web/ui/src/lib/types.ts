@@ -40,6 +40,8 @@ export interface Alert {
   occurrences: number;
   lastSeenAt: string;
   resolvedAt?: string;
+  /** the last time the alert was sent out (a webhook); absent if it never was */
+  notifiedAt?: string;
 }
 
 export interface LedgerEvent { kind: string; detail?: string; at: string }

@@ -48,7 +48,9 @@ function AlertItem({ alert, canOpen, onOpenOrder, onResolved }: { alert: Alert; 
       <div className="alert-head"><span className="tile red"><Icon name="warning" size={20} /></span><h3>{d.title}</h3></div>
       <p>{d.advice}</p>
       {d.detail && <p className="detail-text">{d.detail}</p>}
-      <p className="row-meta">{[alert.orderId ? `order ${alert.orderId}` : '', d.seen, timeAgo(alert.lastSeenAt)].filter(Boolean).join(' / ')}</p>
+      <p className="row-meta">
+        {[alert.orderId ? `order ${alert.orderId}` : '', d.seen, timeAgo(alert.lastSeenAt), alert.notifiedAt ? `sent to the channel ${timeAgo(alert.notifiedAt)}` : ''].filter(Boolean).join(' / ')}
+      </p>
       <div className="alert-actions">
         <input aria-label="Note for resolving" placeholder="What was done (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
         {canOpen && <button className="btn tinted" type="button" onClick={() => onOpenOrder(alert.orderId!)}>Open order</button>}

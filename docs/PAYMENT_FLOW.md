@@ -403,8 +403,20 @@ A customer's list and drawer hold only their own orders; the payment history and
 alerts below are for staff.
 
 The people running the service see the alerts of section 8 under **Alerts** in the
-dashboard header (a count badge, then a list with what to do and a Resolve button
-that takes a note), or through `GET /alerts` and `POST /alerts/{id}/resolve`.
+dashboard (a count badge, then a list with what to do and a Resolve button that takes a
+note), or through `GET /alerts` and `POST /alerts/{id}/resolve`.
+
+They are also sent out, so that nobody has to be looking. With `ALERT_WEBHOOK_URL` set, a
+job (`internal/alertnotify`) works like the refund job: it **claims** each open alert that
+has not been sent (and, after `ALERT_REMINDER`, each one still open) with a lease in the
+`alerts` row, posts it, and writes `notified_at`. The lease is why any number of servers
+can run it and an alert goes out once; a server that dies leaves a lease that ends, and
+the alert is sent by another. A failed send is tried again after a wait that doubles from
+30 seconds to 15 minutes and goes on for as long as the alert is open. Delivery is **at
+least once**: if the message went out and writing that down failed, it is sent again, and
+a duplicate is the better mistake than none. Another occurrence of the same alert does not
+send again (a webhook delivered a hundred times is one message); the reminder does. The
+dashboard shows when an alert was last sent.
 
 ## 10. Guarantees
 
@@ -453,6 +465,10 @@ gateway), Command, Builder.
 | `RECONCILE_INTERVAL` | how often the reconciler looks for payments without an answer | `1m` |
 | `PAYMENT_CACHE_SIZE` | how many paid orders' payments `/pay` keeps in memory (`0` = off) | `10000` |
 | `DATABASE_URL` | another database than the local development one | local Postgres |
+| `ALERT_WEBHOOK_URL` | send alerts to this `https://` address (a Slack incoming webhook, or Discord's with `/slack` added); unset means alerts are only shown on the dashboard. It is a secret: set it in your own shell, it is never logged | unset |
+| `ALERT_REMINDER` | how long an alert may stay open before it is sent again (`0` = never again) | `24h` |
+| `ALERT_NOTIFY_INTERVAL` | how often the job looks for alerts that are due | `15s` |
+| `DASHBOARD_URL` | added to each alert message as where to look | unset |
 | `COOKIE_SECURE` | `true` marks the session cookie `Secure`; set it when a proxy ends TLS (the cookie is `Secure` anyway on a TLS connection) | unset |
 
 With no `STRIPE_KEY` the fake gateway declines a card order over 50,000 cents and a
@@ -472,6 +488,7 @@ exercised with no network.
 | Payments without an answer: lookup, job, recording | `gateways/stripe_lookup.go`, `internal/reconcile/service.go`, `internal/settle/settle.go` |
 | What a screen is told | `internal/domain/issue.go`, `cmd/handlers/view.go` |
 | Alerts: raising, listing, resolving | `cmd/handlers/alerts.go`, `adapters/alerts.go`, `internal/domain/alert.go` |
+| Alerts sent out: the job, the webhook, the claim | `internal/alertnotify`, `adapters/alerts.go` (`ClaimAlertsToNotify`) |
 | Accounts, sessions, the sign-in limits | `internal/auth`, `adapters/auth.go` |
 | Who may call what: the guard, CSRF, ownership | `cmd/handlers/auth.go`, `routes()` in `cmd/handlers/handlers.go` |
 | Making the first staff account | `cmd/user/main.go` |
