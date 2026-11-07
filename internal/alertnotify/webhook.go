@@ -93,16 +93,14 @@ type body struct {
 // connection is an error.
 func (w *Webhook) Send(ctx context.Context, m Message) error {
 	a := m.Alert
-	payload, err := json.Marshal(body{
+	// Marshalling cannot fail here: the body holds only strings, numbers and times.
+	payload, _ := json.Marshal(body{
 		Text: w.text(m), Reminder: m.Reminder,
 		Alert: alertBody{
 			ID: a.ID, Kind: a.Kind, Title: domain.AlertTitle(a.Kind), Subject: a.Subject, OrderID: a.OrderID,
 			Message: a.Message, Occurrences: a.Occurrences, CreatedAt: a.CreatedAt, LastSeenAt: a.LastSeenAt,
 		},
 	})
-	if err != nil {
-		return fmt.Errorf("alert webhook: %w", err)
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(payload))
 	if err != nil {
 		return errors.New("alert webhook: could not build the request")
