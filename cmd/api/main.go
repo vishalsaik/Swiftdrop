@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swiftdrop/cmd/handlers"
+	"swiftdrop/internal/alertnotify"
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/databases/adapters"
 	"swiftdrop/internal/payment"
@@ -29,6 +30,10 @@ const defaultRefundInterval = 30 * time.Second
 // defaultReconcileInterval is how often the reconciler looks for payments that
 // never got an answer. Set RECONCILE_INTERVAL (for example "10s") to change it.
 const defaultReconcileInterval = time.Minute
+
+// defaultAlertNotifyInterval is how often the job that sends alerts out looks for ones
+// that are due. Set ALERT_NOTIFY_INTERVAL (for example "5s") to change it.
+const defaultAlertNotifyInterval = 15 * time.Second
 
 // defaultPaymentCacheSize is how many paid orders' payments are kept in memory.
 // Set PAYMENT_CACHE_SIZE to change it; 0 switches the cache off.
@@ -60,6 +65,21 @@ func main() {
 		reconcileInterval, err = time.ParseDuration(v)
 		if err != nil || reconcileInterval <= 0 {
 			panic(fmt.Sprintf("RECONCILE_INTERVAL must be a positive duration such as 1m, got %q", v))
+		}
+	}
+
+	alertInterval := defaultAlertNotifyInterval
+	if v := os.Getenv("ALERT_NOTIFY_INTERVAL"); v != "" {
+		alertInterval, err = time.ParseDuration(v)
+		if err != nil || alertInterval <= 0 {
+			panic(fmt.Sprintf("ALERT_NOTIFY_INTERVAL must be a positive duration such as 15s, got %q", v))
+		}
+	}
+	alertReminder := alertnotify.DefaultReminder
+	if v := os.Getenv("ALERT_REMINDER"); v != "" {
+		alertReminder, err = time.ParseDuration(v)
+		if err != nil || alertReminder < 0 {
+			panic(fmt.Sprintf("ALERT_REMINDER must be a duration such as 24h, or 0 to switch reminders off, got %q", v))
 		}
 	}
 
@@ -155,6 +175,27 @@ func main() {
 	}()
 	fmt.Printf("payment reconciler running every %s\n", reconcileInterval)
 
+	// Alerts are sent to a webhook (Slack-compatible) so they do not wait for someone to
+	// open the dashboard. The address is a secret and is never printed, only its host.
+	notifyDone := make(chan struct{})
+	if raw := os.Getenv("ALERT_WEBHOOK_URL"); raw != "" {
+		hook, err := alertnotify.NewWebhook(raw)
+		if err != nil {
+			panic(fmt.Sprintf("ALERT_WEBHOOK_URL: %v", err))
+		}
+		hook.Dashboard = os.Getenv("DASHBOARD_URL")
+		go func() {
+			defer close(notifyDone)
+			notifier := alertnotify.NewService(dbConn, hook)
+			notifier.Reminder = alertReminder
+			notifier.Run(ctx, alertInterval)
+		}()
+		fmt.Printf("alerts are sent to %s every %s (reminder after %s)\n", hook.Host(), alertInterval, alertReminder)
+	} else {
+		close(notifyDone)
+		fmt.Println("ALERT_WEBHOOK_URL not set: alerts are only shown on the dashboard")
+	}
+
 	srv := &http.Server{
 		Addr:         "127.0.0.1:8080",
 		Handler:      s.Handler(),
@@ -171,6 +212,7 @@ func main() {
 		<-jobDone
 		<-reconcileDone
 		<-cleanupDone
+		<-notifyDone
 		panic(err)
 	case <-ctx.Done():
 	}
@@ -184,4 +226,5 @@ func main() {
 	<-jobDone
 	<-reconcileDone
 	<-cleanupDone
+	<-notifyDone
 }

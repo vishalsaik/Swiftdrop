@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Alert kinds: each is a situation the system cannot settle by itself.
 const (
@@ -34,6 +37,35 @@ type Alert struct {
 	ResolvedAt  *time.Time `json:"resolvedAt,omitempty"`
 	// ResolvedNote is what the person who closed it wrote.
 	ResolvedNote string `json:"resolvedNote,omitempty"`
+	// NotifiedAt is the last time the alert was sent out (a webhook); nil if it never was.
+	NotifiedAt *time.Time `json:"notifiedAt,omitempty"`
+}
+
+// AlertKinds lists every kind, so a test can check that each one has a title.
+var AlertKinds = []string{
+	AlertUnrecordedCharge, AlertContradictingEvent, AlertRefundGivenUp,
+	AlertRefundUnrecorded, AlertPaymentNeedsReview, AlertRefundReversed,
+}
+
+var alertTitles = map[string]string{
+	AlertUnrecordedCharge:   "Money taken, but not written down",
+	AlertContradictingEvent: "The provider disagrees with our record",
+	AlertRefundGivenUp:      "A refund could not be sent",
+	AlertRefundReversed:     "A refund was accepted, then failed",
+	AlertPaymentNeedsReview: "A payment has had no answer for too long",
+	AlertRefundUnrecorded:   "A refund was sent, but not written down",
+}
+
+// AlertTitle is the short name of a kind for a message. The dashboard words the same
+// kinds in web/ui/src/lib/logic.js; an unknown kind still reads as something.
+func AlertTitle(kind string) string {
+	if t, ok := alertTitles[kind]; ok {
+		return t
+	}
+	if kind == "" {
+		return "Needs a look"
+	}
+	return strings.ReplaceAll(kind, "_", " ")
 }
 
 // Open reports whether nobody has resolved the alert yet.
