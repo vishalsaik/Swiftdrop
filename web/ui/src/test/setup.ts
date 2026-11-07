@@ -1,7 +1,12 @@
 import { afterEach } from 'vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 
 afterEach(() => cleanup());
+
+// The default is one second to find something on screen, which a busy machine (a database and
+// Docker running beside the tests) can miss while the app is still starting. A test that
+// waits for something that never comes still fails, just a little later.
+configure({ asyncUtilTimeout: 5000 });
 
 // jsdom does not draw modal dialogs; give it the two methods the sheets use.
 if (typeof HTMLDialogElement !== 'undefined') {
