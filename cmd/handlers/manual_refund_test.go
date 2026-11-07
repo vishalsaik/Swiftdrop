@@ -90,13 +90,15 @@ func TestTheNoteIsOptionalAndTheReferenceIsTrimmed(t *testing.T) {
 func TestWhatIsTypedIsCheckedBeforeAnythingIsDone(t *testing.T) {
 	long := strings.Repeat("x", 201)
 	for name, c := range map[string]struct{ body, field string }{
-		"no reference":          {`{"note":"n"}`, "reference"},
-		"a blank reference":     {`{"reference":"   "}`, "reference"},
-		"a long reference":      {`{"reference":"` + long + `"}`, "reference"},
-		"a control character":   {`{"reference":"a\u0007b"}`, "reference"},
-		"a newline":             {`{"reference":"a\nb"}`, "reference"},
-		"a long note":           {`{"reference":"r","note":"` + strings.Repeat("n", 501) + `"}`, "note"},
-		"a note with a newline": {`{"reference":"r","note":"line one\nline two"}`, "note"},
+		"no reference":           {`{"note":"n"}`, "reference"},
+		"a blank reference":      {`{"reference":"   "}`, "reference"},
+		"a long reference":       {`{"reference":"` + long + `"}`, "reference"},
+		"a control character":    {`{"reference":"a\u0007b"}`, "reference"},
+		"a newline":              {`{"reference":"a\nb"}`, "reference"},
+		"a leading control":      {`{"reference":"\u0007abc"}`, "reference"},
+		"a leading note control": {`{"reference":"r","note":"\u0007abc"}`, "note"},
+		"a long note":            {`{"reference":"r","note":"` + strings.Repeat("n", 501) + `"}`, "note"},
+		"a note with a newline":  {`{"reference":"r","note":"line one\nline two"}`, "note"},
 	} {
 		db := newFakeDB()
 		seedFailedRefund(db, "o1", "pay-1", domain.AlertRefundGivenUp)
@@ -118,7 +120,7 @@ func TestWhatIsTypedIsCheckedBeforeAnythingIsDone(t *testing.T) {
 func TestTheLimitsAreExactlyTwoHundredAndFiveHundredCharacters(t *testing.T) {
 	db := newFakeDB()
 	seedFailedRefund(db, "o1", "pay-1", domain.AlertRefundGivenUp)
-	body := `{"reference":"` + strings.Repeat("é", 200) + `","note":"` + strings.Repeat("n", 500) + `"}`
+	body := `{"reference":"` + strings.Repeat("é", 200) + `","note":"` + strings.Repeat("é", 500) + `"}`
 	wantStatus(t, recordRefund(t, db, "o1", body), http.StatusOK) // letters are counted, not bytes
 }
 

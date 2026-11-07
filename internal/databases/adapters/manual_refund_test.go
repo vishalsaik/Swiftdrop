@@ -104,6 +104,10 @@ func TestWithoutANoteTheLedgerHasNoColon(t *testing.T) {
 		"claimed|amount_cents=1447", "authorized|provider_payment_id=pi_mr_nonote",
 		"refund_started|attempt 1", "refund_failed|gave up after 5 attempts",
 		"refunded_by_hand|bank transfer 4471 recorded by dee@example.com")
+	// and the alert it closes says no more than there is to say
+	if got := alertsAbout(t, db, "mr-nonote")[domain.AlertRefundGivenUp].ResolvedNote; got != "refunded by hand (bank transfer 4471), recorded by dee@example.com" {
+		t.Errorf("alert note = %q", got)
+	}
 }
 
 func TestRecordingARefundClosesTheAlertsAboutItAndNoOthers(t *testing.T) {
@@ -324,5 +328,40 @@ func TestARecordingThatFailsIsAnErrorAndChangesNothing(t *testing.T) {
 	}
 	if got := refundOf(t, db, "pay-mr-ctx"); got.RefundStatus != domain.RefundFailed {
 		t.Errorf("refund = %q, want it left failed", got.RefundStatus)
+	}
+}
+
+// An order paid again after a decline has several payments. The refund is of the one that
+// was taken, and a refusal describes that one, not an earlier attempt.
+func TestWithSeveralAttemptsItIsTheOneThatWasTakenThatIsRefunded(t *testing.T) {
+	db := testAdapter(t)
+	ctx := context.Background()
+	paidOrder(t, db, "mr-attempts")
+	startAttempt(t, db, "mr-attempts", "pay-mr-attempts-1")
+	decline(t, db, "mr-attempts", "pay-mr-attempts-1")
+	startAttempt(t, db, "mr-attempts", "pay-mr-attempts-2")
+	if _, err := db.CompletePayment(ctx, "pay-mr-attempts-2", domain.PaymentAuthorized, "pi_mr_attempts", ""); err != nil {
+		t.Fatal(err)
+	}
+	cancelOrder(t, db, "mr-attempts")
+	if _, ok, err := db.ClaimRefund(ctx, "pay-mr-attempts-2", time.Minute); err != nil || !ok {
+		t.Fatalf("ClaimRefund: ok=%v err=%v", ok, err)
+	}
+
+	// being refunded: refused, and the payment handed back is the attempt that was taken
+	p, recorded, err := db.RecordManualRefund(ctx, "mr-attempts", "re_x", "dee@example.com", "")
+	if err != nil || recorded || p.ID != "pay-mr-attempts-2" || p.Attempt != 2 || p.RefundStatus != domain.RefundInProgress {
+		t.Fatalf("recorded=%v err=%v payment=%+v, want a refusal that shows attempt 2", recorded, err, p)
+	}
+
+	if err := db.FailRefund(ctx, "pay-mr-attempts-2", "gave up", true); err != nil {
+		t.Fatal(err)
+	}
+	p, recorded, err = db.RecordManualRefund(ctx, "mr-attempts", "re_hand", "dee@example.com", "")
+	if err != nil || !recorded || p.ID != "pay-mr-attempts-2" || p.RefundStatus != domain.RefundDone {
+		t.Fatalf("recorded=%v err=%v payment=%+v, want attempt 2 refunded", recorded, err, p)
+	}
+	if first := refundOf(t, db, "pay-mr-attempts-1"); first.Status != domain.PaymentDeclined || first.RefundStatus == domain.RefundDone {
+		t.Errorf("the declined attempt was touched: %+v", first)
 	}
 }
