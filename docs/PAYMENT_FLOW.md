@@ -76,6 +76,7 @@ itself by Stripe's signature instead). A request names its account with the
 | See, pay, cancel an order | only their own (another's order answers `404`, the same as a missing one) | any |
 | Accept, ready, pickup, deliver | no (`403`) | yes |
 | Payment history, alerts | no (`403`) | yes |
+| Make, disable or reset accounts (`/users`) | no (`403`) | yes, but never their own account, and never the last active staff one |
 
 So payment money-moves (`/pay`, a cancel that triggers a refund) are checked for
 ownership **before** the flow in section 4 starts, and a customer cannot learn

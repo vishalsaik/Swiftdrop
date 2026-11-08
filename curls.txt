@@ -601,3 +601,42 @@ curl -i -X POST http://127.0.0.1:8080/orders/hand-1/refund -H "Content-Type: app
 curl -i -X POST http://127.0.0.1:8080/orders/order-1/refund -H "Content-Type: application/json" -d '{"reference":"r"}'
 
 ## A customer — 403 (staff only), even for their own order
+
+
+# ---------------------------------------------------------------------------
+# Managing accounts (staff only; needs the sign-in wrapper at the top)
+# A temporary password is in exactly two answers, make an account and reset a password, and is
+# never stored: copy it from the answer. The person must choose their own at first sign-in.
+# ---------------------------------------------------------------------------
+
+## The accounts, newest first — 200 {"accounts": [...]}; filters: ?role=staff ?status=disabled ?q=ada ?limit=20
+curl -s "http://127.0.0.1:8080/users?role=staff&status=active"
+
+## Make an account — 201 with the user and "temporaryPassword" (shown once)
+curl -s -X POST http://127.0.0.1:8080/users -H "Content-Type: application/json" \
+  -d '{"email":"new.person@example.com","name":"New Person","role":"staff"}'
+
+## The same email again — 409; a bad field — 422 with fields; a password of your own choosing — 400 (nobody picks it for them)
+curl -i -X POST http://127.0.0.1:8080/users -H "Content-Type: application/json" -d '{"email":"nope","name":"","role":"admin"}'
+
+## One account and its history — 200 {"user", "events"}, newest first, each naming who did it
+ID=$(curl -s "http://127.0.0.1:8080/users?q=new.person" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+curl -s http://127.0.0.1:8080/users/$ID
+
+## Until they choose their own password, the new person can do nothing else — sign in as them (a second cookie jar)
+## and every route but /auth/me, /auth/password and /auth/logout answers 403 {"code":"password_change_required"}
+curl -i -c /tmp/new.jar -X POST http://127.0.0.1:8080/auth/login -H "Content-Type: application/json" \
+  -d '{"email":"new.person@example.com","password":"PASTE-THE-TEMPORARY-PASSWORD"}'
+curl -i -b /tmp/new.jar http://127.0.0.1:8080/orders
+
+## Switch an account off — 200; it is signed out at once, everywhere. Again — 200, nothing changes
+curl -s -X POST http://127.0.0.1:8080/users/$ID/disable
+curl -s -X POST http://127.0.0.1:8080/users/$ID/enable
+
+## Reset a password — 200 with a new temporary password; the old one stops working and they are signed out
+curl -s -X POST http://127.0.0.1:8080/users/$ID/reset-password
+
+## Your own account — 409 for both (use /auth/password for your own password); an unknown id — 404
+ME=$(curl -s http://127.0.0.1:8080/auth/me | sed -E 's/.*"id":"([^"]+)".*/\1/')
+curl -i -X POST http://127.0.0.1:8080/users/$ME/disable
+curl -i -X POST http://127.0.0.1:8080/users/$ME/reset-password
