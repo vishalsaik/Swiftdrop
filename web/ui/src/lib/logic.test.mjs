@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   COLUMNS, columnOf, money, totalCents, itemsSummary, actionsFor, timeline, noticeFor,
   stats, newOrderId, validateOrderForm, priceToCents, errorMessage, timeAgo, describeEvent, describeAlert, openAlerts,
+  describeUserEvent, accountBadges, validateNewAccount,
   capabilities, authErrorMessage, lockoutMessage, fieldErrors, validateSignup, greeting, initials,
 } from './logic.js';
 
@@ -440,7 +441,7 @@ test('a customer is spoken to as the customer: "Pay now", and their own refund',
 });
 
 test('only staff are shown the alerts, the history and everyone\'s orders', () => {
-  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true });
+  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true, people: true });
   for (const role of ['customer', 'admin', '', undefined]) {
     assert.ok(Object.values(capabilities(role)).every((v) => v === false), String(role));
   }
@@ -558,4 +559,53 @@ test('the server\'s problems with the reference and the note are said next to th
   assert.deepEqual(fieldErrors({ fields: { reference: 'is required', note: 'must be at most 500 characters' } }), {
     reference: 'Reference is required', note: 'Note must be at most 500 characters',
   });
+});
+
+// ---------------------------------------------------------------------------
+// managing accounts
+// ---------------------------------------------------------------------------
+
+test('only staff are shown the people screen', () => {
+  assert.equal(capabilities('staff').people, true);
+  for (const role of ['customer', '', undefined, 'admin']) assert.equal(capabilities(role).people, false, String(role));
+});
+
+test('a line of an account\'s history says what was done and by whom', () => {
+  assert.deepEqual(
+    describeUserEvent({ kind: 'created', detail: 'role=staff', actorEmail: 'dee@example.com', actorId: 'a', userId: 'u' }),
+    { label: 'Account created as staff', by: 'by dee@example.com' },
+  );
+  assert.deepEqual(describeUserEvent({ kind: 'disabled', actorEmail: 'dee@example.com', actorId: 'a', userId: 'u' }), { label: 'Account disabled', by: 'by dee@example.com' });
+  assert.equal(describeUserEvent({ kind: 'enabled', actorEmail: 'x', actorId: 'a', userId: 'u' }).label, 'Account enabled');
+  assert.equal(describeUserEvent({ kind: 'password_reset', actorEmail: 'x', actorId: 'a', userId: 'u' }).label, 'Password reset to a temporary one');
+  // their own change is said so, not as someone naming themselves
+  assert.deepEqual(describeUserEvent({ kind: 'password_changed', actorEmail: 'ada@example.com', actorId: 'u', userId: 'u' }), { label: 'Password changed', by: 'by themselves' });
+  // a kind this page does not know still reads, and a missing actor is not "undefined"
+  assert.deepEqual(describeUserEvent({ kind: 'role_changed', actorId: 'a', userId: 'u' }), { label: 'role changed', by: 'by someone' });
+  assert.equal(describeUserEvent({}).label, 'Something happened');
+});
+
+test('the marks on a person show what they are and what is wrong', () => {
+  const tones = (u, you) => accountBadges(u, you).map((b) => `${b.text}:${b.tone}`);
+  assert.deepEqual(tones({ id: 'u', role: 'staff' }), ['Staff:neutral']);
+  assert.deepEqual(tones({ id: 'u', role: 'customer' }), ['Customer:neutral']);
+  assert.deepEqual(tones({ id: 'u', role: 'customer', disabledAt: '2026-01-01T00:00:00Z' }), ['Customer:neutral', 'Disabled:bad']);
+  assert.deepEqual(tones({ id: 'u', role: 'staff', mustChangePassword: true }), ['Staff:neutral', 'Temporary password:wait']);
+  assert.deepEqual(tones({ id: 'u', role: 'staff' }, 'u'), ['Staff:neutral', 'You:good']);
+  assert.deepEqual(tones({ id: 'u', role: 'staff' }, 'someone else'), ['Staff:neutral']);
+  assert.deepEqual(tones({ id: 'u', role: 'staff' }, ''), ['Staff:neutral']);
+});
+
+test('a new account is checked before anything is sent', () => {
+  const ok = validateNewAccount({ email: '  ada@example.com ', name: ' Ada Lovelace ', role: 'staff' });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.payload, { email: 'ada@example.com', name: 'Ada Lovelace', role: 'staff' });
+  assert.equal(validateNewAccount({ email: 'a@b.co', name: 'A', role: 'customer' }).ok, true);
+
+  const bad = validateNewAccount({ email: 'nope', name: '  ', role: 'admin' });
+  assert.equal(bad.ok, false);
+  assert.deepEqual(Object.keys(bad.errors).sort(), ['email', 'name', 'role']);
+  for (const email of ['a@b', 'a b@c.co', '@c.co', 'a@.co']) assert.ok(validateNewAccount({ email, name: 'A', role: 'staff' }).errors.email, email);
+  assert.ok(validateNewAccount({ email: 'a@b.co', name: 'A', role: '' }).errors.role);
+  assert.equal(validateNewAccount({}).ok, false);
 });

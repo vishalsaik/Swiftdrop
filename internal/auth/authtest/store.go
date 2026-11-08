@@ -37,6 +37,8 @@ type Store struct {
 	AdminErr    error
 	Events      []domain.UserEvent
 	nextEventID int64
+	// LastUserQuery is what ListUsers was last asked.
+	LastUserQuery ports.UserQuery
 
 	// Touches counts the calls to TouchSession.
 	Touches int

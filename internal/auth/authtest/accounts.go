@@ -50,6 +50,7 @@ func (m *Store) ListUsers(_ context.Context, q ports.UserQuery) ([]domain.User, 
 	if m.AdminErr != nil {
 		return nil, m.AdminErr
 	}
+	m.LastUserQuery = q
 	if q.Limit <= 0 {
 		return nil, errBadLimit
 	}
