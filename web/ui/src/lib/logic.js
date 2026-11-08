@@ -133,7 +133,7 @@ function forCustomer(actions, charged) {
 // What each role is shown. The server enforces all of it; this only decides what to draw.
 export function capabilities(role) {
   const staff = role === 'staff';
-  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff };
+  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff, people: staff };
 }
 
 // timeline is the order's journey as rows a departure board can show. A
@@ -490,4 +490,51 @@ export function timeAgo(iso, now = Date.now()) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+// ---------------------------------------------------------------------------
+// managing accounts (staff)
+// ---------------------------------------------------------------------------
+
+const USER_EVENT_LABELS = {
+  created: 'Account created',
+  disabled: 'Account disabled',
+  enabled: 'Account enabled',
+  password_reset: 'Password reset to a temporary one',
+  password_changed: 'Password changed',
+};
+
+// describeUserEvent turns a line of an account's history into words: what was done, and by
+// whom (an account changing its own password says so instead of naming itself twice).
+export function describeUserEvent(event) {
+  const kind = String(event.kind || '');
+  const label = USER_EVENT_LABELS[kind] || kind.replace(/_/g, ' ') || 'Something happened';
+  const detail = String(event.detail || '');
+  const role = detail.startsWith('role=') ? detail.slice(5) : '';
+  const own = event.actorId && event.actorId === event.userId;
+  return {
+    label: role ? `${label} as ${role}` : label,
+    by: own ? 'by themselves' : `by ${event.actorEmail || 'someone'}`,
+  };
+}
+
+// accountBadges are the short marks on a person in the list: what they are and what is wrong.
+export function accountBadges(user, youId) {
+  const out = [{ text: user.role === 'staff' ? 'Staff' : 'Customer', tone: 'neutral' }];
+  if (user.disabledAt) out.push({ text: 'Disabled', tone: 'bad' });
+  if (user.mustChangePassword) out.push({ text: 'Temporary password', tone: 'wait' });
+  if (youId && user.id === youId) out.push({ text: 'You', tone: 'good' });
+  return out;
+}
+
+// validateNewAccount mirrors the server's easy rules before anything is sent. The server decides.
+export function validateNewAccount(form) {
+  const errors = {};
+  const email = String(form.email ?? '').trim();
+  const name = String(form.name ?? '').trim();
+  const role = String(form.role ?? '');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address';
+  if (!name) errors.name = 'Enter their name';
+  if (role !== 'staff' && role !== 'customer') errors.role = 'Choose staff or customer';
+  return { ok: Object.keys(errors).length === 0, errors, payload: { email, name, role } };
 }

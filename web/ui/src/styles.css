@@ -335,6 +335,18 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
 
 .tabbar { display: none; }
 
+/* people */
+.people-tools { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr) auto; gap: 12px; align-items: center; margin-bottom: 4px; }
+.search { min-width: 0; width: 100%; border: 0; border-radius: 10px; background: var(--fill); padding: 9px 14px; font-size: 16px; color: var(--label); outline: none; }
+.search::placeholder { color: var(--label-2); opacity: 0.8; }
+.person .avatar { width: 40px; height: 40px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.who .badges { justify-content: flex-start; margin-top: 4px; }
+.action-stack { display: grid; gap: 10px; }
+.secret-box { margin-top: 16px; }
+.secret { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; margin: 4px 0; border-radius: 12px; background: var(--card); }
+.secret code { font-family: var(--mono); font-size: 17px; letter-spacing: 0.02em; overflow-wrap: anywhere; user-select: all; }
+
 /* libraries.dev effects */
 .orb { width: 20px; height: 20px; flex: none; vertical-align: middle; }
 .wait-beam { border-radius: 16px; }
@@ -362,6 +374,8 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
   dialog.sheet { width: 100%; max-width: 100%; margin: auto 0 0; border-radius: 26px 26px 0 0; max-height: 92dvh; animation: sheet-up 0.45s var(--spring); }
   .notices { left: 12px; right: 12px; width: auto; bottom: calc(84px + env(safe-area-inset-bottom)); }
   .item-row { grid-template-columns: minmax(0, 1fr) 48px 72px auto; }
+  .people-tools { grid-template-columns: 1fr; }
+  .person .row-trail { display: none; }
 }
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
 

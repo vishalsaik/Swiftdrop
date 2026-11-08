@@ -32,6 +32,12 @@ type Store struct {
 	CreateUserErr, GetUserErr, UpdateErr, CreateSessionErr, GetSessionErr,
 	TouchErr, DeleteSessionErr, DeleteUserSessionsErr, DeleteExpiredErr error
 
+	// AdminErr makes every call of the account-management methods fail. Events is the
+	// history those methods write.
+	AdminErr    error
+	Events      []domain.UserEvent
+	nextEventID int64
+
 	// Touches counts the calls to TouchSession.
 	Touches int
 }

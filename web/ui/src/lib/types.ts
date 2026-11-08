@@ -2,7 +2,15 @@
 
 export type Role = 'customer' | 'staff';
 
-export interface User { id: string; email: string; name: string; role: Role; createdAt?: string }
+export interface User {
+  id: string; email: string; name: string; role: Role; createdAt?: string;
+  /** set while the password is a temporary one: the account can do nothing but change it */
+  mustChangePassword?: boolean;
+  disabledAt?: string;
+}
+
+/** One line of an account's history. */
+export interface AccountEvent { id: number; userId: string; actorId: string; actorEmail: string; kind: string; detail?: string; at: string }
 export interface Session { user: User; csrfToken: string }
 
 export interface OrderItem { sku: string; name: string; quantity: number; unitPriceCents: number }

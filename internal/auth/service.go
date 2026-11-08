@@ -44,6 +44,9 @@ var (
 	ErrUnauthenticated = errors.New("not signed in")
 	// ErrWrongPassword means the current password given to change it was wrong.
 	ErrWrongPassword = errors.New("current password is incorrect")
+	// ErrNotStaff means someone who is not staff tried to manage accounts. The HTTP guard
+	// stops that first; this is the second lock.
+	ErrNotStaff = errors.New("only staff manage accounts")
 )
 
 // InvalidError says which fields of a request are not acceptable and why.
@@ -73,9 +76,16 @@ type Principal struct {
 	CSRFToken string
 }
 
+// Store is what the Service keeps accounts and sign-ins in: the Postgres adapter, or an
+// in-memory one in tests.
+type Store interface {
+	ports.AuthStore
+	ports.AccountAdminStore
+}
+
 // Service signs people up and in and tells the server who a request is from.
 type Service struct {
-	Store  ports.AuthStore
+	Store  Store
 	Params Params
 	// Now is the clock, for tests.
 	Now func() time.Time
@@ -95,7 +105,7 @@ type Service struct {
 // New returns a Service with the default hashing cost, lifetimes and limits:
 // 5 failed sign-ins per email and 30 per address per 15 minutes, 10 sign-ups per
 // address per hour.
-func New(store ports.AuthStore) *Service {
+func New(store Store) *Service {
 	return &Service{
 		Store: store, Params: DefaultParams, Now: time.Now,
 		SessionLifetime: DefaultSessionLifetime, IdleTimeout: DefaultIdleTimeout,
@@ -284,7 +294,8 @@ func (s *Service) ChangePassword(ctx context.Context, p Principal, current, next
 	if err != nil {
 		return err
 	}
-	if err := s.Store.UpdatePasswordHash(ctx, p.User.ID, fresh); err != nil {
+	// It also clears "must change your password" and writes that to the account's history.
+	if err := s.Store.ChangePasswordHash(ctx, p.User.ID, fresh); err != nil {
 		return fmt.Errorf("auth: saving the new password: %w", err)
 	}
 	if _, err := s.Store.DeleteUserSessions(ctx, p.User.ID, p.SessionID); err != nil {
@@ -410,4 +421,128 @@ func randomToken() (string, error) {
 		return "", fmt.Errorf("auth: reading random bytes: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// ---------------------------------------------------------------------------
+// managing other people's accounts (staff only)
+// ---------------------------------------------------------------------------
+
+// DefaultAccountLimit and MaxAccountLimit bound a list of accounts.
+const (
+	DefaultAccountLimit = 100
+	MaxAccountLimit     = 500
+	// accountHistoryLength is how many lines of an account's history are read.
+	accountHistoryLength = 50
+)
+
+func requireStaff(actor Principal) error {
+	if actor.User.ID == "" || actor.User.Role != domain.RoleStaff {
+		return ErrNotStaff
+	}
+	return nil
+}
+
+// ListAccounts lists accounts, newest first. A zero limit means the default; one over the
+// maximum is cut to it.
+func (s *Service) ListAccounts(ctx context.Context, actor Principal, q ports.UserQuery) ([]domain.User, error) {
+	if err := requireStaff(actor); err != nil {
+		return nil, err
+	}
+	if q.Limit <= 0 {
+		q.Limit = DefaultAccountLimit
+	}
+	q.Limit = min(q.Limit, MaxAccountLimit)
+	q.Search = strings.TrimSpace(q.Search)
+	return s.Store.ListUsers(ctx, q)
+}
+
+// AccountDetail returns an account with the latest lines of its history, newest first.
+// ports.ErrUserNotFound if there is no such account.
+func (s *Service) AccountDetail(ctx context.Context, actor Principal, id string) (domain.User, []domain.UserEvent, error) {
+	if err := requireStaff(actor); err != nil {
+		return domain.User{}, nil, err
+	}
+	user, err := s.Store.GetUserByID(ctx, id)
+	if err != nil {
+		return domain.User{}, nil, err
+	}
+	events, err := s.Store.ListUserEvents(ctx, id, accountHistoryLength)
+	if err != nil {
+		return domain.User{}, nil, err
+	}
+	return user, events, nil
+}
+
+// CreateAccount makes an account for somebody else, with a temporary password it returns
+// ONCE: it is not stored anywhere in the clear. The person must replace it at their first
+// sign-in. Staff accounts are made this way too, so the command line is no longer the only
+// way; nobody can make themselves staff.
+func (s *Service) CreateAccount(ctx context.Context, actor Principal, email, name string, role domain.Role) (domain.User, string, error) {
+	if err := requireStaff(actor); err != nil {
+		return domain.User{}, "", err
+	}
+	email = NormalizeEmail(email)
+	name = strings.TrimSpace(name)
+	problems := map[string]string{}
+	if !validEmail(email) {
+		problems["email"] = "must be a valid email address"
+	}
+	if why := validName(name); why != "" {
+		problems["name"] = why
+	}
+	if !role.Valid() {
+		problems["role"] = "must be staff or customer"
+	}
+	if len(problems) > 0 {
+		return domain.User{}, "", &InvalidError{Fields: problems}
+	}
+	password, err := GeneratePassword()
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	hash, err := s.hash(ctx, password)
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	user, err := s.Store.CreateUserBy(ctx, actor.User,
+		domain.User{ID: uuid.NewString(), Email: email, Name: name, Role: role, MustChangePassword: true}, hash)
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	return user, password, nil
+}
+
+// SetDisabled switches an account off (ending its sign-ins at once) or back on. It is not
+// possible for your own account or for the last active staff account (ports.ErrOwnAccount,
+// ports.ErrLastStaff). Doing it to an account that is already so changes nothing.
+func (s *Service) SetDisabled(ctx context.Context, actor Principal, id string, disabled bool) (domain.User, error) {
+	if err := requireStaff(actor); err != nil {
+		return domain.User{}, err
+	}
+	user, _, err := s.Store.SetUserDisabled(ctx, actor.User, id, disabled)
+	return user, err
+}
+
+// ResetPassword gives an account a new temporary password, returned ONCE, ends its sign-ins
+// and makes the person choose their own at the next one. Not for your own account.
+func (s *Service) ResetPassword(ctx context.Context, actor Principal, id string) (domain.User, string, error) {
+	if err := requireStaff(actor); err != nil {
+		return domain.User{}, "", err
+	}
+	if actor.User.ID == id {
+		return domain.User{}, "", ports.ErrOwnAccount
+	}
+	password, err := GeneratePassword()
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	hash, err := s.hash(ctx, password)
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	user, err := s.Store.ResetUserPassword(ctx, actor.User, id, hash)
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	return user, password, nil
 }

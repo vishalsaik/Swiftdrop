@@ -220,3 +220,31 @@ CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expires_at);
 
 -- An order is found by its customer when a customer lists their own orders.
 CREATE INDEX IF NOT EXISTS orders_customer_idx ON orders (customer_id, created_at DESC);
+
+-- Managing accounts. A temporary password (made by a staff member, or after a reset) must be
+-- replaced at the next sign-in: until then the account can do nothing but change it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
+
+-- Who did what to an account: created, disabled, enabled, password reset, password changed. It is
+-- written by the application in the same transaction as the change it describes, because the
+-- database cannot know who is acting. Rows can never be updated.
+CREATE TABLE IF NOT EXISTS user_events (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    actor_id    TEXT NOT NULL,        -- the account that did it (the account itself, for its own password change)
+    actor_email TEXT NOT NULL,        -- kept as it was then, so the record stays readable
+    kind        TEXT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS user_events_user_idx ON user_events (user_id, id);
+
+CREATE OR REPLACE FUNCTION user_events_append_only() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'user_events is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS user_events_no_update ON user_events;
+CREATE TRIGGER user_events_no_update BEFORE UPDATE ON user_events
+    FOR EACH ROW EXECUTE FUNCTION user_events_append_only();

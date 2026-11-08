@@ -33,6 +33,13 @@ type Accounts interface {
 	Authenticate(ctx context.Context, token string) (auth.Principal, error)
 	SignOut(ctx context.Context, p auth.Principal) error
 	ChangePassword(ctx context.Context, p auth.Principal, current, next string) error
+
+	// Managing other people's accounts, for staff.
+	ListAccounts(ctx context.Context, actor auth.Principal, q ports.UserQuery) ([]domain.User, error)
+	AccountDetail(ctx context.Context, actor auth.Principal, id string) (domain.User, []domain.UserEvent, error)
+	CreateAccount(ctx context.Context, actor auth.Principal, email, name string, role domain.Role) (domain.User, string, error)
+	SetDisabled(ctx context.Context, actor auth.Principal, id string, disabled bool) (domain.User, error)
+	ResetPassword(ctx context.Context, actor auth.Principal, id string) (domain.User, string, error)
 }
 
 // errCSRF means a signed-in request that changes something did not carry the
@@ -96,6 +103,11 @@ func (s *Server) guard(staffOnly bool, h http.HandlerFunc) http.HandlerFunc {
 		default:
 			log.Printf("auth error checking the session: %v", err)
 			writeError(w, http.StatusInternalServerError, "Failed to check your sign-in due to an internal server error")
+			return
+		}
+		// A temporary password (made by someone else) must be replaced before anything else.
+		if p.User.MustChangePassword && !passwordChangeAllowed(r) {
+			refusePasswordChangeRequired(w)
 			return
 		}
 		if staffOnly && p.User.Role != domain.RoleStaff {
@@ -246,6 +258,14 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "some fields are not acceptable", "fields": invalid.Fields})
 	case errors.Is(err, ports.ErrEmailTaken):
 		writeError(w, http.StatusConflict, "an account with that email already exists")
+	case errors.Is(err, ports.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "there is no such account")
+	case errors.Is(err, ports.ErrOwnAccount):
+		writeError(w, http.StatusConflict, "that cannot be done to your own account; ask another staff member")
+	case errors.Is(err, ports.ErrLastStaff):
+		writeError(w, http.StatusConflict, "that would leave no active staff account")
+	case errors.Is(err, auth.ErrNotStaff):
+		writeError(w, http.StatusForbidden, "this needs a staff account")
 	case errors.Is(err, auth.ErrBadCredentials):
 		writeError(w, http.StatusUnauthorized, auth.ErrBadCredentials.Error())
 	case errors.Is(err, auth.ErrWrongPassword):

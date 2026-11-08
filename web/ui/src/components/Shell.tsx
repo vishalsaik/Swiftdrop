@@ -12,9 +12,10 @@ import { Icon } from './Icon';
 import { NewOrderSheet } from './NewOrderSheet';
 import { OrderDetail } from './OrderDetail';
 import { OrderList, type Stage } from './OrderList';
+import { PeopleView } from './People';
 import { Avatar, Waiting } from './ui';
 
-type View = 'orders' | 'alerts';
+type View = 'orders' | 'alerts' | 'people';
 type SheetName = 'new' | 'account' | null;
 
 interface NoticeEntry { id: string; orderId: string; notice: Notice }
@@ -133,6 +134,15 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
           </>
         )}
 
+        {caps.people && (
+          <>
+            <h2 className="side-title">Admin</h2>
+            <ul className="side-list">
+              <SideItem icon="person" tint="purple" label="People" active={view === 'people'} onClick={() => pick('people')} />
+            </ul>
+          </>
+        )}
+
         <div className="side-foot">
           <button className="btn primary wide" type="button" onClick={() => setSheet('new')}><Icon name="plus" size={18} /> New order</button>
           <button className="account-row" type="button" aria-haspopup="dialog" onClick={() => setSheet('account')} aria-label={`Your account, ${user.name}`}>
@@ -145,8 +155,8 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <div className="main" id="content" tabIndex={-1}>
         <header className="page-head">
           <div>
-            <h1>{view === 'alerts' ? 'Alerts' : `${greeting()}, ${user.name.trim().split(/\s+/)[0] || 'there'}`}</h1>
-            <p className="sub">{view === 'alerts' ? 'Things that need a person.' : caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.'}</p>
+            <h1>{view === 'alerts' ? 'Alerts' : view === 'people' ? 'People' : `${greeting()}, ${user.name.trim().split(/\s+/)[0] || 'there'}`}</h1>
+            <p className="sub">{view === 'alerts' ? 'Things that need a person.' : view === 'people' ? 'Staff and customers, and what they can do.' : caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.'}</p>
           </div>
           <div className="head-tools">
             <span className={`live ${online === false ? 'off' : online ? 'on' : ''}`} role="status">
@@ -171,6 +181,8 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
             <OrderList orders={orders} stage={stage} selectedId={selectedId} loaded={loaded} showCustomer={caps.everyonesOrders}
               onSelect={setSelectedId} onSamples={() => void createSamples()} />
           </>
+        ) : view === 'people' && caps.people ? (
+          <PeopleView me={user} />
         ) : (
           <AlertsView alerts={alerts} knownOrders={new Set(byId.keys())} onOpenOrder={openOrder} onResolved={refreshAll} />
         )}
@@ -179,6 +191,7 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <nav className="tabbar" aria-label="Tabs">
         <TabButton icon="tray" label="Orders" active={view === 'orders'} onClick={() => pick('orders', stage)} />
         {caps.alerts && <TabButton icon="bell" label="Alerts" badge={alerts.length} active={view === 'alerts'} onClick={() => pick('alerts')} />}
+        {caps.people && <TabButton icon="person" label="People" active={view === 'people'} onClick={() => pick('people')} />}
         <TabButton icon="plus" label="New" onClick={() => setSheet('new')} />
         <TabButton icon="person" label="Account" onClick={() => setSheet('account')} />
       </nav>
@@ -211,13 +224,13 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
   );
 }
 
-function SideItem(props: { icon: Parameters<typeof Icon>[0]['name']; tint: string; label: string; count: number; active: boolean; badge?: boolean; onClick(): void }) {
+function SideItem(props: { icon: Parameters<typeof Icon>[0]['name']; tint: string; label: string; count?: number; active: boolean; badge?: boolean; onClick(): void }) {
   return (
     <li>
       <button type="button" className={`side-item ${props.active ? 'active' : ''}`} aria-current={props.active ? 'page' : undefined} onClick={props.onClick}>
         <span className={`tile ${props.tint}`}><Icon name={props.icon} size={18} /></span>
         <span className="label">{props.label}</span>
-        {props.badge ? (props.count > 0 && <span className="badge">{props.count}</span>) : <span className="count">{props.count}</span>}
+        {props.count === undefined ? null : props.badge ? (props.count > 0 && <span className="badge">{props.count}</span>) : <span className="count">{props.count}</span>}
       </button>
     </li>
   );
