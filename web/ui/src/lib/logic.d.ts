@@ -1,5 +1,5 @@
 // Types for logic.js, which stays plain JavaScript so `node --test` can run it with no tooling.
-import type { Alert, LedgerEvent, Order, Role } from './types';
+import type { AccountEvent, Alert, LedgerEvent, Order, Role, User } from './types';
 
 export interface Column { key: string; title: string; states: string[] }
 export const COLUMNS: Column[];
@@ -19,7 +19,7 @@ export interface OrderAction {
   why?: string;
 }
 export function actionsFor(order: Order, role?: Role | string): OrderAction[];
-export interface Capabilities { alerts: boolean; history: boolean; placeForOthers: boolean; everyonesOrders: boolean; kitchen: boolean }
+export interface Capabilities { alerts: boolean; history: boolean; placeForOthers: boolean; everyonesOrders: boolean; kitchen: boolean; people: boolean }
 export function capabilities(role: Role | string | null | undefined): Capabilities;
 
 export interface JourneyStep { key: string; label: string; status: 'done' | 'current' | 'todo' | 'skipped' | 'stopped'; note?: string }
@@ -57,3 +57,9 @@ export function validateSignup(form: { email?: string; name?: string; password?:
 export function greeting(date?: Date): string;
 export function initials(name: string | null | undefined): string;
 export function timeAgo(iso: string | undefined, now?: number): string;
+
+export function describeUserEvent(event: AccountEvent): { label: string; by: string };
+export function accountBadges(user: User, youId?: string): { text: string; tone: 'neutral' | 'bad' | 'wait' | 'good' }[];
+export function validateNewAccount(form: { email?: string; name?: string; role?: string }): {
+  ok: boolean; errors: Record<string, string>; payload: { email: string; name: string; role: string };
+};

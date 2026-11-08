@@ -80,7 +80,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     changePassword: async (currentPassword, newPassword) => {
       const res = await api('POST', '/auth/password', { currentPassword, newPassword });
-      if (res.ok) return { ok: true };
+      if (res.ok) {
+        // a temporary password is now replaced: the rest of the app opens up
+        setUser((u) => (u ? { ...u, mustChangePassword: false } : u));
+        return { ok: true };
+      }
       if (res.status === 403) return { ok: false, fields: { currentPassword: 'That is not your current password' } };
       if (res.status === 422) return { ok: false, fields: fieldErrors(res.data) };
       return { ok: false, message: authErrorMessage(res.status, res.data, res.retryAfter) };

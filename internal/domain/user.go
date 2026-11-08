@@ -25,6 +25,32 @@ type User struct {
 	// DisabledAt is set when an account is switched off. Nil for a working account.
 	DisabledAt *time.Time `json:"disabledAt,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
+	// MustChangePassword is set while the password is a temporary one that somebody else
+	// chose and knows: the account can do nothing but replace it.
+	MustChangePassword bool `json:"mustChangePassword,omitempty"`
+}
+
+// Disabled reports whether the account is switched off.
+func (u User) Disabled() bool { return u.DisabledAt != nil }
+
+// What was done to an account, for the history of it.
+const (
+	UserCreated         = "created"
+	UserDisabled        = "disabled"
+	UserEnabled         = "enabled"
+	UserPasswordReset   = "password_reset"   // a staff member replaced it with a temporary one
+	UserPasswordChanged = "password_changed" // the person chose their own
+)
+
+// UserEvent is one line of an account's history.
+type UserEvent struct {
+	ID         int64     `json:"id"`
+	UserID     string    `json:"userId"`
+	ActorID    string    `json:"actorId"`
+	ActorEmail string    `json:"actorEmail"`
+	Kind       string    `json:"kind"`
+	Detail     string    `json:"detail,omitempty"`
+	At         time.Time `json:"at"`
 }
 
 // Session is one sign-in. Only the hash of its secret token is stored, so a copy

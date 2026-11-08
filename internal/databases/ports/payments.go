@@ -105,4 +105,5 @@ type Store interface {
 	RefundReversalStore
 	ManualRefundStore
 	AuthStore
+	AccountAdminStore
 }

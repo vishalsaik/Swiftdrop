@@ -151,3 +151,18 @@ func ValidatePassword(password, email, name string) string {
 	}
 	return ""
 }
+
+// temporaryPasswordBytes of randomness make a temporary password: 18 bytes are 24 characters,
+// about 144 bits, far past anything that can be guessed.
+const temporaryPasswordBytes = 18
+
+// GeneratePassword makes a random password for an account somebody else sets up. The person must
+// replace it at their first sign-in (see domain.User.MustChangePassword), so it only has to
+// survive being passed on once.
+func GeneratePassword() (string, error) {
+	b := make([]byte, temporaryPasswordBytes)
+	if _, err := io.ReadFull(entropy, b); err != nil {
+		return "", fmt.Errorf("auth: reading random bytes: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
