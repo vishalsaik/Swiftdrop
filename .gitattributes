@@ -1,0 +1,2 @@
+# The dashboard build is compared byte for byte with what CI builds on Linux, so keep it LF everywhere.
+web/static/** text eol=lf
