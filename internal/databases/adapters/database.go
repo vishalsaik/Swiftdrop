@@ -21,7 +21,7 @@ const uniqueViolation = "23505"
 
 // orderColumns is the one column list every query returns. It must stay in
 // the same order as the Scan in scanOrder.
-const orderColumns = `id, payment_type, customer_id, restaurant_id, items, state, food_ready, assigned_driver_id, created_at, updated_at`
+const orderColumns = `id, payment_type, customer_id, restaurant_id, items, state, food_ready, assigned_driver_id, delivery_address, created_at, updated_at`
 
 // scanOrder reads one row shaped like orderColumns into an Order.
 func scanOrder(row pgx.Row) (domain.Order, error) {
@@ -35,6 +35,7 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 		&o.State,
 		&o.FoodReady,
 		&o.AssignedDriverID,
+		&o.DeliveryAddress,
 		&o.CreatedAt,
 		&o.UpdatedAt,
 	)
@@ -76,8 +77,8 @@ func NewDatabaseConnection(connStr string) (*DBAdapter, error) {
 
 func (db *DBAdapter) CreateOrder(ctx context.Context, order domain.Order) (domain.Order, error) {
 	query := `
-		INSERT INTO orders (id, payment_type, customer_id, restaurant_id, items, state)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO orders (id, payment_type, customer_id, restaurant_id, items, state, delivery_address)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING ` + orderColumns
 	// pgx natively serializes order.Items slice directly into a JSONB column block
 	o, err := scanOrder(db.Pool.QueryRow(ctx, query,
@@ -87,6 +88,7 @@ func (db *DBAdapter) CreateOrder(ctx context.Context, order domain.Order) (domai
 		order.RestaurantID,
 		order.Items,
 		order.State,
+		order.DeliveryAddress,
 	))
 	if err != nil {
 		return domain.Order{}, translate(err, order.ID, "failed to insert order")

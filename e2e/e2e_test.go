@@ -139,8 +139,11 @@ func environment(t *testing.T) (base, staffEmail, staffPassword string) {
 	return base, staffEmail, staffPassword
 }
 
+// reykjavik is where the test restaurant is, so the address an order goes to is 50 metres from it.
+var reykjavik = map[string]any{"line1": "1 Test Street", "city": "Reykjavik", "latitude": 64.147, "longitude": -21.943}
+
 func (s *session) order(id string, restaurant string, items []map[string]any) answer {
-	return s.do("POST", "/orders", map[string]any{"id": id, "restaurantId": restaurant, "paymentType": "card", "items": items})
+	return s.do("POST", "/orders", map[string]any{"id": id, "restaurantId": restaurant, "paymentType": "card", "deliveryAddress": reykjavik, "items": items})
 }
 
 // found is what a search answered: each restaurant's id with the ids of the items shown under it.
@@ -229,6 +232,59 @@ func TestACustomerOrdersAndTheOrderIsDelivered(t *testing.T) {
 	}
 	customer.want(customer.do("GET", "/search?lat=north&lng=1", nil), 400, "a position that is not numbers")
 	customer.want(customer.do("PUT", "/restaurants/"+restaurantID+"/place", map[string]any{"latitude": 1, "longitude": 1}), 403, "a customer moving a restaurant")
+
+	// -- where an order goes: a saved address, the radius, and the address search
+	home := customer.want(customer.do("POST", "/addresses", map[string]any{
+		"label": "Home", "line1": "1 Test Street", "landmark": "blue gate", "city": "Reykjavik", "latitude": 64.147, "longitude": -21.943,
+	}), 201, "save an address").body["address"].(map[string]any)
+	homeID := str(home["id"])
+	if got := customer.want(customer.do("GET", "/addresses", nil), 200, "list addresses").body["addresses"].([]any); len(got) != 1 {
+		t.Fatalf("saved addresses = %v, want one", got)
+	}
+	customer.want(customer.do("POST", "/addresses", map[string]any{"line1": "no place"}), 422, "an address with no place")
+	savedOrder := "E2E-" + run + "-saved"
+	customer.want(customer.do("POST", "/orders", map[string]any{
+		"id": savedOrder, "restaurantId": restaurantID, "paymentType": "card", "deliveryAddressId": homeID,
+		"items": []map[string]any{{"menuItemId": fries, "quantity": 1}},
+	}), 201, "order to a saved address")
+	// the order keeps its own copy: change and then delete the saved address
+	customer.want(customer.do("PUT", "/addresses/"+homeID, map[string]any{"line1": "somewhere else", "latitude": 1, "longitude": 1}), 200, "change the saved address")
+	customer.want(customer.do("DELETE", "/addresses/"+homeID, nil), 204, "delete the saved address")
+	delivered := customer.fetchOrder(savedOrder)["deliveryAddress"].(map[string]any)
+	if str(delivered["line1"]) != "1 Test Street" || str(delivered["landmark"]) != "blue gate" {
+		t.Fatalf("the order's address changed with the saved one: %v", delivered)
+	}
+	// too far: about 6 km north of a restaurant that delivers 3 km
+	far := customer.do("POST", "/orders", map[string]any{
+		"id": "E2E-" + run + "-far", "restaurantId": restaurantID, "paymentType": "card",
+		"deliveryAddress": map[string]any{"line1": "Far Away", "latitude": 64.2, "longitude": -21.943},
+		"items":           []map[string]any{{"menuItemId": fries, "quantity": 1}},
+	})
+	if far.status != 422 || !strings.Contains(far.raw, "delivers up to 3.0 km") {
+		t.Fatalf("an order 6 km away = %d %s, want 422 saying the restaurant delivers up to 3.0 km", far.status, far.raw)
+	}
+	noAddress := customer.do("POST", "/orders", map[string]any{
+		"id": "E2E-" + run + "-noaddr", "restaurantId": restaurantID, "paymentType": "card",
+		"items": []map[string]any{{"menuItemId": fries, "quantity": 1}},
+	})
+	if noAddress.status != 422 || !strings.Contains(noAddress.raw, "delivery address is required") {
+		t.Fatalf("an order with no address = %d %s, want 422", noAddress.status, noAddress.raw)
+	}
+	// the address search: only if the server is set up for it (the Docker stack uses the built-in demo list)
+	if found := customer.do("GET", "/geocode?q=indiranagar", nil); found.status == 503 {
+		t.Log("address search is not set up on this server; skipping that part")
+	} else {
+		customer.want(found, 200, "search an address")
+		candidates, _ := found.body["candidates"].([]any)
+		if len(candidates) == 0 || !strings.Contains(str(candidates[0].(map[string]any)["line1"]), "Indiranagar") {
+			t.Fatalf("searching for Indiranagar found %v", candidates)
+		}
+		named := customer.want(customer.do("GET", "/geocode/reverse?lat=12.9725&lng=77.6420", nil), 200, "name a place").body["candidate"]
+		if named == nil {
+			t.Error("a point in Indiranagar was not named")
+		}
+		customer.want(customer.do("GET", "/geocode?q=ab", nil), 400, "too short a search")
+	}
 
 	// -- a customer cannot name a price, or order anything but the menu, or change the menu
 	cheat := "E2E-" + run + "-cheat"

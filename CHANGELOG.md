@@ -4,13 +4,18 @@
 
 ### New
 
+- **Delivery addresses.** Every order says where it is going, and the server checks that its restaurant exists, has said where it is and delivers that far (a restaurant that has not been placed takes no delivery orders). An order keeps its own copy of the address. Customers save up to ten addresses and use them again (`/addresses`); staff placing a phone order choose or type one.
+- **Address search.** `GET /geocode` and `/geocode/reverse` turn typed words into places and a place into words, through OpenStreetMap's Nominatim (or any service that speaks it) or a built-in demo list, chosen by `GEOCODER`; cached for an hour, limited to 30 a minute per person, and the key (`GEOCODER_KEY`) is never logged. The order sheet has a **Deliver to** chooser: saved, search, where I am, or type it in; the food search follows the chosen address.
+
 - **Find food near you.** Restaurants have a place (latitude, longitude), a delivery radius and a cuisine, and items can be vegetarian. `GET /search` finds items by name, description, restaurant or cuisine (forgiving a typing mistake in an item's name), filters by vegetarian and price, and with the customer's position keeps only restaurants that deliver there, nearest first. The order sheet has a **Find food** box with a **Use my location** button: the browser is asked only when it is pressed, the position is rounded to about 110 metres, used for that search and kept nowhere, and refusing it leaves search by name working. Staff place a restaurant under **Menu** (or `PUT /restaurants/{id}/place`) and mark items vegetarian.
 - The demo seed now has three restaurants, placed in Bengaluru and Mumbai, with cuisines and vegetarian flags; running it again places demo restaurants that had no place and changes nothing else.
 
 ### Changed
 
-- The schema gains `pg_trgm`, restaurant place columns and `menu_items.veg` (applied in place by `migrate`).
-- CORS allows `PUT`.
+- The schema gains `pg_trgm`, restaurant place columns and `menu_items.veg`, and then an `addresses` table and `orders.delivery_address` (all applied in place by `migrate`).
+- **`POST /orders` now needs `deliveryAddressId` or `deliveryAddress`**, and a restaurant that has not been placed refuses delivery orders (a `422`). Clients that placed orders without an address must send one.
+- CORS allows `PUT` and `DELETE`.
+- The Docker stack defaults to `GEOCODER=demo`; a plain `go run ./cmd/api` has address search off until `GEOCODER` is set.
 
 ## v1.0.0
 

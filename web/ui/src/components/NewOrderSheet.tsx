@@ -3,8 +3,10 @@ import { api } from '../api';
 import {
   errorMessage, fieldErrors, MAX_LINE_QUANTITY, menuTotalCents, money, newOrderId, priceToCents, validateOrderForm, type OrderFormErrors,
 } from '../lib/logic';
+import type { AddressPayload } from '../lib/logic';
 import type { MenuItem, PaymentType, Restaurant, User } from '../lib/types';
 import { useToast } from '../toasts';
+import { DeliverTo, destinationAddress, type Destination } from './DeliverTo';
 import { Icon } from './Icon';
 import { NearbySearch } from './NearbySearch';
 import { Sheet } from './ui';
@@ -47,6 +49,7 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
   const [errors, setErrors] = useState<OrderFormErrors>({});
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [destination, setDestination] = useState<Destination | null>(null);
   // an item chosen in the search results, to put in the basket once its restaurant's menu has loaded
   const wanted = useRef<string | null>(null);
 
@@ -120,9 +123,13 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
       id, customerId, restaurantId, paymentType,
       menu: Object.entries(quantities).filter(([, q]) => q > 0).map(([menuItemId, quantity]) => ({ menuItemId, quantity })),
       items: custom.map(({ name, quantity, price }) => ({ name, quantity, price })),
+      ...(destination && 'saved' in destination ? { deliveryAddressId: destination.saved.id } : {}),
+      ...(destination && 'address' in destination ? { deliveryAddress: destination.address as AddressPayload } : {}),
     });
-    setErrors(result.errors);
-    if (!result.ok || !result.payload) return;
+    // where it is going is required, and the server checks it again (and that the restaurant delivers there)
+    const errors = destination ? result.errors : { ...result.errors, deliveryAddress: 'Choose where to deliver' };
+    setErrors(errors);
+    if (!result.ok || !result.payload || !destination) return;
     setBusy(true);
     const res = await api('POST', '/orders', result.payload);
     setBusy(false);
@@ -145,10 +152,14 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
     return e && typeof e === 'object' ? Object.values(e).join('. ') : '';
   };
   const noRestaurants = restaurants !== null && restaurants.length === 0;
+  // the search is near where the order is going, once that is chosen
+  const to = destination ? destinationAddress(destination) : null;
+  const near = to ? { lat: to.latitude, lng: to.longitude, name: to.label || to.line1 } : null;
 
   return (
     <>
-    <div className="sheet-form find-wrap"><NearbySearch onChoose={choose} /></div>
+    <div className="sheet-form deliver-wrap"><DeliverTo allowSaved={!placeForOthers} value={destination} onChange={setDestination} /></div>
+    <div className="sheet-form find-wrap"><NearbySearch onChoose={choose} near={near} /></div>
     <form onSubmit={submit} noValidate className="sheet-form">
       <div className="form-group">
         {placeForOthers && (
@@ -232,6 +243,7 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
         </>
       )}
       {err('items') && <p className="form-error">{err('items')}</p>}
+      {err('deliveryAddress') && <p className="form-error">{err('deliveryAddress')}</p>}
 
       <div className="order-total"><span>Total</span><strong>{money(total)}</strong></div>
       <p className="hint">Prices come from the menu. The built-in fake payment gateway declines a card order over <b>$500.00</b> and a wallet order over <b>$100.00</b>, so you can see a decline.</p>

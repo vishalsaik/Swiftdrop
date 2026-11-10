@@ -103,7 +103,7 @@ func (db *DBAdapter) listOrders(ctx context.Context, onlyCustomer bool, customer
 		var n nullablePayment
 		err := rows.Scan(
 			&o.ID, &o.PaymentType, &o.CustomerID, &o.RestaurantID, &o.Items, &o.State,
-			&o.FoodReady, &o.AssignedDriverID, &o.CreatedAt, &o.UpdatedAt,
+			&o.FoodReady, &o.AssignedDriverID, &o.DeliveryAddress, &o.CreatedAt, &o.UpdatedAt,
 			&n.id, &n.orderID, &n.status, &n.amount, &n.providerID, &n.reason, &n.lease, &n.created, &n.updated,
 			&n.refundStatus, &n.refundID, &n.attempts, &n.refundError, &n.refundLease, &n.attempt,
 		)

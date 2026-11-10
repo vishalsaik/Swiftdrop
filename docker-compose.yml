@@ -48,6 +48,13 @@ services:
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       DASHBOARD_URL: ${DASHBOARD_URL:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Address search: the built-in demo list (streets in Bengaluru and Mumbai) unless you choose
+      # GEOCODER=nominatim (OpenStreetMap or your own; see the README) or GEOCODER=off.
+      GEOCODER: ${GEOCODER:-demo}
+      GEOCODER_URL: ${GEOCODER_URL:-}
+      GEOCODER_KEY: ${GEOCODER_KEY:-}
+      GEOCODER_COUNTRY: ${GEOCODER_COUNTRY:-}
+      GEOCODER_CONTACT: ${GEOCODER_CONTACT:-}
       # How often refunds are retried and payments are checked: the defaults, unless the tests want it quick.
       REFUND_INTERVAL: ${REFUND_INTERVAL:-}
       RECONCILE_INTERVAL: ${RECONCILE_INTERVAL:-}

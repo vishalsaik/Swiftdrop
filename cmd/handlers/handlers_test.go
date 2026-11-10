@@ -20,6 +20,7 @@ import (
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/auth/authtest"
 	"swiftdrop/internal/catalog/catalogtest"
+	"swiftdrop/internal/databases/addresstest"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/payment"
@@ -40,6 +41,8 @@ type fakeDB struct {
 	*authtest.Store
 	// Catalog is the restaurants and menus half (see internal/catalog/catalogtest).
 	*catalogtest.Catalog
+	// Book is the saved addresses half (see internal/databases/addresstest).
+	*addresstest.Book
 
 	// mu makes the fake safe for the concurrent-request tests, and makes each
 	// method atomic the way a single SQL statement (or transaction) is.
@@ -118,8 +121,17 @@ func newTestServer(db ports.Store, pay *payment.Router) *Server {
 	return s
 }
 
+// testPlace is where the restaurants the order tests use are, and a point inside their delivery radius:
+// an order tests place is delivered to testPlace unless the test is about where it goes.
+const testLat, testLng = 12.9719, 77.6412
+
 func newFakeDB() *fakeDB {
-	return &fakeDB{Store: authtest.New(), Catalog: catalogtest.New(), orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
+	menu := catalogtest.New()
+	for _, id := range []string{"r", "rest-1"} { // the restaurants the order tests name
+		menu.Open(id, "Test Restaurant "+id)
+		menu.Place(id, "", testLat, testLng, 5)
+	}
+	return &fakeDB{Store: authtest.New(), Catalog: menu, Book: addresstest.New(), orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
 }
 
 // notFound and the duplicate error below use the same ports sentinels as the
@@ -138,7 +150,7 @@ func (f *fakeDB) CreateOrder(_ context.Context, o domain.Order) (domain.Order, e
 	}
 	stored := domain.Order{
 		ID: o.ID, PaymentType: o.PaymentType, CustomerID: o.CustomerID,
-		RestaurantID: o.RestaurantID, Items: o.Items, State: o.State,
+		RestaurantID: o.RestaurantID, Items: o.Items, State: o.State, DeliveryAddress: o.DeliveryAddress,
 	}
 	f.orders[o.ID] = stored
 	return stored, nil
@@ -353,8 +365,11 @@ func doWith(t *testing.T, db *fakeDB, method, path, body, contentType string) *h
 // validBody is a create request that passes every validation rule.
 const validItems = `[{"sku":"S1","name":"Burger","quantity":2,"unitPriceCents":599}]`
 
+// testAddress is a delivery address inside the test restaurants' radius.
+const testAddress = `{"line1":"1 Test Street","latitude":12.9719,"longitude":77.6412}`
+
 func validBody(id string) string {
-	return `{"id":"` + id + `","customerId":"c","restaurantId":"r","paymentType":"card","items":` + validItems + `}`
+	return `{"id":"` + id + `","customerId":"c","restaurantId":"r","paymentType":"card","deliveryAddress":` + testAddress + `,"items":` + validItems + `}`
 }
 
 func wantStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
@@ -557,13 +572,13 @@ func TestCreateOrderIgnoresServerOwnedFields(t *testing.T) {
 
 func TestCreateOrderPersistsFields(t *testing.T) {
 	db := newFakeDB()
-	body := `{"id":"o1","customerId":"cust-9","restaurantId":"rest-3","paymentType":"wallet",` +
+	body := `{"id":"o1","customerId":"cust-9","restaurantId":"rest-1","paymentType":"wallet","deliveryAddress":` + testAddress + `,` +
 		`"items":[{"sku":"S1","name":"Burger","quantity":2,"unitPriceCents":599}]}`
 	rec := do(t, db, http.MethodPost, "/orders", body)
 	wantStatus(t, rec, http.StatusCreated)
 
 	got := db.orders["o1"]
-	if got.CustomerID != "cust-9" || got.RestaurantID != "rest-3" {
+	if got.CustomerID != "cust-9" || got.RestaurantID != "rest-1" {
 		t.Errorf("wrong ids stored: %+v", got)
 	}
 	if got.PaymentType != domain.PaymentWallet {
@@ -648,7 +663,7 @@ func TestCreateOrderValidationRules(t *testing.T) {
 }
 
 func TestCreateOrderZeroPriceIsAllowed(t *testing.T) {
-	body := `{"id":"o1","customerId":"c","restaurantId":"r","paymentType":"cash",` +
+	body := `{"id":"o1","customerId":"c","restaurantId":"r","paymentType":"cash","deliveryAddress":` + testAddress + `,` +
 		`"items":[{"sku":"S","name":"Free sample","quantity":1,"unitPriceCents":0}]}`
 	wantStatus(t, do(t, newFakeDB(), http.MethodPost, "/orders", body), http.StatusCreated)
 }

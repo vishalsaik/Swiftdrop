@@ -21,14 +21,31 @@ v1 is the whole journey working end to end (see the README). This is what it lea
 Built: restaurant places, a delivery radius, vegetarian items, and `GET /search` (README, "Finding food near you"). What it leaves open:
 
 - **Distance is in a straight line, not by road.** A restaurant 2 km away across a river may be a 15-minute ride. The delivery radius is a circle for the same reason.
-- **There is no typed address.** If a customer refuses location, or wants food for somewhere else, they can only search by name. Typing an address needs geocoding (OpenStreetMap's Nominatim has usage rules; a paid service costs money), which is a decision still to make. Orders also carry no delivery address yet, so nothing checks again at order time that a restaurant really delivers to where the order is going.
-- **Places are typed in by staff.** There is no menu or restaurant import yet, so a new restaurant has no place until someone enters its latitude and longitude (or stands in it and presses "Use my current location"). A restaurant that is not placed is found by name but never by a search that has a position.
+- **Typed addresses and delivery addresses are built** (see "Delivery addresses and address search" below), so a customer who refuses location can search for an address, and every order is checked against the restaurant's radius.
+- **Places are typed in by staff.** There is no menu or restaurant import yet, so a new restaurant has no place until someone enters its latitude and longitude (or stands in it and presses "Use my current location"). A restaurant that is not placed is found by name but never by a search that has a position, and (since delivery addresses) it takes no delivery orders at all.
 - **The position is looked up once, not followed.** A customer who moves presses the button again. Following a moving person or driver on a map belongs with the driver work.
 - **The position is in the address of the request** (`/search?lat=...&lng=...`), rounded to about 110 metres first. Server logs that record addresses would hold that rounded position; the server itself logs no request addresses and keeps nothing.
 - **Search is simple.** Words are matched as substrings, and an item's own name also by trigram similarity (so "pad thay" finds "Pad thai"). There is no stemming, synonyms ("fries" and "chips"), spelling correction of restaurant names or descriptions, other languages, or ranking by popularity or rating. Postgres is fast enough for tens of thousands of items; a search engine (Meilisearch or Typesense) behind the same route is the next step, and instant as-you-type results would need it.
 - **Location needs `https://`.** Browsers only offer it on secure pages (and `localhost`), so the Docker stack on plain HTTP works on the same computer but not from a phone on the network until TLS is in front of it.
 - **The search answers are not cached and not paged.** At most 30 restaurants with 8 items each.
 - **The demo seed's places are real (Indiranagar in Bengaluru, Bandra in Mumbai) but the restaurants are not.** Running `seed` on a database seeded before places existed places the demo restaurants that have no place yet, and changes nothing else; items seeded earlier keep their old vegetarian flag (not vegetarian) until staff mark them.
+
+## Delivery addresses and address search
+
+Built: saved addresses, an address search, "where I am", and a delivery check on every order (README, "Where an order goes"). What it leaves open:
+
+- **The coordinates come from the client.** A customer could send an address whose words say one place and whose coordinates say another, to pass the radius check. The cost falls on them (a driver cannot find the door, the order is cancelled and refunded), not on us, and customers legitimately adjust a point, so the server does not sign what the search returned. If delivery fraud becomes real, sign the candidates and refuse coordinates the search did not give.
+- **No map and no pin to drag.** The customer confirms an address as text. How close the point is to the door depends on the geocoder: OpenStreetMap is good for streets and areas in many cities and often lacks house numbers, so the landmark field matters.
+- **The public Nominatim is not for traffic.** Its policy allows about one request a second for the whole service, and our limit is 30 a minute per person, so many people at once would exceed it. The answers are cached for an hour in memory (a restart empties it, and several servers each ask for themselves). Run your own Nominatim, or a service that speaks its protocol, before real use.
+- **What is typed in the address search goes to a third party,** the geocoder, and the dashboard says so. The server sends nothing else about the person.
+- **A paid geocoder may not allow what we do.** Google and Mapbox restrict storing the coordinates they return (we keep saved addresses and each order's copy); Nominatim-compatible services built on OpenStreetMap data do not, but need the "© OpenStreetMap contributors" credit, which the dashboard shows. Check a service's terms before pointing `GEOCODER_URL` at it.
+- **The delivery check is a circle.** Straight-line distance within the restaurant's radius; no delivery zones drawn on a map, no delivery fee by distance, no estimated time.
+- **Addresses are personal data.** A person can remove each saved address, but accounts cannot be deleted yet, so what they keep stays until they remove it, and an order keeps its copy of the address for as long as the order exists. There is no export.
+- **No contact number.** A driver (when there are drivers) cannot call the customer: no phone number is collected.
+- **Old orders have no address,** and an address cannot be added to an order after it is placed.
+- **Staff placing an order for a customer cannot use that customer's saved addresses** (they are the customer's own); staff search for, or type in, the address. With no geocoder set up, staff type the street and its coordinates by hand.
+- **Saved addresses have a label but no "default".** The customer chooses each time.
+- **The demo geocoder knows eight streets** (Indiranagar and Bandra), enough to try the product and to test it, and nothing else.
 
 ## Payments: production issues we are accepting for now
 

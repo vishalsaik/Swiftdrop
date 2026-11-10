@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { setSession } from '../api';
 import type { MenuItem, Restaurant, SearchHit } from '../lib/types';
+import { home, placeOrder } from '../test/deliver';
 import { customer, mockServer, order, session, type Call, type Handler } from '../test/server';
 
 beforeEach(() => { localStorage.clear(); document.documentElement.dataset.theme = 'light'; });
@@ -33,6 +34,7 @@ function shop(search: Handler = () => ({ body: { results: [], located: false } }
   return mockServer({
     'GET /auth/me': () => ({ body: session(customer) }),
     'GET /orders': () => ({ body: { orders: [] } }),
+    'GET /addresses': () => ({ body: { addresses: [home] } }),
     'GET /restaurants': () => ({ body: { restaurants: [kitchen, noodles] } }),
     'GET /restaurants/r1/menu': () => ({ body: { restaurant: kitchen, items: [burger, fries] } }),
     'GET /restaurants/r2/menu': () => ({ body: { restaurant: noodles, items: [padThai] } }),
@@ -219,7 +221,7 @@ describe('choosing from the results', () => {
     await waitFor(() => expect(screen.getByLabelText('Pad thai quantity').textContent).toBe('1'));
     expect(within(document.querySelector('.order-total') as HTMLElement).getByText(/\$/).textContent).toBe('$13.90');
 
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     const sent = server.callsTo('POST', '/orders')[0].body as { restaurantId: string; items: unknown[] };
     expect(sent.restaurantId).toBe('r2');

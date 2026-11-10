@@ -42,16 +42,31 @@ export function menuTotalCents(items: MenuItem[], quantities: Record<string, num
 
 export interface OrderForm {
   id: string; customerId: string; restaurantId: string; paymentType: string;
+  /** where it is going: a saved address's id, or an address to send with the order */
+  deliveryAddressId?: string;
+  deliveryAddress?: AddressPayload;
   /** menu lines: the server takes their names and prices from the menu */
   menu?: { menuItemId: string; quantity: number | string }[];
   /** custom lines, typed by staff */
   items: { name: string; quantity: string; price: string }[];
 }
+export interface AddressPayload {
+  label?: string; line1: string; landmark?: string; city?: string; postalCode?: string; latitude: number; longitude: number;
+}
+export function addressLine(a: { line1?: string; city?: string; postalCode?: string } | null | undefined): string;
+export interface AddressDraft {
+  label: string; line1: string; landmark: string; city: string; postalCode: string; latitude: string; longitude: string;
+}
+export function candidateToDraft(c: { line1?: string; city?: string; postalCode?: string; latitude: number; longitude: number }): AddressDraft;
+export function validateAddressForm(form: Partial<AddressDraft>): { ok: boolean; errors: Record<string, string>; payload: AddressPayload | null };
+
 export type OrderPayloadLine =
   | { menuItemId: string; quantity: number }
   | { sku: string; name: string; quantity: number; unitPriceCents: number };
 export interface OrderPayload {
   id: string; customerId: string; restaurantId: string; paymentType: string;
+  deliveryAddressId?: string;
+  deliveryAddress?: AddressPayload;
   items: OrderPayloadLine[];
 }
 export type OrderFormErrors = Record<string, string | Record<string, string>>;

@@ -15,6 +15,7 @@ import (
 	"swiftdrop/internal/alertnotify"
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/databases/adapters"
+	"swiftdrop/internal/geocode"
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/payment/gateways"
 	"swiftdrop/internal/payment/providers"
@@ -132,6 +133,14 @@ func main() {
 	if cacheSize > 0 {
 		s.Lookup = paymentcache.New(dbConn, cacheSize)
 	}
+
+	// Address search for the order sheet: off, a built-in demo list, or Nominatim (see GEOCODER in the README).
+	geocoder, geocoderSays, err := geocode.FromEnv(os.Getenv)
+	if err != nil {
+		panic(err.Error())
+	}
+	s.Geocoder = geocoder
+	fmt.Println(geocoderSays)
 
 	// Stripe pushes payment outcomes to POST /webhooks/stripe and signs every
 	// request with the endpoint's secret (the whsec_ value from the Stripe

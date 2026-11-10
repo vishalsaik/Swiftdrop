@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import {
-  actionsFor, describeEvent, errorMessage, fieldErrors, money, noticeFor, STATE_LABELS, timeAgo, timeline, totalCents,
+  actionsFor, addressLine, describeEvent, errorMessage, fieldErrors, money, noticeFor, STATE_LABELS, timeAgo, timeline, totalCents,
   type OrderAction,
 } from '../lib/logic';
 import { signature } from '../lib/present';
@@ -117,6 +117,7 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
     ...(pay && (pay.attempt > 1 || ['declined', 'abandoned'].includes(pay.status)) ? [['Attempt', `${pay.attempt} of ${pay.maxAttempts}`] as [string, string]] : []),
     ...(pay?.reason ? [['Decline reason', pay.reason] as [string, string]] : []),
     ...(refund ? [['Refund', refund] as [string, string]] : []),
+    ...(order.deliveryAddress ? [['Deliver to', [addressLine(order.deliveryAddress), order.deliveryAddress.landmark].filter(Boolean).join(' · ')] as [string, string]] : []),
     ...(role === 'staff' ? [['Customer', order.customerId] as [string, string], ['Restaurant', order.restaurantId] as [string, string]] : []),
     ...(order.assignedDriverId ? [['Driver', order.assignedDriverId.slice(0, 8)] as [string, string]] : []),
     ...(order.foodReady ? [['Food ready', timeAgo(order.foodReady)] as [string, string]] : []),
