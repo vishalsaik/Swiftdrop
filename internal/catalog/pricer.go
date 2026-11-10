@@ -19,7 +19,9 @@ type Problem struct{ Message string }
 
 func (p *Problem) Error() string { return p.Message }
 
-func problem(format string, args ...any) error { return &Problem{Message: fmt.Sprintf(format, args...)} }
+func problem(format string, args ...any) error {
+	return &Problem{Message: fmt.Sprintf(format, args...)}
+}
 
 // Pricer prices orders from the catalog.
 type Pricer struct {

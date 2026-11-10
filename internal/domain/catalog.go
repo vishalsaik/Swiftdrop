@@ -25,11 +25,11 @@ type Restaurant struct {
 // MenuItem is something a restaurant sells, at the price the restaurant set. This is where an
 // order's prices come from: a customer never says what an item costs.
 type MenuItem struct {
-	ID           string    `json:"id"`
-	RestaurantID string    `json:"restaurantId"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description,omitempty"`
-	PriceCents   int64     `json:"priceCents"`
+	ID           string `json:"id"`
+	RestaurantID string `json:"restaurantId"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	PriceCents   int64  `json:"priceCents"`
 	// Available is false for something the kitchen has run out of; it stays on the menu list for staff.
 	Available bool      `json:"available"`
 	CreatedAt time.Time `json:"createdAt"`

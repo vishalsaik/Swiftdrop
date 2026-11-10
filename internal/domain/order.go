@@ -35,12 +35,12 @@ type OrderItem struct {
 // rules live in internal/order/state.go so the domain type stays a plain
 // data holder and the transition logic stays independently testable.
 type Order struct {
-	ID               string      `json:"id"`
-	PaymentType      PaymentType `json:"paymentType"`
-	CustomerID       string      `json:"customerId"`
-	RestaurantID     string      `json:"restaurantId"`
-	Items            []OrderItem `json:"items"`
-	State            OrderState  `json:"state"`
+	ID           string      `json:"id"`
+	PaymentType  PaymentType `json:"paymentType"`
+	CustomerID   string      `json:"customerId"`
+	RestaurantID string      `json:"restaurantId"`
+	Items        []OrderItem `json:"items"`
+	State        OrderState  `json:"state"`
 	// FoodReady is nil until the kitchen (or a prep-time timer) marks the
 	// order ready; once set, it also records when. Independent of
 	// AssignedDriverID — either can become true first (see internal/order
