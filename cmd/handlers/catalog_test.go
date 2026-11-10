@@ -121,6 +121,9 @@ func TestACustomerSeesOnlyWhatIsOpenAndAvailable(t *testing.T) {
 
 	rec = ann.do(http.MethodGet, "/restaurants/r1/menu?all=true", "")
 	wantStatus(t, rec, http.StatusOK)
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("a menu's Cache-Control = %q, want no-store: a price or a sold-out item changes under a stale page", got)
+	}
 	if menu := decode[menuBody](t, rec.Body); menu.Restaurant.Name != "Corner Kitchen" || len(menu.Items) != 1 || menu.Items[0].ID != "meal" {
 		t.Errorf("a customer's menu = %s, want only the available item", rec.Body)
 	}
