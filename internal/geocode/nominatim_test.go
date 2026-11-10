@@ -84,6 +84,8 @@ func TestAPlaceWithoutAUsableNameOrPointIsHandledOrLeftOut(t *testing.T) {
 	 {"display_name":"bad lon","lat":"2","lon":"east","address":{}},
 	 {"display_name":"lat out","lat":"91","lon":"2","address":{}},
 	 {"display_name":"lng out","lat":"2","lon":"181","address":{}},
+	 {"display_name":"lat far south","lat":"-91","lon":"2","address":{}},
+	 {"display_name":"lng far west","lat":"2","lon":"-181","address":{}},
 	 {"display_name":"a fine one","lat":"5","lon":"6","address":{"road":"Road","municipality":"Muni"}}
 	]`)
 	got, err := n.Search(ctx, "x", 10)

@@ -55,6 +55,10 @@ func TestTheDemoListNamesTheNearestStreetWithinTwoKilometres(t *testing.T) {
 	if got, _ := (Demo{}).Reverse(ctx, 19.0600, 72.8300); got == nil || got.City != "Mumbai" {
 		t.Errorf("Mumbai = %+v", got)
 	}
+	// 4 kilometres from the nearest listed street is too far to name it
+	if got, err := (Demo{}).Reverse(ctx, 13.0170, 77.6412); got != nil || err != nil {
+		t.Errorf("4 km from Indiranagar = %+v, %v, want nothing", got, err)
+	}
 	// in the middle of nowhere there is nothing to say
 	if got, err := (Demo{}).Reverse(ctx, 64.1466, -21.9426); got != nil || err != nil {
 		t.Errorf("Reykjavik = %+v, %v, want nothing", got, err)

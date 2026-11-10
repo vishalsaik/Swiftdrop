@@ -75,6 +75,12 @@ func TestAnAnswerIsForgottenAfterItsTime(t *testing.T) {
 	if inner.searches != 2 {
 		t.Errorf("after 61 minutes the service was asked %d times, want 2", inner.searches)
 	}
+	// exactly its time is the end of it
+	*now = now.Add(time.Hour)
+	_, _ = g.Search(ctx, "x", 5)
+	if inner.searches != 3 {
+		t.Errorf("after exactly an hour the service was asked %d times, want 3: an answer lives for less than its time", inner.searches)
+	}
 }
 
 func TestAFailureIsNeverRemembered(t *testing.T) {
@@ -170,6 +176,11 @@ func TestWhatIsKeptCannotBeChangedByWhoeverGotIt(t *testing.T) {
 	if again[0].Line1 != "kept" {
 		t.Errorf("the cache holds %q after a caller changed its copy", again[0].Line1)
 	}
+	again[0].Line1 = "changed by a second caller, who was served from the cache"
+	third, _ := g.Search(ctx, "x", 5)
+	if third[0].Line1 != "kept" {
+		t.Errorf("the cache holds %q after a caller served from it changed its copy", third[0].Line1)
+	}
 	one, _ := g.Reverse(ctx, 1, 2)
 	one.Line1 = "changed"
 	again2, _ := g.Reverse(ctx, 1, 2)
@@ -205,6 +216,23 @@ func TestAPersonMayAskOnlySoOften(t *testing.T) {
 		}
 		now = now.Add(10 * time.Second)
 	}
+	// a use is over exactly when its window is: at 60 seconds the first is out, so one more is allowed
+	edge := NewLimiter(1, time.Minute)
+	t0 := time.Unix(1_700_000_000, 0)
+	at := t0
+	edge.now = func() time.Time { return at }
+	if ok, _ := edge.Allow("x"); !ok {
+		t.Fatal("the first use was refused")
+	}
+	at = t0.Add(59 * time.Second)
+	if ok, _ := edge.Allow("x"); ok {
+		t.Error("a second use after 59 seconds was allowed")
+	}
+	at = t0.Add(time.Minute)
+	if ok, _ := edge.Allow("x"); !ok {
+		t.Error("a second use after exactly a minute was refused: a use is over when its window is")
+	}
+
 	ok, wait := l.Allow("ann") // 30 seconds in; the first use was at 0
 	if ok || wait != 30*time.Second {
 		t.Errorf("the fourth use = %v, wait %v, want refused for 30 seconds", ok, wait)
