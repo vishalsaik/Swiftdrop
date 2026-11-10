@@ -48,6 +48,24 @@ Every restaurant has a **place** (latitude and longitude), a **delivery radius**
 
 The **Find food** box on the order sheet calls `GET /search`. The customer's position is asked for **only when they press "Use my location"** (the browser shows its own permission prompt then, never on page load); if they say no, searching by name still works. The position is looked up once, sent rounded to about 110 metres, used for that answer and **kept nowhere**. With a position, only restaurants that have been placed and whose radius covers the customer are found; otherwise every open restaurant is. Results are best match first (an item's own name, then its restaurant's name or cuisine, then its description), then nearest, at most 30 restaurants with at most 8 matching items each. Postgres trigrams (`pg_trgm`) forgive a typing mistake in an item's name. Browsers only allow location on `https://` pages or `localhost`, so a real deployment needs TLS first.
 
+### Where an order goes
+
+Every order carries a **delivery address**: the words a driver can read and the point on the map they stand for. The customer chooses it under **Deliver to** on the order sheet: one of up to ten **saved addresses**, an address found by **searching**, **where they are** (the browser asks only when that button is pressed), or one **typed in** with its coordinates. Staff placing a phone order choose it the same way (without saved addresses, which are the customer's own). The food search then looks near that address.
+
+The server decides whether the restaurant delivers there, on every order: the restaurant must exist, must have said where it is, and must be no farther from the address than its delivery radius, or the order is refused with a `422` that says how far (for example "Corner Kitchen delivers up to 6.0 km and that address is 7.4 km away"). **A restaurant that has not been placed takes no delivery orders.** An order keeps its **own copy** of the address, so editing or deleting a saved address never changes an order that exists. Orders from before addresses existed have none.
+
+**Address search** (`GET /geocode?q=`, and `GET /geocode/reverse?lat=&lng=` for "where I am") asks a geocoder, chosen with environment variables set in your own shell:
+
+| Variable | Effect |
+|---|---|
+| `GEOCODER` | `off` (the default for a plain `go run`): no address search, and the other ways of saying where still work. `demo`: a built-in list of streets in Bengaluru and Mumbai, no network (the Docker stack's default, so the quickstart works offline and CI never calls the internet). `nominatim`: OpenStreetMap's Nominatim, or any service that speaks its protocol |
+| `GEOCODER_URL` | for `nominatim`: where it is; the default is the public `https://nominatim.openstreetmap.org` |
+| `GEOCODER_KEY` | for `nominatim`: a key, if your service wants one. A secret: never in a file, never logged |
+| `GEOCODER_COUNTRY` | for `nominatim`: limit searches to these countries, two-letter codes: `in` or `in,lk` |
+| `GEOCODER_CONTACT` | for `nominatim`: who to contact about this program's traffic (an email or web address); the public service's policy asks for it, and it goes in the User-Agent |
+
+The public Nominatim allows **light use only** (one request a second, no search-as-you-type, an identifying User-Agent, caching), so the dashboard searches when **Search** is pressed, answers are cached for an hour, and each person may search 30 times a minute. For real traffic run a Nominatim of your own, or a service that speaks the same protocol, and point `GEOCODER_URL` at it. What a customer types in the search box is sent to the geocoder, and the results are OpenStreetMap data (© OpenStreetMap contributors).
+
 ## Status
 
 For how the payment flow fits together (the pieces, the states, what happens when a call fails, and how refunds work), see [docs/PAYMENT_FLOW.md](docs/PAYMENT_FLOW.md).
@@ -111,7 +129,8 @@ internal/
     providers/    card, wallet and cash providers
     gateways/     StripeGateway (the real HTTP adapter to Stripe) and StripeWebhook (verifies and translates Stripe's events)
   validation/     the field rules for a new order and the chain that runs them
-  catalog/        prices an order from the menu (Pricer) and seeds the demo menu (placed in Bengaluru and Mumbai)
+  catalog/        prices an order from the menu (Pricer), checks a restaurant delivers to an address (Deliverer), and seeds the demo menu (placed in Bengaluru and Mumbai)
+  geocode/        the Geocoder port: Nominatim (OpenStreetMap), a built-in demo list, a cache, a limiter, and FromEnv (GEOCODER)
   refund/         the background job that refunds charged orders that were cancelled
   databases/
     ports/        IDatabase — the storage interface handlers depend on
@@ -238,7 +257,13 @@ The screens are tested in a simulated browser against a fake server (sign-in, ro
 | GET    | `/restaurants/{id}/menu` | `{"restaurant", "items"}`. A customer gets only the available items of an open restaurant (a closed one is `404`); staff with `?all=true` get everything |
 | POST   | `/restaurants/{id}/menu` | Staff only. `{"name", "description"?, "priceCents", "veg"?}` adds an item (`201`); the price is 0 to 1,000,000 cents. `422` names every bad field |
 | PATCH  | `/menu/{id}`           | Staff only. Any of `{"name", "description", "priceCents", "available", "veg"}`. A new price applies to orders placed from then on; placed orders keep theirs |
-| POST   | `/orders`              | Create an order (always starts `created`; a customer's lines are menu items by `menuItemId` and the server prices them, `422` says what does not fit the menu); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
+| GET    | `/geocode`             | Address search: `?q=` (3 to 120 characters) answers `{"candidates": [{label, line1, city, postalCode, latitude, longitude}]}`, up to 5, best first. `503` when the server has no geocoder (`GEOCODER`), `502` when the service is down, `429` with `Retry-After` after 30 searches a minute, `400` for a bad `q`. Never cached |
+| GET    | `/geocode/reverse`     | The address at a point: `?lat=&lng=` answers `{"candidate": {...}}` or `{"candidate": null}`; the same `503`, `502`, `429` and `400` |
+| GET    | `/addresses`           | The signed-in person's saved addresses, oldest first: `{"addresses": [...]}` |
+| POST   | `/addresses`           | Save one: `{"line1", "latitude", "longitude"}` and optionally `label`, `landmark`, `city`, `postalCode` (`201`). `422` names the bad fields (a place is required: an address that is not anywhere cannot be delivered to), `409` when they already keep ten |
+| PUT    | `/addresses/{id}`      | Replace one (what is left out is cleared). Orders already placed keep their own copy. `404` if it is not theirs |
+| DELETE | `/addresses/{id}`      | Remove one (`204`). `404` if it is not theirs: someone else's is the same as one that is not there |
+| POST   | `/orders`              | Create an order (always starts `created`; it must say where it is going, and its restaurant must deliver there; a customer's lines are menu items by `menuItemId` and the server prices them, `422` says what does not fit the menu); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders`              | The newest orders, `{"orders": [...]}`, each as in `GET /orders/{id}`. `?limit=N`, default 50, at most 200 (`400` otherwise). Read in one query, so an order and its payment are from the same moment |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing), with a `payment` summary and a `paymentIssue` when there is something to tell the customer                                                      |
 | POST   | `/orders/{id}/pay`     | Idempotent. A new payment is claimed (`created → payment_pending` plus a `payments` row), authorized through the order's provider, then recorded: `paid`, or on a decline a `402` with the reason, `canRetry` and `attemptsLeft` (the order returns to `created`; paying again is a NEW attempt with its own payment, up to 3, and the last decline cancels the order). A retry of a finished payment replays its outcome (`200` with the order, or the same `402` once the order is closed) without charging again; `409` "still being processed" while another request holds the payment, or if the order moved on meanwhile; `409` for an order that cannot be paid from its state; `422` if the payment method is missing or not a Stripe id (nothing is claimed), `400` for a body that is not JSON; `409` with a refund promise if the order was cancelled while the payment was being processed; `500` if the provider errors (the payment stays `processing`; the webhook records the outcome if Stripe took the charge, or a retry after its 60 s lease takes it over) or the stored payment type has no provider |
@@ -255,13 +280,14 @@ The screens are tested in a simulated browser against a fake server (sign-in, ro
 
 Every lifecycle endpoint answers `404` for an unknown order and `409` for a move the order's current state doesn't allow. Errors are always `{"error": "..."}`.
 
-A create request from a customer looks like this (`paymentType` is one of `card`, `cash`, `wallet`; unknown fields are rejected, and the server owns `state`, `foodReady`, `assignedDriverId` and every price). `customerId` may be left out: it is the signed-in customer:
+A create request names where the order goes, either `"deliveryAddressId": "<a saved address of the customer>"` or `"deliveryAddress": {"line1": "12 MG Road", "latitude": 12.9719, "longitude": 77.6412}` (with optional `label`, `landmark`, `city`, `postalCode`), never both and never neither. A create request from a customer looks like this (`paymentType` is one of `card`, `cash`, `wallet`; unknown fields are rejected, and the server owns `state`, `foodReady`, `assignedDriverId` and every price). `customerId` may be left out: it is the signed-in customer:
 
 ```json
 {
   "id": "order-1",
   "restaurantId": "demo-corner-kitchen",
   "paymentType": "card",
+  "deliveryAddress": { "line1": "45 CMH Road, Indiranagar", "city": "Bengaluru", "latitude": 12.9719, "longitude": 77.6412 },
   "items": [{ "menuItemId": "demo-smash-burger", "quantity": 2 }]
 }
 ```
