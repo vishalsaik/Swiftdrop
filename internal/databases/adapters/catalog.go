@@ -14,18 +14,18 @@ import (
 
 var _ ports.CatalogStore = (*DBAdapter)(nil)
 
-const restaurantColumns = `id, name, active, created_at`
-const menuItemColumns = `id, restaurant_id, name, description, price_cents, available, created_at`
+const restaurantColumns = `id, name, active, cuisine, latitude, longitude, delivery_radius_km, created_at`
+const menuItemColumns = `id, restaurant_id, name, description, price_cents, available, veg, created_at`
 
 func scanRestaurant(row pgx.Row) (domain.Restaurant, error) {
 	var r domain.Restaurant
-	err := row.Scan(&r.ID, &r.Name, &r.Active, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.Name, &r.Active, &r.Cuisine, &r.Latitude, &r.Longitude, &r.DeliveryRadiusKm, &r.CreatedAt)
 	return r, err
 }
 
 func scanMenuItem(row pgx.Row) (domain.MenuItem, error) {
 	var m domain.MenuItem
-	err := row.Scan(&m.ID, &m.RestaurantID, &m.Name, &m.Description, &m.PriceCents, &m.Available, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.RestaurantID, &m.Name, &m.Description, &m.PriceCents, &m.Available, &m.Veg, &m.CreatedAt)
 	return m, err
 }
 
@@ -138,8 +138,8 @@ func (db *DBAdapter) CreateMenuItem(ctx context.Context, m domain.MenuItem) (dom
 		return domain.MenuItem{}, errors.New("failed to create menu item: id, restaurant and name are required and the price must be between 0 and the maximum")
 	}
 	created, err := scanMenuItem(db.Pool.QueryRow(ctx, `
-		INSERT INTO menu_items (id, restaurant_id, name, description, price_cents, available) VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING `+menuItemColumns, m.ID, m.RestaurantID, m.Name, m.Description, m.PriceCents, m.Available))
+		INSERT INTO menu_items (id, restaurant_id, name, description, price_cents, available, veg) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING `+menuItemColumns, m.ID, m.RestaurantID, m.Name, m.Description, m.PriceCents, m.Available, m.Veg))
 	var pgErr *pgconn.PgError
 	switch {
 	case err == nil:
@@ -160,8 +160,8 @@ func (db *DBAdapter) UpdateMenuItem(ctx context.Context, id string, patch ports.
 	}
 	m, err := scanMenuItem(db.Pool.QueryRow(ctx, `
 		UPDATE menu_items SET name = COALESCE($2, name), description = COALESCE($3, description),
-		                      price_cents = COALESCE($4, price_cents), available = COALESCE($5, available)
-		WHERE id = $1 RETURNING `+menuItemColumns, id, patch.Name, patch.Description, patch.PriceCents, patch.Available))
+		                      price_cents = COALESCE($4, price_cents), available = COALESCE($5, available), veg = COALESCE($6, veg)
+		WHERE id = $1 RETURNING `+menuItemColumns, id, patch.Name, patch.Description, patch.PriceCents, patch.Available, patch.Veg))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.MenuItem{}, fmt.Errorf("%w: %s", ports.ErrMenuItemNotFound, id)
 	}
@@ -169,4 +169,26 @@ func (db *DBAdapter) UpdateMenuItem(ctx context.Context, id string, patch ports.
 		return domain.MenuItem{}, fmt.Errorf("failed to update menu item: %w", err)
 	}
 	return m, nil
+}
+
+func (db *DBAdapter) SetRestaurantPlace(ctx context.Context, id string, place ports.Place) (domain.Restaurant, error) {
+	if (place.Latitude == nil) != (place.Longitude == nil) {
+		return domain.Restaurant{}, errors.New("failed to set restaurant place: latitude and longitude go together")
+	}
+	if place.Latitude != nil && !domain.ValidPoint(*place.Latitude, *place.Longitude) {
+		return domain.Restaurant{}, errors.New("failed to set restaurant place: that is not a place on earth")
+	}
+	if !(place.DeliveryRadiusKm > 0 && place.DeliveryRadiusKm <= domain.MaxDeliveryRadiusKm) {
+		return domain.Restaurant{}, errors.New("failed to set restaurant place: the delivery radius must be above 0 and at most the maximum")
+	}
+	r, err := scanRestaurant(db.Pool.QueryRow(ctx, `
+		UPDATE restaurants SET cuisine = $2, latitude = $3, longitude = $4, delivery_radius_km = $5
+		WHERE id = $1 RETURNING `+restaurantColumns, id, place.Cuisine, place.Latitude, place.Longitude, place.DeliveryRadiusKm))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Restaurant{}, fmt.Errorf("%w: %s", ports.ErrRestaurantNotFound, id)
+	}
+	if err != nil {
+		return domain.Restaurant{}, fmt.Errorf("failed to set restaurant place: %w", err)
+	}
+	return r, nil
 }

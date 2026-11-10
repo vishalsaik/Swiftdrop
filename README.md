@@ -30,7 +30,7 @@ To stop: `docker compose down` (add `-v` to forget the data). Settings are envir
 
 ### What v1 does
 
-- **Customers** sign up, pick an open restaurant, order from its menu (the server prices the order from the menu; a customer cannot name a price), pay by card, wallet or cash, and watch the order move. They can cancel, and a paid order that is cancelled is refunded by itself.
+- **Customers** find food by what it is called, by restaurant or cuisine, vegetarian only, and **near them**: with their say-so the page learns where they are and shows only the restaurants that deliver there, nearest first (see [Finding food near you](#finding-food-near-you)). They sign up, pick an open restaurant, order from its menu (the server prices the order from the menu; a customer cannot name a price), pay by card, wallet or cash, and watch the order move. They can cancel, and a paid order that is cancelled is refunded by itself.
 - **Staff** see every order and run it: accept, ready, pickup, deliver, cancel; place an order for a customer (or a walk-in), with a custom line if it is not on the menu; manage **Menu** (restaurants, items, prices, sold out, open or closed); manage **People** (make, switch off, reset); and handle **Alerts** about money that needs a person, which can also go to a Slack-compatible channel.
 - **Payments** are safe to retry, settled by webhook and by a reconciler, refunded by a job, and written to an append-only ledger. See [docs/PAYMENT_FLOW.md](docs/PAYMENT_FLOW.md).
 
@@ -41,6 +41,12 @@ Drivers are a stand-in (a random id is assigned when the kitchen accepts), nothi
 ### How it is checked
 
 `go test -race ./...` (against Postgres), the dashboard's own tests, and an end-to-end test that walks the whole product over HTTP against the Docker stack: staff set up a menu, a customer signs up and orders (with a made-up price that must be ignored), pays, the kitchen and the road do their parts, the customer sees it delivered; then a price change, a cancel with a refund, a closed restaurant, and what a customer may not touch. CI (`.github/workflows/ci.yml`) runs all of it, and fails if the committed dashboard build is not what `web/ui` builds.
+
+### Finding food near you
+
+Every restaurant has a **place** (latitude and longitude), a **delivery radius** (5 km until staff say otherwise) and a **cuisine**; items can be marked **vegetarian**. Staff set these on a restaurant under **Menu** (there is a "Use my current location" button for staff standing in the restaurant), or by `PUT /restaurants/{id}/place`.
+
+The **Find food** box on the order sheet calls `GET /search`. The customer's position is asked for **only when they press "Use my location"** (the browser shows its own permission prompt then, never on page load); if they say no, searching by name still works. The position is looked up once, sent rounded to about 110 metres, used for that answer and **kept nowhere**. With a position, only restaurants that have been placed and whose radius covers the customer are found; otherwise every open restaurant is. Results are best match first (an item's own name, then its restaurant's name or cuisine, then its description), then nearest, at most 30 restaurants with at most 8 matching items each. Postgres trigrams (`pg_trgm`) forgive a typing mistake in an item's name. Browsers only allow location on `https://` pages or `localhost`, so a real deployment needs TLS first.
 
 ## Status
 
@@ -105,7 +111,7 @@ internal/
     providers/    card, wallet and cash providers
     gateways/     StripeGateway (the real HTTP adapter to Stripe) and StripeWebhook (verifies and translates Stripe's events)
   validation/     the field rules for a new order and the chain that runs them
-  catalog/        prices an order from the menu (Pricer) and seeds the demo menu
+  catalog/        prices an order from the menu (Pricer) and seeds the demo menu (placed in Bengaluru and Mumbai)
   refund/         the background job that refunds charged orders that were cancelled
   databases/
     ports/        IDatabase — the storage interface handlers depend on
@@ -225,11 +231,13 @@ The screens are tested in a simulated browser against a fake server (sign-in, ro
 | POST   | `/users/{id}/reset-password` | Staff only. A new temporary password, answered once as `{"user", "temporaryPassword"}`; ends all the account's sign-ins and makes the person choose their own. `409` for your own account (use `/auth/password`); `404` unknown |
 | POST   | `/auth/password`       | `{currentPassword, newPassword}`: change the password and end every other sign-in (`204`; `403` wrong current password; `422` weak new one) |
 | GET    | `/restaurants`         | Open restaurants, `{"restaurants": [...]}` (staff may add `?all=true` for closed ones too) |
+| GET    | `/search`              | Find food: `?q=` (words, up to 80 characters), `?lat=&lng=` (together; the customer's position, rounded to about 110 m and not kept), `?veg=true`, `?maxPrice=` (cents). `{"results": [{"restaurant", "distanceKm"?, "items"}], "located": bool}`. Only open restaurants and available items; with a position, only restaurants that deliver there, nearest first among equal matches; never cached. `400` for a bad parameter |
+| PUT    | `/restaurants/{id}/place` | Staff only. `{"cuisine"?, "latitude"?, "longitude"?, "deliveryRadiusKm"?}` replaces the restaurant's place: what is left out is cleared (no place, no cuisine) or reset (radius 5 km). Latitude and longitude go together. `422` names the bad fields, `404` unknown |
 | POST   | `/restaurants`         | Staff only. `{"name"}` opens a restaurant (`201`). `422` names the bad field |
 | PATCH  | `/restaurants/{id}`    | Staff only. `{"name"?, "active"?}` renames, opens or closes (`404` unknown, `422` bad or empty) |
 | GET    | `/restaurants/{id}/menu` | `{"restaurant", "items"}`. A customer gets only the available items of an open restaurant (a closed one is `404`); staff with `?all=true` get everything |
-| POST   | `/restaurants/{id}/menu` | Staff only. `{"name", "description"?, "priceCents"}` adds an item (`201`); the price is 0 to 1,000,000 cents. `422` names every bad field |
-| PATCH  | `/menu/{id}`           | Staff only. Any of `{"name", "description", "priceCents", "available"}`. A new price applies to orders placed from then on; placed orders keep theirs |
+| POST   | `/restaurants/{id}/menu` | Staff only. `{"name", "description"?, "priceCents", "veg"?}` adds an item (`201`); the price is 0 to 1,000,000 cents. `422` names every bad field |
+| PATCH  | `/menu/{id}`           | Staff only. Any of `{"name", "description", "priceCents", "available", "veg"}`. A new price applies to orders placed from then on; placed orders keep theirs |
 | POST   | `/orders`              | Create an order (always starts `created`; a customer's lines are menu items by `menuItemId` and the server prices them, `422` says what does not fit the menu); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders`              | The newest orders, `{"orders": [...]}`, each as in `GET /orders/{id}`. `?limit=N`, default 50, at most 200 (`400` otherwise). Read in one query, so an order and its payment are from the same moment |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing), with a `payment` summary and a `paymentIssue` when there is something to tell the customer                                                      |

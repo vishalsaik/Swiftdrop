@@ -434,7 +434,76 @@ export function validateMenuItemForm(form) {
   if (cents === null) errors.priceCents = 'Enter a price of 0 or more';
   else if (cents > 1000000) errors.priceCents = 'The most for one item is $10,000.00';
   if (Object.keys(errors).length) return { ok: false, errors, payload: null };
-  return { ok: true, errors: {}, payload: { name, description, priceCents: cents } };
+  const payload = { name, description, priceCents: cents };
+  if (typeof form.veg === 'boolean') payload.veg = form.veg;
+  return { ok: true, errors: {}, payload };
+}
+
+// ---- finding food near someone -------------------------------------------------------
+
+// roundCoord keeps three decimals, about 110 metres: all that is needed to say which restaurants
+// deliver to someone, and no more of where they are than that. The server rounds again.
+export function roundCoord(x) {
+  return Math.round(Number(x) * 1000) / 1000;
+}
+
+// searchQueryString is the query of GET /search. Empty parts are left out, and a position is
+// rounded; nothing is sent that was not asked for.
+export function searchQueryString({ q, location, veg, maxPriceCents } = {}) {
+  const p = new URLSearchParams();
+  const text = String(q ?? '').trim();
+  if (text) p.set('q', text);
+  if (location && Number.isFinite(location.lat) && Number.isFinite(location.lng)) {
+    p.set('lat', String(roundCoord(location.lat)));
+    p.set('lng', String(roundCoord(location.lng)));
+  }
+  if (veg) p.set('veg', 'true');
+  if (Number.isInteger(maxPriceCents) && maxPriceCents > 0) p.set('maxPrice', String(maxPriceCents));
+  const s = p.toString();
+  return s ? `?${s}` : '';
+}
+
+// formatDistance: 700 m under a kilometre (to the nearest 50), 2.3 km under ten, then whole kilometres.
+export function formatDistance(km) {
+  if (!Number.isFinite(km) || km < 0) return '';
+  if (km < 1) return `${Math.max(50, Math.round((km * 1000) / 50) * 50)} m`;
+  if (km < 10) return `${km.toFixed(1)} km`;
+  return `${Math.round(km)} km`;
+}
+
+// locationProblem says, in words for a customer, why the browser gave no position. The codes are
+// those of GeolocationPositionError: 1 the person said no (or the site is not allowed to ask), 2 no
+// position could be found, 3 it took too long.
+export function locationProblem(code) {
+  if (code === 1) return 'Location is turned off for this page. Allow it in your browser to see what delivers to you, or search by name.';
+  if (code === 3) return 'Your location took too long to find. Try again, or search by name.';
+  return 'Your location could not be found. Try again, or search by name.';
+}
+
+// validatePlaceForm checks where a restaurant is as typed and builds the body of PUT /restaurants/{id}/place.
+// Latitude and longitude go together; a blank radius means the default, which the server sets.
+export function validatePlaceForm(form) {
+  const errors = {};
+  const cuisine = String(form.cuisine ?? '').trim();
+  if ([...cuisine].length > 40) errors.cuisine = 'Keep the cuisine to 40 characters';
+  const latText = String(form.latitude ?? '').trim();
+  const lngText = String(form.longitude ?? '').trim();
+  const payload = { cuisine };
+  if (latText || lngText) {
+    const lat = latText === '' ? NaN : Number(latText);
+    const lng = lngText === '' ? NaN : Number(lngText);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) errors.latitude = 'Latitude is a number from -90 to 90';
+    if (!Number.isFinite(lng) || lng < -180 || lng > 180) errors.longitude = 'Longitude is a number from -180 to 180';
+    if (!errors.latitude && !errors.longitude) { payload.latitude = lat; payload.longitude = lng; }
+  }
+  const radiusText = String(form.radiusKm ?? '').trim();
+  if (radiusText) {
+    const radius = Number(radiusText);
+    if (!Number.isFinite(radius) || radius <= 0 || radius > 100) errors.deliveryRadiusKm = 'The delivery radius is above 0 and at most 100 km';
+    else payload.deliveryRadiusKm = radius;
+  }
+  if (Object.keys(errors).length) return { ok: false, errors, payload: null };
+  return { ok: true, errors: {}, payload };
 }
 
 // validateRestaurantName checks a restaurant's name as typed.
@@ -480,6 +549,7 @@ export function lockoutMessage(seconds) {
 const FIELD_LABELS = {
   email: 'Email', name: 'Name', password: 'Password', newPassword: 'New password', currentPassword: 'Current password',
   reference: 'Reference', note: 'Note', description: 'Description', priceCents: 'Price', restaurantId: 'Restaurant',
+  cuisine: 'Cuisine', latitude: 'Latitude', longitude: 'Longitude', deliveryRadiusKm: 'Delivery radius',
 };
 
 // fieldErrors turns the server's {fields: {email: "must be ..."}} into sentences

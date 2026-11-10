@@ -57,8 +57,17 @@ export interface OrderPayload {
 export type OrderFormErrors = Record<string, string | Record<string, string>>;
 export function validateOrderForm(form: OrderForm): { ok: boolean; errors: OrderFormErrors; payload: OrderPayload | null };
 
-export function validateMenuItemForm(form: { name?: string; description?: string; price?: string }): {
-  ok: boolean; errors: Record<string, string>; payload: { name: string; description: string; priceCents: number } | null;
+export function validateMenuItemForm(form: { name?: string; description?: string; price?: string; veg?: boolean }): {
+  ok: boolean; errors: Record<string, string>; payload: { name: string; description: string; priceCents: number; veg?: boolean } | null;
+};
+
+export function roundCoord(x: number | string): number;
+export function searchQueryString(q?: { q?: string; location?: { lat: number; lng: number } | null; veg?: boolean; maxPriceCents?: number }): string;
+export function formatDistance(km: number | null | undefined): string;
+export function locationProblem(code: number): string;
+export interface PlacePayload { cuisine: string; latitude?: number; longitude?: number; deliveryRadiusKm?: number }
+export function validatePlaceForm(form: { cuisine?: string; latitude?: string; longitude?: string; radiusKm?: string }): {
+  ok: boolean; errors: Record<string, string>; payload: PlacePayload | null;
 };
 export function validateRestaurantName(text: string | undefined): { ok: boolean; error: string; name: string };
 

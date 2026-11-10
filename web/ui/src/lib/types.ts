@@ -15,11 +15,21 @@ export interface Session { user: User; csrfToken: string }
 
 export interface OrderItem { sku: string; name: string; quantity: number; unitPriceCents: number; menuItemId?: string }
 
-export interface Restaurant { id: string; name: string; active: boolean; createdAt?: string }
+export interface Restaurant {
+  id: string; name: string; active: boolean; createdAt?: string;
+  cuisine?: string;
+  /** where it is; absent until staff place it (a restaurant that is not placed is never found near someone) */
+  latitude?: number; longitude?: number;
+  deliveryRadiusKm?: number;
+}
+
+/** One restaurant that has something a customer searched for, with how far it is when they shared where they are. */
+export interface SearchHit { restaurant: Restaurant; distanceKm?: number; items: MenuItem[] }
 export interface MenuItem {
   id: string; restaurantId: string; name: string; description?: string; priceCents: number;
   /** false for something the kitchen has run out of; only staff see it */
   available: boolean; createdAt?: string;
+  veg?: boolean;
 }
 
 export interface PaymentView {

@@ -11,15 +11,29 @@ const (
 	// MaxLineQuantity is the most of one menu item on an order, and MaxOrderLines the most lines.
 	MaxLineQuantity = 50
 	MaxOrderLines   = 30
+
+	// A restaurant's cuisine is a short label ("North Indian"). It delivers up to MaxDeliveryRadiusKm
+	// from where it is, DefaultDeliveryRadiusKm until someone says otherwise.
+	MaxCuisineLength        = 40
+	DefaultDeliveryRadiusKm = 5.0
+	MaxDeliveryRadiusKm     = 100.0
+	// MaxSearchLength is the longest thing a customer may search for.
+	MaxSearchLength = 80
 )
 
 // Restaurant is a place customers can order from. An inactive restaurant is closed: it is not
 // offered to customers and takes no orders from the menu.
 type Restaurant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Active  bool   `json:"active"`
+	Cuisine string `json:"cuisine,omitempty"`
+	// Latitude and Longitude say where it is; both nil until staff place it. A restaurant that is
+	// not placed is never found by a search near someone, because nobody can say how far it is.
+	Latitude         *float64  `json:"latitude,omitempty"`
+	Longitude        *float64  `json:"longitude,omitempty"`
+	DeliveryRadiusKm float64   `json:"deliveryRadiusKm"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 // MenuItem is something a restaurant sells, at the price the restaurant set. This is where an
@@ -31,6 +45,8 @@ type MenuItem struct {
 	Description  string `json:"description,omitempty"`
 	PriceCents   int64  `json:"priceCents"`
 	// Available is false for something the kitchen has run out of; it stays on the menu list for staff.
-	Available bool      `json:"available"`
+	Available bool `json:"available"`
+	// Veg is true for a vegetarian item.
+	Veg       bool      `json:"veg"`
 	CreatedAt time.Time `json:"createdAt"`
 }

@@ -78,6 +78,27 @@ curl -i -X PATCH http://127.0.0.1:8080/menu/demo-fries -H "Content-Type: applica
 curl -i -X PATCH http://127.0.0.1:8080/restaurants/demo-noodle-bar -H "Content-Type: application/json" -d '{"active":false}'
 
 
+## Finding food. Anyone signed in. Only open restaurants and available items are found.
+## By words (item names and descriptions, restaurant names and cuisines; a typing mistake in an item's name is forgiven)
+curl -i "http://127.0.0.1:8080/search?q=paneer"
+
+## Near someone: only restaurants that deliver to that position, nearest first, each with distanceKm.
+## (Indiranagar, Bengaluru - finds Corner Kitchen and Noodle Bar after `go run ./cmd/seed`, not Harbour Grill in Mumbai)
+curl -i "http://127.0.0.1:8080/search?lat=12.975&lng=77.641"
+
+## Vegetarian only, up to 7.00 (cents), by words, near someone - every filter together
+curl -i "http://127.0.0.1:8080/search?q=roll&veg=true&maxPrice=700&lat=12.975&lng=77.641"
+
+## A bad parameter - 400 (lat and lng go together, must be numbers on earth, veg is true or false, maxPrice is cents)
+curl -i "http://127.0.0.1:8080/search?lat=12.9"
+
+## Say where a restaurant is (staff). It replaces the cuisine, place and radius; leave out what should be cleared.
+curl -i -X PUT http://127.0.0.1:8080/restaurants/demo-corner-kitchen/place -H "Content-Type: application/json" -d '{"cuisine":"American","latitude":12.9719,"longitude":77.6412,"deliveryRadiusKm":6}'
+
+## Mark an item vegetarian (staff)
+curl -i -X PATCH http://127.0.0.1:8080/menu/demo-fries -H "Content-Type: application/json" -d '{"veg":true}'
+
+
 ## Order from the menu (what a customer sends): item ids and counts, never prices. The server prices
 ## it from the menu, so a unitPriceCents here would be ignored.
 curl -i -X POST http://127.0.0.1:8080/orders \

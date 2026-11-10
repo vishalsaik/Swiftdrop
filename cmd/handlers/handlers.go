@@ -117,6 +117,8 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/restaurants", s.signedIn(s.ListRestaurants)).Methods("GET")
 	s.Router.HandleFunc("/restaurants", s.staffOnly(s.CreateRestaurant)).Methods("POST")
 	s.Router.HandleFunc("/restaurants/{id}", s.staffOnly(s.UpdateRestaurant)).Methods("PATCH")
+	s.Router.HandleFunc("/restaurants/{id}/place", s.staffOnly(s.SetRestaurantPlace)).Methods("PUT")
+	s.Router.HandleFunc("/search", s.signedIn(s.SearchFood)).Methods("GET")
 	s.Router.HandleFunc("/restaurants/{id}/menu", s.signedIn(s.ListMenu)).Methods("GET")
 	s.Router.HandleFunc("/restaurants/{id}/menu", s.staffOnly(s.CreateMenuItem)).Methods("POST")
 	s.Router.HandleFunc("/menu/{id}", s.staffOnly(s.UpdateMenuItem)).Methods("PATCH")
