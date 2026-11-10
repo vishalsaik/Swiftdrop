@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useLocation } from '../hooks/location';
 import { api } from '../api';
-import { errorMessage, fieldErrors, money, validateMenuItemForm, validateRestaurantName } from '../lib/logic';
+import { errorMessage, fieldErrors, money, validateMenuItemForm, validatePlaceForm, validateRestaurantName } from '../lib/logic';
 import type { MenuItem, Restaurant } from '../lib/types';
 import { useToast } from '../toasts';
 import { Icon } from './Icon';
@@ -197,6 +198,9 @@ function RestaurantBody(props: {
         </div>
       </form>
 
+      <h3 className="group-title">Place</h3>
+      <PlaceForm key={`${restaurant.id}:${restaurant.latitude}:${restaurant.longitude}:${restaurant.deliveryRadiusKm}:${restaurant.cuisine}`} restaurant={restaurant} onSaved={props.onChanged} />
+
       <h3 className="group-title">Menu</h3>
       {failed && <div className="banner" role="alert">{failed}</div>}
       {items === null && !failed && <p className="why">Loading</p>}
@@ -211,6 +215,7 @@ function RestaurantBody(props: {
                   {m.description && <span className="row-sub">{m.description}</span>}
                 </span>
                 <span className="price-tag">{money(m.priceCents)}</span>
+                {m.veg && <Pill tone="good">Veg</Pill>}
                 {!m.available && <Pill tone="wait">Sold out</Pill>}
               </div>
               <div className="menu-actions">
@@ -238,12 +243,13 @@ function ItemForm({ restaurantId, item, onClose, onSaved }: { restaurantId: stri
   const [name, setName] = useState(item?.name ?? '');
   const [description, setDescription] = useState(item?.description ?? '');
   const [price, setPrice] = useState(item ? (item.priceCents / 100).toFixed(2) : '');
+  const [veg, setVeg] = useState(item?.veg ?? false);
   const [problems, setProblems] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const check = validateMenuItemForm({ name, description, price });
+    const check = validateMenuItemForm({ name, description, price, veg });
     setProblems(check.errors);
     if (!check.ok || !check.payload) return;
     setBusy(true);
@@ -270,10 +276,79 @@ function ItemForm({ restaurantId, item, onClose, onSaved }: { restaurantId: stri
         <label className="field"><span>Price</span>
           <input inputMode="decimal" placeholder="0.00" value={price} onChange={(e) => setPrice(e.target.value)} aria-invalid={Boolean(problems.priceCents)} />
         </label>
+        <label className="field check-field"><span>Vegetarian</span>
+          <input type="checkbox" checked={veg} onChange={(e) => setVeg(e.target.checked)} />
+        </label>
       </div>
       {Object.entries(problems).map(([k, t]) => <p key={k} className="form-error">{t}</p>)}
       <button className="btn primary wide" type="submit" disabled={busy}>{item ? 'Save changes' : 'Add to the menu'}</button>
       <p className="hint">Prices are in dollars, for example 9.50.</p>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// where a restaurant is, so customers near it can find it
+// ---------------------------------------------------------------------------
+
+function PlaceForm({ restaurant, onSaved }: { restaurant: Restaurant; onSaved(): Promise<void> }) {
+  const toast = useToast();
+  const where = useLocation();
+  const [cuisine, setCuisine] = useState(restaurant.cuisine ?? '');
+  const [latitude, setLatitude] = useState(restaurant.latitude === undefined ? '' : String(restaurant.latitude));
+  const [longitude, setLongitude] = useState(restaurant.longitude === undefined ? '' : String(restaurant.longitude));
+  const [radiusKm, setRadiusKm] = useState(restaurant.deliveryRadiusKm === undefined ? '' : String(restaurant.deliveryRadiusKm));
+  const [problems, setProblems] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+
+  // staff standing in the restaurant can use where they are
+  useEffect(() => {
+    if (where.status === 'ready' && where.position) {
+      setLatitude(where.position.lat.toFixed(5));
+      setLongitude(where.position.lng.toFixed(5));
+    }
+  }, [where.status, where.position]);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const check = validatePlaceForm({ cuisine, latitude, longitude, radiusKm });
+    setProblems(check.errors);
+    if (!check.ok || !check.payload) return;
+    setBusy(true);
+    const res = await api('PUT', `/restaurants/${encodeURIComponent(restaurant.id)}/place`, check.payload);
+    setBusy(false);
+    if (res.status === 422) { setProblems(fieldErrors(res.data)); return; }
+    if (!res.ok) { toast(errorMessage(res.status, res.data), 'bad'); return; }
+    toast('Place saved', 'ok');
+    await onSaved();
+  }
+
+  const placed = restaurant.latitude !== undefined && restaurant.longitude !== undefined;
+  return (
+    <form onSubmit={submit} noValidate>
+      <div className="form-group">
+        <label className="field"><span>Cuisine</span>
+          <input value={cuisine} autoComplete="off" placeholder="For example North Indian" onChange={(e) => setCuisine(e.target.value)} aria-invalid={Boolean(problems.cuisine)} />
+        </label>
+        <label className="field"><span>Latitude</span>
+          <input inputMode="decimal" value={latitude} placeholder="12.9719" onChange={(e) => setLatitude(e.target.value)} aria-invalid={Boolean(problems.latitude)} />
+        </label>
+        <label className="field"><span>Longitude</span>
+          <input inputMode="decimal" value={longitude} placeholder="77.6412" onChange={(e) => setLongitude(e.target.value)} aria-invalid={Boolean(problems.longitude)} />
+        </label>
+        <label className="field"><span>Delivers up to (km)</span>
+          <input inputMode="decimal" value={radiusKm} placeholder="5" onChange={(e) => setRadiusKm(e.target.value)} aria-invalid={Boolean(problems.deliveryRadiusKm)} />
+        </label>
+      </div>
+      {Object.entries(problems).map(([k, t]) => <p key={k} className="form-error">{t}</p>)}
+      {where.status === 'problem' && <p className="form-error" role="alert">{where.message}</p>}
+      <div className="action-stack">
+        <button type="button" className="btn tinted wide" disabled={where.status === 'asking'} onClick={where.ask}>
+          {where.status === 'asking' ? 'Finding you…' : 'Use my current location'}
+        </button>
+        <button type="submit" className="btn primary wide" disabled={busy}>Save place</button>
+        <p className="hint">{placed ? 'Customers within the delivery radius of this point can find this restaurant.' : 'Not placed yet: customers who share their location will not find this restaurant until you save where it is.'}</p>
+      </div>
     </form>
   );
 }

@@ -67,7 +67,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 
 			// 3. Preflight check.
 			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+csrfHeader)
 				w.Header().Set("Access-Control-Max-Age", "600")
 

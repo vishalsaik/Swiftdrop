@@ -151,12 +151,13 @@ func (s *Server) UpdateRestaurant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"restaurant": updated})
 }
 
-// CreateMenuItem adds an item to a restaurant's menu: {"name", "description"?, "priceCents"}. Staff only.
+// CreateMenuItem adds an item to a restaurant's menu: {"name", "description"?, "priceCents", "veg"?}. Staff only.
 func (s *Server) CreateMenuItem(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		PriceCents  *int64 `json:"priceCents"`
+		Veg         bool   `json:"veg"`
 	}
 	if !decodeStrict(w, r, &in) {
 		return
@@ -182,7 +183,7 @@ func (s *Server) CreateMenuItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := s.DB.CreateMenuItem(r.Context(), domain.MenuItem{
-		ID: uuid.NewString(), RestaurantID: mux.Vars(r)["id"], Name: name, Description: description, PriceCents: *in.PriceCents, Available: true,
+		ID: uuid.NewString(), RestaurantID: mux.Vars(r)["id"], Name: name, Description: description, PriceCents: *in.PriceCents, Available: true, Veg: in.Veg,
 	})
 	if err != nil {
 		catalogError(w, "add the menu item", err)
@@ -191,7 +192,7 @@ func (s *Server) CreateMenuItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"item": created})
 }
 
-// UpdateMenuItem changes a menu item: any of {"name", "description", "priceCents", "available"}. Staff only.
+// UpdateMenuItem changes a menu item: any of {"name", "description", "priceCents", "available", "veg"}. Staff only.
 // A new price applies to orders placed from then on; orders already placed keep theirs.
 func (s *Server) UpdateMenuItem(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -199,12 +200,13 @@ func (s *Server) UpdateMenuItem(w http.ResponseWriter, r *http.Request) {
 		Description *string `json:"description"`
 		PriceCents  *int64  `json:"priceCents"`
 		Available   *bool   `json:"available"`
+		Veg         *bool   `json:"veg"`
 	}
 	if !decodeStrict(w, r, &in) {
 		return
 	}
-	if in.Name == nil && in.Description == nil && in.PriceCents == nil && in.Available == nil {
-		writeFieldProblems(w, map[string]string{"name": "or description, priceCents or available: there is nothing to change"})
+	if in.Name == nil && in.Description == nil && in.PriceCents == nil && in.Available == nil && in.Veg == nil {
+		writeFieldProblems(w, map[string]string{"name": "or description, priceCents, available or veg: there is nothing to change"})
 		return
 	}
 	problems := map[string]string{}
@@ -232,7 +234,7 @@ func (s *Server) UpdateMenuItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := s.DB.UpdateMenuItem(r.Context(), mux.Vars(r)["id"], ports.MenuItemPatch{
-		Name: in.Name, Description: in.Description, PriceCents: in.PriceCents, Available: in.Available,
+		Name: in.Name, Description: in.Description, PriceCents: in.PriceCents, Available: in.Available, Veg: in.Veg,
 	})
 	if err != nil {
 		catalogError(w, "update the menu item", err)

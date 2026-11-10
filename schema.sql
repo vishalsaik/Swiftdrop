@@ -269,3 +269,22 @@ CREATE TABLE IF NOT EXISTS menu_items (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS menu_items_restaurant_idx ON menu_items (restaurant_id, name);
+
+-- Finding food near someone. A restaurant has a place (latitude and longitude, both or neither),
+-- how far it delivers, and a cuisine; an item can be vegetarian. Search forgives typing mistakes
+-- with trigrams (pg_trgm, which ships with Postgres).
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS cuisine TEXT NOT NULL DEFAULT '';
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION CHECK (latitude BETWEEN -90 AND 90);
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION CHECK (longitude BETWEEN -180 AND 180);
+ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS delivery_radius_km DOUBLE PRECISION NOT NULL DEFAULT 5
+    CHECK (delivery_radius_km > 0 AND delivery_radius_km <= 100);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'restaurants_place_whole') THEN
+        ALTER TABLE restaurants ADD CONSTRAINT restaurants_place_whole CHECK ((latitude IS NULL) = (longitude IS NULL));
+    END IF;
+END $$;
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS veg BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS menu_items_name_trgm_idx ON menu_items USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS restaurants_name_trgm_idx ON restaurants USING gin (name gin_trgm_ops);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { api } from '../api';
 import {
   errorMessage, fieldErrors, MAX_LINE_QUANTITY, menuTotalCents, money, newOrderId, priceToCents, validateOrderForm, type OrderFormErrors,
@@ -6,6 +6,7 @@ import {
 import type { MenuItem, PaymentType, Restaurant, User } from '../lib/types';
 import { useToast } from '../toasts';
 import { Icon } from './Icon';
+import { NearbySearch } from './NearbySearch';
 import { Sheet } from './ui';
 
 // A custom line is for staff only (a phone order, something off the menu): they name it and price it.
@@ -46,6 +47,8 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
   const [errors, setErrors] = useState<OrderFormErrors>({});
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
+  // an item chosen in the search results, to put in the basket once its restaurant's menu has loaded
+  const wanted = useRef<string | null>(null);
 
   // the restaurants that are open
   useEffect(() => {
@@ -81,6 +84,11 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
       if (!res.ok) { setLoadError(errorMessage(res.status, res.data)); setMenu([]); return; }
       setLoadError('');
       setMenu(res.data?.items ?? []);
+      if (wanted.current) { // chosen in the search results: one of it, to start
+        const itemId = wanted.current;
+        wanted.current = null;
+        setQuantities({ [itemId]: 1 });
+      }
     });
     return () => { current = false; };
   }, [restaurantId]);
@@ -91,6 +99,16 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
     return cents === null || !Number.isInteger(qty) || qty < 1 ? sum : sum + cents * qty;
   }, 0), [custom]);
   const total = menuTotalCents(menu ?? [], quantities) + customCents;
+
+  // a restaurant, or an item of it, chosen in the search results
+  function choose(chosenRestaurantId: string, itemId?: string) {
+    if (chosenRestaurantId === restaurantId) {
+      if (itemId) setQuantities((q) => ({ ...q, [itemId]: Math.min(MAX_LINE_QUANTITY, (q[itemId] ?? 0) + 1) }));
+      return;
+    }
+    wanted.current = itemId ?? null;
+    setRestaurantId(chosenRestaurantId);
+  }
 
   const setQty = (itemId: string, next: number) =>
     setQuantities((q) => ({ ...q, [itemId]: Math.max(0, Math.min(MAX_LINE_QUANTITY, next)) }));
@@ -129,6 +147,8 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
   const noRestaurants = restaurants !== null && restaurants.length === 0;
 
   return (
+    <>
+    <div className="sheet-form find-wrap"><NearbySearch onChoose={choose} /></div>
     <form onSubmit={submit} noValidate className="sheet-form">
       <div className="form-group">
         {placeForOthers && (
@@ -217,5 +237,6 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
       <p className="hint">Prices come from the menu. The built-in fake payment gateway declines a card order over <b>$500.00</b> and a wallet order over <b>$100.00</b>, so you can see a decline.</p>
       <button className="btn primary wide" type="submit" disabled={busy || noRestaurants}>Place order</button>
     </form>
+    </>
   );
 }
