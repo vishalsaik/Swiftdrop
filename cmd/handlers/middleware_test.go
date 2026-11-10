@@ -130,7 +130,7 @@ func TestCORSPreflight(t *testing.T) {
 	wantStatus(t, rec, http.StatusNoContent)
 	for header, want := range map[string]string{
 		"Access-Control-Allow-Origin":  "http://localhost:3000",
-		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+		"Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
 		"Access-Control-Allow-Headers": "Content-Type, X-CSRF-Token",
 		// the session cookie is sent only because credentials are allowed, and only
 		// to an origin we named
