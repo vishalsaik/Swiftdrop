@@ -160,9 +160,11 @@ func TestNothingToPriceIsReturnedAsItIs(t *testing.T) {
 		}
 	}
 	items := []domain.OrderItem{line("burger", 1)}
-	got, err := pr.Price(ctx, "", items, false) // the rule for a missing restaurant says so in its own words
-	if err != nil || len(got) != 1 || got[0].MenuItemID != "burger" || got[0].Name != "" {
-		t.Errorf("no restaurant: %+v, %v, want the lines untouched", got, err)
+	for _, blank := range []string{"", "   "} {
+		got, err := pr.Price(ctx, blank, items, false) // the rule for a missing restaurant says so in its own words
+		if err != nil || len(got) != 1 || got[0].MenuItemID != "burger" || got[0].Name != "" {
+			t.Errorf("restaurant %q: %+v, %v, want the lines untouched", blank, got, err)
+		}
 	}
 }
 

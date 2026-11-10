@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"swiftdrop/internal/catalog/catalogtest"
@@ -87,14 +88,17 @@ func (c createsFail) CreateMenuItem(ctx context.Context, m domain.MenuItem) (dom
 func TestSeedingReportsEachKindOfStorageFailure(t *testing.T) {
 	broken := catalogtest.New()
 	broken.Err = errors.New("connection refused")
-	for name, store := range map[string]ports.CatalogStore{
-		"looking for a restaurant": broken,
-		"adding a restaurant":      createsFail{Catalog: catalogtest.New(), restaurant: true},
-		"reading a menu":           menuFails{catalogtest.New()},
-		"adding an item":           createsFail{Catalog: catalogtest.New(), item: true},
+	for name, c := range map[string]struct {
+		store ports.CatalogStore
+		said  string // what the error says it was doing
+	}{
+		"looking for a restaurant": {broken, "looking for Corner Kitchen"},
+		"adding a restaurant":      {createsFail{Catalog: catalogtest.New(), restaurant: true}, "adding Corner Kitchen"},
+		"reading a menu":           {menuFails{catalogtest.New()}, "looking at the menu of Corner Kitchen"},
+		"adding an item":           {createsFail{Catalog: catalogtest.New(), item: true}, "adding Smash burger"},
 	} {
-		if _, _, err := Seed(ctx, store); err == nil {
-			t.Errorf("%s: no error", name)
+		if _, _, err := Seed(ctx, c.store); err == nil || !strings.Contains(err.Error(), c.said) {
+			t.Errorf("%s: err = %v, want it to say %q", name, err, c.said)
 		}
 	}
 }
