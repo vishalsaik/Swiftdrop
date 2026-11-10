@@ -128,6 +128,11 @@ func TestTheSameItemTwiceIsOneLineAndStillWithinTheLimit(t *testing.T) {
 	}
 	_, err = pr.Price(ctx, "r1", []domain.OrderItem{line("burger", 30), line("burger", 21)}, false)
 	wantProblem(t, err, "at most 50")
+	// exactly the limit, reached by adding two lines together, is fine
+	got, err = pr.Price(ctx, "r1", []domain.OrderItem{line("burger", 25), line("burger", 25)}, false)
+	if err != nil || len(got) != 1 || got[0].Quantity != domain.MaxLineQuantity {
+		t.Errorf("25 and 25 of one item = %+v, %v, want one line of exactly 50", got, err)
+	}
 }
 
 func TestAnOrderHasAtMostThirtyLines(t *testing.T) {
