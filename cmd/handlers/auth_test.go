@@ -572,7 +572,10 @@ func TestACustomerOrdersForThemselvesAndStaffForAnyone(t *testing.T) {
 	w := newWorld(t)
 	ann := w.customer(t, "ann@example.com")
 	staff := w.staff(t, "dispatch@example.com")
-	item := `"restaurantId":"r1","paymentType":"card","items":[{"sku":"S","name":"Meal","quantity":1,"unitPriceCents":500}]`
+	w.db.Open("r1", "Corner Kitchen")
+	w.db.Add("meal", "r1", "Meal", 500)
+	// a customer orders from the menu; staff may too (their custom lines have their own tests)
+	item := `"restaurantId":"r1","paymentType":"card","items":[{"menuItemId":"meal","quantity":1}]`
 
 	// no customer id in the body at all: it is theirs
 	rec := ann.do(http.MethodPost, "/orders", `{"id":"o-a",`+item+`}`)

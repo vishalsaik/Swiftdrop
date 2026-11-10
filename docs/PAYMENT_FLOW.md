@@ -172,6 +172,13 @@ sequenceDiagram
   H-->>C: 200 with the order
 ```
 
+One thing is settled before any of this starts: **what is charged is decided by the
+server, from the menu.** A customer's order names menu items and counts, never prices
+(`internal/catalog`), and the order keeps the name and price each line had when it was
+placed. The amount a payment asks the provider for is the sum of those lines, so a
+customer cannot lower it, and a later price change cannot change an order that exists.
+Only staff may enter a custom line with a price of their own.
+
 Three rules that make this safe:
 
 1. **Claim before charge.** If we charged first, every simultaneous request would
@@ -460,6 +467,8 @@ dashboard shows when an alert was last sent.
 9. An order can be paid, cancelled or read only by its owner or by staff, and that
    is decided on the server: the dashboard hiding a button is a convenience, not the
    check.
+10. **A customer cannot name a price.** The amount charged comes from the menu, taken
+    when the order is placed, and never from the request.
 
 ## 11. Patterns, where they are
 
@@ -494,6 +503,7 @@ gateway), Command, Builder.
 | `ALERT_REMINDER` | how long an alert may stay open before it is sent again (`0` = never again) | `24h` |
 | `ALERT_NOTIFY_INTERVAL` | how often the job looks for alerts that are due | `15s` |
 | `DASHBOARD_URL` | added to each alert message as where to look | unset |
+| `LISTEN_ADDR` | where the server listens; a container sets `0.0.0.0:8080` | `127.0.0.1:8080` |
 | `COOKIE_SECURE` | `true` marks the session cookie `Secure`; set it when a proxy ends TLS (the cookie is `Secure` anyway on a TLS connection) | unset |
 
 With no `STRIPE_KEY` the fake gateway declines a card order over 50,000 cents and a

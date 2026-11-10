@@ -1,15 +1,14 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { api } from '../api';
-import { errorMessage, money, newOrderId, priceToCents, validateOrderForm, type OrderFormErrors } from '../lib/logic';
-import type { PaymentType, User } from '../lib/types';
+import {
+  errorMessage, fieldErrors, MAX_LINE_QUANTITY, menuTotalCents, money, newOrderId, priceToCents, validateOrderForm, type OrderFormErrors,
+} from '../lib/logic';
+import type { MenuItem, PaymentType, Restaurant, User } from '../lib/types';
 import { useToast } from '../toasts';
 import { Icon } from './Icon';
 import { Sheet } from './ui';
 
-const MENU: [string, number][] = [
-  ['Smash burger', 9.5], ['Fries', 4], ['Lemonade', 3.25], ['Pad thai', 13.9], ['Margherita pizza', 12], ['Miso soup', 3.5], ['Tiramisu', 6.75],
-];
-
+// A custom line is for staff only (a phone order, something off the menu): they name it and price it.
 interface Row { key: number; name: string; quantity: string; price: string }
 
 let rowKey = 1;
@@ -18,7 +17,7 @@ const newRow = (v: Partial<Row> = {}): Row => ({ key: rowKey++, name: '', quanti
 interface Props {
   open: boolean;
   user: User;
-  /** staff may place an order for any customer; a customer orders for themselves */
+  /** staff may place an order for any customer, and add a custom line; a customer orders for themselves, from the menu */
   placeForOthers: boolean;
   onClose(): void;
   onPlaced(id: string): Promise<void>;
@@ -37,30 +36,72 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
   const toast = useToast();
   const [id, setId] = useState(() => newOrderId());
   const [paymentType, setPaymentType] = useState<PaymentType>('card');
-  const [customerId, setCustomerId] = useState(placeForOthers ? 'cust-1' : user.id);
-  const [restaurantId, setRestaurantId] = useState('rest-1');
-  const [rows, setRows] = useState<Row[]>(() => [newRow({ name: 'Smash burger', price: '9.50' })]);
+  const [customerId, setCustomerId] = useState(placeForOthers ? 'walk-in' : user.id);
+  const [customers, setCustomers] = useState<User[]>([]);
+  const [restaurants, setRestaurants] = useState<Restaurant[] | null>(null);
+  const [restaurantId, setRestaurantId] = useState('');
+  const [menu, setMenu] = useState<MenuItem[] | null>(null);
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [custom, setCustom] = useState<Row[]>([]);
   const [errors, setErrors] = useState<OrderFormErrors>({});
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const total = useMemo(() => rows.reduce((sum, r) => {
+  // the restaurants that are open
+  useEffect(() => {
+    let current = true;
+    void api<{ restaurants: Restaurant[] | null }>('GET', '/restaurants').then((res) => {
+      if (!current) return;
+      if (!res.ok) { setLoadError(errorMessage(res.status, res.data)); return; }
+      const list = res.data?.restaurants ?? [];
+      setRestaurants(list);
+      setRestaurantId((now) => now || list[0]?.id || '');
+    });
+    return () => { current = false; };
+  }, []);
+
+  // staff pick the customer from the accounts there are (or a walk-in, who has none)
+  useEffect(() => {
+    if (!placeForOthers) return;
+    let current = true;
+    void api<{ accounts: User[] | null }>('GET', '/users?role=customer&limit=200').then((res) => {
+      if (current && res.ok) setCustomers(res.data?.accounts ?? []);
+    });
+    return () => { current = false; };
+  }, [placeForOthers]);
+
+  // the chosen restaurant's menu (only what is available); a new restaurant starts a new basket
+  useEffect(() => {
+    setQuantities({});
+    setMenu(null);
+    if (!restaurantId) return;
+    let current = true;
+    void api<{ items: MenuItem[] | null }>('GET', `/restaurants/${encodeURIComponent(restaurantId)}/menu`).then((res) => {
+      if (!current) return;
+      if (!res.ok) { setLoadError(errorMessage(res.status, res.data)); setMenu([]); return; }
+      setLoadError('');
+      setMenu(res.data?.items ?? []);
+    });
+    return () => { current = false; };
+  }, [restaurantId]);
+
+  const customCents = useMemo(() => custom.reduce((sum, r) => {
     const cents = priceToCents(r.price);
     const qty = Number(r.quantity);
     return cents === null || !Number.isInteger(qty) || qty < 1 ? sum : sum + cents * qty;
-  }, 0), [rows]);
+  }, 0), [custom]);
+  const total = menuTotalCents(menu ?? [], quantities) + customCents;
 
-  const setRow = (key: number, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
-
-  function fillSample() {
-    const picks = [...MENU].sort(() => Math.random() - 0.5).slice(0, 2 + Math.floor(Math.random() * 2));
-    setRows(picks.map(([name, price]) => newRow({ name, quantity: String(1 + Math.floor(Math.random() * 2)), price: price.toFixed(2) })));
-  }
+  const setQty = (itemId: string, next: number) =>
+    setQuantities((q) => ({ ...q, [itemId]: Math.max(0, Math.min(MAX_LINE_QUANTITY, next)) }));
+  const setRow = (key: number, patch: Partial<Row>) => setCustom((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     const result = validateOrderForm({
       id, customerId, restaurantId, paymentType,
-      items: rows.map(({ name, quantity, price }) => ({ name, quantity, price })),
+      menu: Object.entries(quantities).filter(([, q]) => q > 0).map(([menuItemId, quantity]) => ({ menuItemId, quantity })),
+      items: custom.map(({ name, quantity, price }) => ({ name, quantity, price })),
     });
     setErrors(result.errors);
     if (!result.ok || !result.payload) return;
@@ -69,7 +110,10 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
     setBusy(false);
     if (!res.ok) {
       const message = errorMessage(res.status, res.data);
-      if (res.status === 409) setErrors({ id: message }); else toast(message, 'bad');
+      if (res.status === 409 && placeForOthers) setErrors({ id: message });
+      else if (res.status === 409) { setId(newOrderId()); toast('That order number was taken. Press Place order again.', 'bad'); }
+      else if (res.status === 422 && Object.keys(fieldErrors(res.data)).length) setErrors(fieldErrors(res.data));
+      else toast(message, 'bad'); // the server's own words: the restaurant closed, an item sold out
       return;
     }
     onClose();
@@ -82,13 +126,16 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
     const e = errors[`items.${i}`];
     return e && typeof e === 'object' ? Object.values(e).join('. ') : '';
   };
+  const noRestaurants = restaurants !== null && restaurants.length === 0;
 
   return (
     <form onSubmit={submit} noValidate className="sheet-form">
       <div className="form-group">
-        <label className="field"><span>Order id</span>
-          <input value={id} autoComplete="off" spellCheck={false} onChange={(e) => setId(e.target.value)} aria-invalid={Boolean(err('id'))} />
-        </label>
+        {placeForOthers && (
+          <label className="field"><span>Order id</span>
+            <input value={id} autoComplete="off" spellCheck={false} onChange={(e) => setId(e.target.value)} aria-invalid={Boolean(err('id'))} />
+          </label>
+        )}
         <label className="field"><span>Pays by</span>
           <select value={paymentType} onChange={(e) => setPaymentType(e.target.value as PaymentType)}>
             <option value="card">Card</option>
@@ -98,36 +145,77 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
         </label>
         {placeForOthers && (
           <label className="field"><span>Customer</span>
-            <input value={customerId} autoComplete="off" spellCheck={false} onChange={(e) => setCustomerId(e.target.value)} aria-invalid={Boolean(err('customerId'))} />
+            <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} aria-invalid={Boolean(err('customerId'))}>
+              <option value="walk-in">Walk-in (no account)</option>
+              {customers.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
+            </select>
           </label>
         )}
         <label className="field"><span>Restaurant</span>
-          <input value={restaurantId} autoComplete="off" spellCheck={false} onChange={(e) => setRestaurantId(e.target.value)} aria-invalid={Boolean(err('restaurantId'))} />
+          <select value={restaurantId} disabled={!restaurants?.length} onChange={(e) => setRestaurantId(e.target.value)} aria-invalid={Boolean(err('restaurantId'))}>
+            {restaurants === null && <option value="">Loading</option>}
+            {noRestaurants && <option value="">None are open</option>}
+            {restaurants?.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
         </label>
       </div>
       {['id', 'customerId', 'restaurantId', 'paymentType'].map((k) => err(k) && <p key={k} className="form-error">{err(k)}</p>)}
+      {loadError && <p className="form-error" role="alert">{loadError}</p>}
+      {noRestaurants && <p className="hint">{placeForOthers ? 'No restaurant is open. Open one in Menu.' : 'No restaurant is open right now. Try again later.'}</p>}
 
-      <h3 className="group-title">Items</h3>
-      <div className="form-group items">
-        {rows.map((r, i) => (
-          <div className="item-row" key={r.key}>
-            <input placeholder="Item" aria-label="Item name" value={r.name} onChange={(e) => setRow(r.key, { name: e.target.value })} />
-            <input className="qty" type="number" min="1" step="1" aria-label="Quantity" value={r.quantity} onChange={(e) => setRow(r.key, { quantity: e.target.value })} />
-            <input className="price" inputMode="decimal" placeholder="0.00" aria-label="Price in dollars" value={r.price} onChange={(e) => setRow(r.key, { price: e.target.value })} />
-            <button type="button" className="icon-btn" aria-label="Remove item" onClick={() => setRows((rs) => rs.filter((x) => x.key !== r.key))}><Icon name="xmark" size={18} /></button>
-            {rowErr(i) && <small className="form-error span">{rowErr(i)}</small>}
+      <h3 className="group-title">Menu</h3>
+      {menu === null && restaurantId && <p className="why">Loading the menu</p>}
+      {menu !== null && menu.length === 0 && restaurantId && <p className="why">Nothing is available from this restaurant right now.</p>}
+      {menu !== null && menu.length > 0 && (
+        <ul className="form-group menu-pick">
+          {menu.map((m) => {
+            const q = quantities[m.id] ?? 0;
+            return (
+              <li key={m.id} className="pick-row">
+                <span className="row-main">
+                  <span className="row-title">{m.name}</span>
+                  {m.description && <span className="row-sub">{m.description}</span>}
+                </span>
+                <span className="price-tag">{money(m.priceCents)}</span>
+                <span className="stepper" role="group" aria-label={`Quantity of ${m.name}`}>
+                  <button type="button" className="icon-btn" aria-label={`Fewer ${m.name}`} disabled={q === 0} onClick={() => setQty(m.id, q - 1)}>−</button>
+                  <output aria-label={`${m.name} quantity`}>{q}</output>
+                  <button type="button" className="icon-btn" aria-label={`More ${m.name}`} disabled={q >= MAX_LINE_QUANTITY} onClick={() => setQty(m.id, q + 1)}><Icon name="plus" size={16} /></button>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {Object.keys(errors).filter((k) => k.startsWith('menu.')).map((k) => <p key={k} className="form-error">{err(k)}</p>)}
+
+      {placeForOthers && (
+        <>
+          <h3 className="group-title">Custom lines</h3>
+          {custom.length > 0 && (
+            <div className="form-group items">
+              {custom.map((r, i) => (
+                <div className="item-row" key={r.key}>
+                  <input placeholder="Item" aria-label="Item name" value={r.name} onChange={(e) => setRow(r.key, { name: e.target.value })} />
+                  <input className="qty" type="number" min="1" step="1" aria-label="Quantity" value={r.quantity} onChange={(e) => setRow(r.key, { quantity: e.target.value })} />
+                  <input className="price" inputMode="decimal" placeholder="0.00" aria-label="Price in dollars" value={r.price} onChange={(e) => setRow(r.key, { price: e.target.value })} />
+                  <button type="button" className="icon-btn" aria-label="Remove item" onClick={() => setCustom((rs) => rs.filter((x) => x.key !== r.key))}><Icon name="xmark" size={18} /></button>
+                  {rowErr(i) && <small className="form-error span">{rowErr(i)}</small>}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="item-tools">
+            <button type="button" className="text-btn" onClick={() => setCustom((rs) => [...rs, newRow()])}>Add a custom line</button>
           </div>
-        ))}
-      </div>
+          <p className="hint">For something that is not on the menu: you set its name and price.</p>
+        </>
+      )}
       {err('items') && <p className="form-error">{err('items')}</p>}
-      <div className="item-tools">
-        <button type="button" className="text-btn" onClick={() => setRows((rs) => [...rs, newRow()])}>Add item</button>
-        <button type="button" className="text-btn" onClick={fillSample}>Fill a sample</button>
-        <span className="total">{money(total)}</span>
-      </div>
 
-      <p className="hint">Tip: the built-in fake payment gateway declines a card order over <b>$500.00</b> and a wallet order over <b>$100.00</b>, so you can see a decline.</p>
-      <button className="btn primary wide" type="submit" disabled={busy}>Place order</button>
+      <div className="order-total"><span>Total</span><strong>{money(total)}</strong></div>
+      <p className="hint">Prices come from the menu. The built-in fake payment gateway declines a card order over <b>$500.00</b> and a wallet order over <b>$100.00</b>, so you can see a decline.</p>
+      <button className="btn primary wide" type="submit" disabled={busy || noRestaurants}>Place order</button>
     </form>
   );
 }

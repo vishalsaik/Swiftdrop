@@ -116,7 +116,7 @@ func TestRecordingARefundClosesTheAlertsAboutItAndNoOthers(t *testing.T) {
 	raiseFor(t, db, domain.AlertRefundReversed, "mr-alerts")
 	raiseFor(t, db, domain.AlertRefundUnrecorded, "mr-alerts")
 	raiseFor(t, db, domain.AlertContradictingEvent, "mr-alerts") // not about the refund
-	refundGivenUp(t, db, "mr-other", "pi_mr_other")               // another payment's alert
+	refundGivenUp(t, db, "mr-other", "pi_mr_other")              // another payment's alert
 
 	if _, recorded, err := db.RecordManualRefund(context.Background(), "mr-alerts", "re_9", "dee@example.com", "done"); err != nil || !recorded {
 		t.Fatalf("recorded=%v err=%v", recorded, err)
@@ -160,7 +160,9 @@ func TestOnlyAFailedRefundCanBeRecorded(t *testing.T) {
 		prepare setup
 		refund  domain.RefundStatus
 	}{
-		"not tried yet": {func(t *testing.T, db *DBAdapter, id string) { chargedAndCancelled(t, db, id, domain.PaymentCard, "pi_"+id) }, domain.RefundNone},
+		"not tried yet": {func(t *testing.T, db *DBAdapter, id string) {
+			chargedAndCancelled(t, db, id, domain.PaymentCard, "pi_"+id)
+		}, domain.RefundNone},
 		"being made": {func(t *testing.T, db *DBAdapter, id string) {
 			chargedAndCancelled(t, db, id, domain.PaymentCard, "pi_"+id)
 			if _, ok, err := db.ClaimRefund(ctx, "pay-"+id, time.Minute); err != nil || !ok {

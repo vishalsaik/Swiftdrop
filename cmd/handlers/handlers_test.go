@@ -19,6 +19,7 @@ import (
 
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/auth/authtest"
+	"swiftdrop/internal/catalog/catalogtest"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/payment"
@@ -37,6 +38,8 @@ type fakeDB struct {
 	// Store is the accounts and sign-ins half, an in-memory store that follows the
 	// Postgres contract (see internal/auth/authtest).
 	*authtest.Store
+	// Catalog is the restaurants and menus half (see internal/catalog/catalogtest).
+	*catalogtest.Catalog
 
 	// mu makes the fake safe for the concurrent-request tests, and makes each
 	// method atomic the way a single SQL statement (or transaction) is.
@@ -69,8 +72,8 @@ type fakeDB struct {
 	getFailOnCall int
 	getCalls      int
 
-	getErr    error
-	listErr   error
+	getErr  error
+	listErr error
 	// events is the payment history FakeDB answers with, keyed by ORDER id.
 	events    map[string][]domain.PaymentEvent
 	eventsErr error
@@ -88,11 +91,11 @@ type fakeDB struct {
 	// manualRefundErr makes RecordManualRefund fail; manualRefunds records what was asked of it.
 	manualRefundErr error
 	manualRefunds   []manualRefundCall
-	beforeMark   func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
-	createErr error
-	readyErr  error
-	acceptErr error
-	updateErr error
+	beforeMark      func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
+	createErr       error
+	readyErr        error
+	acceptErr       error
+	updateErr       error
 	// updateErrOn restricts updateErr to moves into this state; "" means every move.
 	updateErrOn domain.OrderState
 
@@ -116,7 +119,7 @@ func newTestServer(db ports.Store, pay *payment.Router) *Server {
 }
 
 func newFakeDB() *fakeDB {
-	return &fakeDB{Store: authtest.New(), orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
+	return &fakeDB{Store: authtest.New(), Catalog: catalogtest.New(), orders: map[string]domain.Order{}, payments: map[string]domain.Payment{}}
 }
 
 // notFound and the duplicate error below use the same ports sentinels as the

@@ -89,11 +89,11 @@ type stripeErrorBody struct {
 func (g *StripeGateway) Charge(ctx context.Context, req domain.PaymentRequest) (*domain.PaymentResult, error) {
 	// Translate: domain → Stripe API format
 	form := url.Values{
-		"amount":         {fmt.Sprintf("%d", req.AmountCents)},
-		"currency":       {strings.ToLower(req.Currency)},
-		"payment_method": {req.PaymentMethodID},
-		"confirm":        {"true"},
-		"automatic_payment_methods[enabled]":         {"true"},
+		"amount":                             {fmt.Sprintf("%d", req.AmountCents)},
+		"currency":                           {strings.ToLower(req.Currency)},
+		"payment_method":                     {req.PaymentMethodID},
+		"confirm":                            {"true"},
+		"automatic_payment_methods[enabled]": {"true"},
 		"automatic_payment_methods[allow_redirects]": {"never"},
 	}
 

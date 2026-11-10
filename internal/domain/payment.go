@@ -11,10 +11,10 @@ import (
 // key," so the key travels with the request from the start rather than
 // being bolted on by a decorator later.
 type PaymentRequest struct {
-	OrderID         string `json:"orderId"`
-	IdempotencyKey  string `json:"idempotencyKey"`
-	AmountCents     int64  `json:"amountCents"`
-	Currency        string `json:"currency"`
+	OrderID        string `json:"orderId"`
+	IdempotencyKey string `json:"idempotencyKey"`
+	AmountCents    int64  `json:"amountCents"`
+	Currency       string `json:"currency"`
 	// PaymentMethodID is the provider token from the client (e.g. Stripe's
 	// pm_xxx created by Stripe.js). Empty for cash payments.
 	PaymentMethodID string `json:"paymentMethodId"`

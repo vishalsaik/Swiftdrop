@@ -20,6 +20,10 @@ const (
 // OrderItem is one line item on an order. Prices are stored in integer
 // cents to avoid floating-point rounding errors in money math.
 type OrderItem struct {
+	// MenuItemID names the menu item this line is. When it is set the server takes the name and
+	// the price from the menu and ignores whatever the client sent for them. A line without it is
+	// a custom line (a phone order), which only staff may place.
+	MenuItemID     string `json:"menuItemId,omitempty"`
 	SKU            string `json:"sku"`
 	Name           string `json:"name"`
 	Quantity       int    `json:"quantity"`
@@ -31,12 +35,12 @@ type OrderItem struct {
 // rules live in internal/order/state.go so the domain type stays a plain
 // data holder and the transition logic stays independently testable.
 type Order struct {
-	ID               string      `json:"id"`
-	PaymentType      PaymentType `json:"paymentType"`
-	CustomerID       string      `json:"customerId"`
-	RestaurantID     string      `json:"restaurantId"`
-	Items            []OrderItem `json:"items"`
-	State            OrderState  `json:"state"`
+	ID           string      `json:"id"`
+	PaymentType  PaymentType `json:"paymentType"`
+	CustomerID   string      `json:"customerId"`
+	RestaurantID string      `json:"restaurantId"`
+	Items        []OrderItem `json:"items"`
+	State        OrderState  `json:"state"`
 	// FoodReady is nil until the kitchen (or a prep-time timer) marks the
 	// order ready; once set, it also records when. Independent of
 	// AssignedDriverID — either can become true first (see internal/order

@@ -2,12 +2,53 @@
 
 A food-delivery and driver-dispatch backend, built from scratch in Go as a hands-on way to learn backend engineering fundamentals — HTTP APIs, persistence, and (eventually) concurrency — one feature at a time.
 
+## SwiftDrop v1
+
+A customer signs up, browses a restaurant's menu, orders, pays, and follows the order to the door; dispatch staff run the kitchen and the delivery, manage menus and people, and deal with payment problems. Everything below runs from one command.
+
+### Try it (Docker)
+
+You need Docker. Nothing else.
+
+```bash
+docker compose up --build
+```
+
+That starts Postgres (not reachable from outside), creates the tables, and starts the server with the dashboard on <http://127.0.0.1:8080> (this computer only). Then, in another terminal:
+
+```bash
+# a demo menu: two restaurants, five items (safe to run again)
+docker compose run --rm --entrypoint /app/seed api
+
+# the first staff account: nobody can sign themselves up as staff
+docker compose run --rm -e SWIFTDROP_NEW_PASSWORD="a long enough phrase" --entrypoint /app/user api -email you@example.com -name "Your Name"
+```
+
+Sign in at <http://127.0.0.1:8080> as that staff account to run the dashboard, and create a second account with **Create account** to see what a customer sees. (In Git Bash on Windows put `MSYS_NO_PATHCONV=1` in front of those two commands, or Git rewrites `/app/seed`.)
+
+To stop: `docker compose down` (add `-v` to forget the data). Settings are environment variables in **your own shell**, never in a file: `STRIPE_KEY` (a Stripe **test** key; without it a built-in fake gateway is used, which declines a card order over $500 and a wallet order over $100), `STRIPE_WEBHOOK_SECRET`, `ALERT_WEBHOOK_URL`, `SWIFTDROP_PORT`. Without Docker, see [Getting started](#getting-started).
+
+### What v1 does
+
+- **Customers** sign up, pick an open restaurant, order from its menu (the server prices the order from the menu; a customer cannot name a price), pay by card, wallet or cash, and watch the order move. They can cancel, and a paid order that is cancelled is refunded by itself.
+- **Staff** see every order and run it: accept, ready, pickup, deliver, cancel; place an order for a customer (or a walk-in), with a custom line if it is not on the menu; manage **Menu** (restaurants, items, prices, sold out, open or closed); manage **People** (make, switch off, reset); and handle **Alerts** about money that needs a person, which can also go to a Slack-compatible channel.
+- **Payments** are safe to retry, settled by webhook and by a reconciler, refunded by a job, and written to an append-only ledger. See [docs/PAYMENT_FLOW.md](docs/PAYMENT_FLOW.md).
+
+### What v1 is not
+
+Drivers are a stand-in (a random id is assigned when the kitchen accepts), nothing is sent by email, a forgotten password is reset by staff, and menus are plain (no photos, categories, options, fees or tax). The full list, and what each leaves open, is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md#v1-what-it-is-not). What changed is in [CHANGELOG.md](CHANGELOG.md).
+
+### How it is checked
+
+`go test -race ./...` (against Postgres), the dashboard's own tests, and an end-to-end test that walks the whole product over HTTP against the Docker stack: staff set up a menu, a customer signs up and orders (with a made-up price that must be ignored), pays, the kitchen and the road do their parts, the customer sees it delivered; then a price change, a cancel with a refund, a closed restaurant, and what a customer may not touch. CI (`.github/workflows/ci.yml`) runs all of it, and fails if the committed dashboard build is not what `web/ui` builds.
+
 ## Status
 
 For how the payment flow fits together (the pieces, the states, what happens when a call fails, and how refunds work), see [docs/PAYMENT_FLOW.md](docs/PAYMENT_FLOW.md).
 
 Early stage. Working today:
 
+- **Orders are priced from a menu, never from the request.** Staff keep `restaurants` and `menu_items` (`internal/catalog`, `cmd/handlers/catalog.go`). A customer orders by `menuItemId` and a count; `catalog.Pricer` takes the name, sku and price from the menu, merges repeats, and refuses a closed or missing restaurant, an item that is missing, on another restaurant's menu or sold out, a count over 50 and more than 30 lines. A customer cannot place a custom line at all; staff may (a phone order), with a price of their own, next to menu lines. An order keeps copies of the name and price it was placed at, so changing the menu never changes an order. A customer sees only open restaurants and available items; a closed restaurant is not found, like one that does not exist
 - Domain model: `Order`, `Driver`, `Payment`, `Event` types (`internal/domain`)
 - HTTP API on top of [gorilla/mux](https://github.com/gorilla/mux): health check, create order, get order by ID, and the full order lifecycle: pay → accept → ready → pickup → deliver, plus cancel
 - Postgres-backed persistence via [pgx](https://github.com/jackc/pgx), behind a `ports.IDatabase` interface so the storage backend is swappable
@@ -53,6 +94,10 @@ Stand-ins for now: wallet payments go to the same Stripe gateway as cards, `/acc
 cmd/
   api/            entry point — wires dependencies, starts the HTTP server
   handlers/       Server struct, HTTP handlers, and the middleware chain
+  migrate/        creates or upgrades the tables (the schema is embedded; safe to repeat, safe to run at once)
+  seed/           adds a small demo menu, only what is missing
+  user/           makes an account, such as the first staff account
+e2e/              the end-to-end test: the whole product over HTTP against a running stack
 internal/
   domain/         plain data types: Order, Driver, Payment, Event
   order/          legal order-state transitions (CanTransition/Apply)
@@ -60,6 +105,7 @@ internal/
     providers/    card, wallet and cash providers
     gateways/     StripeGateway (the real HTTP adapter to Stripe) and StripeWebhook (verifies and translates Stripe's events)
   validation/     the field rules for a new order and the chain that runs them
+  catalog/        prices an order from the menu (Pricer) and seeds the demo menu
   refund/         the background job that refunds charged orders that were cancelled
   databases/
     ports/        IDatabase — the storage interface handlers depend on
@@ -67,14 +113,18 @@ internal/
 docs/             architecture notes (PAYMENT_FLOW.md)
 web/ui/           the dashboard's source (React, TypeScript, Vite) and its tests
 web/static/       the dashboard as built (committed, compiled into the binary)
-schema.sql        database schema
+schema.sql        database schema (embedded by schema.go, applied by cmd/migrate)
+Dockerfile        builds the server and its commands into one small image
+docker-compose.yml  the database, the migration and the server, for one command
+.github/workflows/ci.yml  what CI runs
+CHANGELOG.md      what each release changed
 curls.txt         example curl commands for manual API testing
 KNOWN_ISSUES.md   what we chose not to build yet, and the production problems that leaves
 ```
 
 ## Getting started
 
-**Prerequisites:** Go 1.25+, Docker.
+**Prerequisites:** Go 1.25+, Docker. (To only run the product, `docker compose up --build` above is enough.)
 
 1. Start Postgres:
 
@@ -82,11 +132,14 @@ KNOWN_ISSUES.md   what we chose not to build yet, and the production problems th
    docker run --name postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=swiftdrop -p 5434:5432 -d postgres:16-alpine
    ```
 
-2. Apply the schema:
+2. Apply the schema, and add a demo menu:
 
    ```bash
-   docker exec -i postgres psql -U postgres -d swiftdrop < schema.sql
+   go run ./cmd/migrate
+   go run ./cmd/seed
    ```
+
+   (`migrate` and `seed` use `DATABASE_URL`, or the local database above. `docker exec -i postgres psql -U postgres -d swiftdrop < schema.sql` does the same as `migrate`.)
 
    Re-run it whenever you pull changes: it is safe to repeat and upgrades an existing database in place (for example it adds the `payments` table). Do the same for the test database below.
 
@@ -96,7 +149,7 @@ KNOWN_ISSUES.md   what we chose not to build yet, and the production problems th
    go run ./cmd/api
    ```
 
-   The server listens on `127.0.0.1:8080`. With no `STRIPE_KEY` set it uses the fake payment gateway and never touches the network. To try real Stripe, set `STRIPE_KEY` to a Stripe **test-mode** secret key and send a test payment method in the `/pay` body (`{"paymentMethodId": "pm_..."}`). Never use a live key while developing, and never commit a key. `powershell -ExecutionPolicy Bypass -File .\scripts\stripe-dev.ps1` does all of this for you, including the webhook listener: it asks for the key (hidden, refuses anything but `sk_test_`), fetches the matching webhook signing secret from the Stripe CLI so the two cannot disagree, opens `stripe listen` in a new window and starts the server.
+   The server listens on `127.0.0.1:8080` (set `LISTEN_ADDR` to change that; the Docker image uses `0.0.0.0:8080`). With no `STRIPE_KEY` set it uses the fake payment gateway and never touches the network. To try real Stripe, set `STRIPE_KEY` to a Stripe **test-mode** secret key and send a test payment method in the `/pay` body (`{"paymentMethodId": "pm_..."}`). Never use a live key while developing, and never commit a key. `powershell -ExecutionPolicy Bypass -File .\scripts\stripe-dev.ps1` does all of this for you, including the webhook listener: it asks for the key (hidden, refuses anything but `sk_test_`), fetches the matching webhook signing secret from the Stripe CLI so the two cannot disagree, opens `stripe listen` in a new window and starts the server.
 
    To receive Stripe's webhook as well, set `STRIPE_WEBHOOK_SECRET` to the endpoint's signing secret (the `whsec_` value). In development run `stripe listen --forward-to localhost:8080/webhooks/stripe` with the [Stripe CLI](https://docs.stripe.com/stripe-cli); it prints the secret to use. It works with the fake gateway too, so you can try it with events you sign yourself (see [curls.txt](curls.txt)).
 
@@ -146,6 +199,14 @@ npm run typecheck
 npm run build     # refreshes web/static, which Go embeds; commit the result
 ```
 
+The end-to-end test (`e2e/`) needs a running server and is skipped unless `SWIFTDROP_E2E_URL` is set. Against the Docker stack, with a staff account made as in the quickstart (start the stack with `REFUND_INTERVAL=2s` so the refund step is quick):
+
+```bash
+SWIFTDROP_E2E_URL=http://127.0.0.1:8080 SWIFTDROP_E2E_STAFF_EMAIL=you@example.com SWIFTDROP_E2E_STAFF_PASSWORD='your password' go test -count=1 -v ./e2e
+```
+
+It adds a restaurant of its own and a customer of its own each run, and leaves them behind.
+
 The screens are tested in a simulated browser against a fake server (sign-in, roles, the order actions, signing out). A change to how it looks still needs a look in a real browser: `npm run dev` serves the page on port 5173 and sends API calls to the Go server on 8080. The Go tests check that `web/static` is a whole build (every file the page loads is there) and that the dashboard's source never turns text into markup or code.
 
 ## API
@@ -163,7 +224,13 @@ The screens are tested in a simulated browser against a fake server (sign-in, ro
 | POST   | `/users/{id}/disable`, `/enable` | Staff only. `200` with the account. Disabling ends all its sign-ins in the same transaction; doing it twice changes nothing. `409` for your own account or for the last active staff account; `404` unknown |
 | POST   | `/users/{id}/reset-password` | Staff only. A new temporary password, answered once as `{"user", "temporaryPassword"}`; ends all the account's sign-ins and makes the person choose their own. `409` for your own account (use `/auth/password`); `404` unknown |
 | POST   | `/auth/password`       | `{currentPassword, newPassword}`: change the password and end every other sign-in (`204`; `403` wrong current password; `422` weak new one) |
-| POST   | `/orders`              | Create an order (always starts `created`); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
+| GET    | `/restaurants`         | Open restaurants, `{"restaurants": [...]}` (staff may add `?all=true` for closed ones too) |
+| POST   | `/restaurants`         | Staff only. `{"name"}` opens a restaurant (`201`). `422` names the bad field |
+| PATCH  | `/restaurants/{id}`    | Staff only. `{"name"?, "active"?}` renames, opens or closes (`404` unknown, `422` bad or empty) |
+| GET    | `/restaurants/{id}/menu` | `{"restaurant", "items"}`. A customer gets only the available items of an open restaurant (a closed one is `404`); staff with `?all=true` get everything |
+| POST   | `/restaurants/{id}/menu` | Staff only. `{"name", "description"?, "priceCents"}` adds an item (`201`); the price is 0 to 1,000,000 cents. `422` names every bad field |
+| PATCH  | `/menu/{id}`           | Staff only. Any of `{"name", "description", "priceCents", "available"}`. A new price applies to orders placed from then on; placed orders keep theirs |
+| POST   | `/orders`              | Create an order (always starts `created`; a customer's lines are menu items by `menuItemId` and the server prices them, `422` says what does not fit the menu); `422` rule failure, `400` bad body, `415` wrong Content-Type, `413` over 1 MB, `409` duplicate id |
 | GET    | `/orders`              | The newest orders, `{"orders": [...]}`, each as in `GET /orders/{id}`. `?limit=N`, default 50, at most 200 (`400` otherwise). Read in one query, so an order and its payment are from the same moment |
 | GET    | `/orders/{id}`         | Get an order by ID (`404` if missing), with a `payment` summary and a `paymentIssue` when there is something to tell the customer                                                      |
 | POST   | `/orders/{id}/pay`     | Idempotent. A new payment is claimed (`created → payment_pending` plus a `payments` row), authorized through the order's provider, then recorded: `paid`, or on a decline a `402` with the reason, `canRetry` and `attemptsLeft` (the order returns to `created`; paying again is a NEW attempt with its own payment, up to 3, and the last decline cancels the order). A retry of a finished payment replays its outcome (`200` with the order, or the same `402` once the order is closed) without charging again; `409` "still being processed" while another request holds the payment, or if the order moved on meanwhile; `409` for an order that cannot be paid from its state; `422` if the payment method is missing or not a Stripe id (nothing is claimed), `400` for a body that is not JSON; `409` with a refund promise if the order was cancelled while the payment was being processed; `500` if the provider errors (the payment stays `processing`; the webhook records the outcome if Stripe took the charge, or a retry after its 60 s lease takes it over) or the stored payment type has no provider |
@@ -180,14 +247,15 @@ The screens are tested in a simulated browser against a fake server (sign-in, ro
 
 Every lifecycle endpoint answers `404` for an unknown order and `409` for a move the order's current state doesn't allow. Errors are always `{"error": "..."}`.
 
-A create request looks like this (`paymentType` is one of `card`, `cash`, `wallet`; unknown fields are rejected, and the server owns `state`, `foodReady` and `assignedDriverId`):
+A create request from a customer looks like this (`paymentType` is one of `card`, `cash`, `wallet`; unknown fields are rejected, and the server owns `state`, `foodReady`, `assignedDriverId` and every price). `customerId` may be left out: it is the signed-in customer:
 
 ```json
 {
   "id": "order-1",
-  "customerId": "cust-1",
-  "restaurantId": "rest-1",
+  "restaurantId": "demo-corner-kitchen",
   "paymentType": "card",
-  "items": [{ "sku": "SKU1", "name": "Burger", "quantity": 2, "unitPriceCents": 599 }]
+  "items": [{ "menuItemId": "demo-smash-burger", "quantity": 2 }]
 }
 ```
+
+Staff must say whose order it is (`customerId`, any text for a walk-in) and may add a custom line, which carries its own name and price: `{ "sku": "CAKE", "name": "Birthday cake", "quantity": 1, "unitPriceCents": 4200 }`.

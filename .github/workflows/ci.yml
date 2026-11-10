@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (vet, tests with the race detector, against Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: swiftdrop_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/swiftdrop_test?sslmode=disable
+      SWIFTDROP_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/swiftdrop_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "These files need gofmt:"; echo "$unformatted"; exit 1; fi
+      - run: go vet ./...
+      - name: Create the tables (the same command the Docker stack runs)
+        run: go run ./cmd/migrate
+      - run: go test -race -count=1 ./...
+
+  web:
+    name: Dashboard (types, tests, and the committed build is current)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: web/static must be what web/ui builds
+        working-directory: .
+        run: |
+          if [ -n "$(git status --porcelain -- web/static)" ]; then
+            echo "web/static is out of date. Run 'npm run build' in web/ui and commit the result."
+            git status --short -- web/static
+            exit 1
+          fi
+
+  stack:
+    name: The whole product (Docker Compose, then the end-to-end test)
+    needs: [go, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REFUND_INTERVAL: 2s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and start the stack
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "the server did not come up"; docker compose logs; exit 1
+      - name: A staff account and the demo menu
+        run: |
+          pw="$(openssl rand -hex 16)"
+          echo "::add-mask::$pw"
+          echo "E2E_STAFF_PASSWORD=$pw" >> "$GITHUB_ENV"
+          docker compose run --rm -e SWIFTDROP_NEW_PASSWORD="ci-$pw" --entrypoint /app/user api -email ci-staff@example.test -name "CI Staff"
+          docker compose run --rm --entrypoint /app/seed api
+          docker compose run --rm --entrypoint /app/seed api   # again: it adds nothing the second time
+      - name: End-to-end test
+        env:
+          SWIFTDROP_E2E_URL: http://127.0.0.1:8080
+          SWIFTDROP_E2E_STAFF_EMAIL: ci-staff@example.test
+        run: SWIFTDROP_E2E_STAFF_PASSWORD="ci-$E2E_STAFF_PASSWORD" go test -count=1 -v ./e2e
+      - name: Logs, if something went wrong
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v

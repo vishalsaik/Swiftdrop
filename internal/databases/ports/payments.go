@@ -106,4 +106,5 @@ type Store interface {
 	ManualRefundStore
 	AuthStore
 	AccountAdminStore
+	CatalogStore
 }

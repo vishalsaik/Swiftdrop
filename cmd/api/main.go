@@ -196,8 +196,14 @@ func main() {
 		fmt.Println("ALERT_WEBHOOK_URL not set: alerts are only shown on the dashboard")
 	}
 
+	// Only this computer, unless LISTEN_ADDR says otherwise (a container listens on 0.0.0.0:8080,
+	// and what reaches it is decided by how the port is published).
+	listenAddr := "127.0.0.1:8080"
+	if v := os.Getenv("LISTEN_ADDR"); v != "" {
+		listenAddr = v
+	}
 	srv := &http.Server{
-		Addr:         "127.0.0.1:8080",
+		Addr:         listenAddr,
 		Handler:      s.Handler(),
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
