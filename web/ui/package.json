@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/logic.test.mjs && vitest run"
+    "test": "node --test \"src/lib/*.test.mjs\" && vitest run"
   },
   "dependencies": {
     "border-beam": "^1.4.1",

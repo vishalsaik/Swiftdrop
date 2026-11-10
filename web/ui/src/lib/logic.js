@@ -133,7 +133,7 @@ function forCustomer(actions, charged) {
 // What each role is shown. The server enforces all of it; this only decides what to draw.
 export function capabilities(role) {
   const staff = role === 'staff';
-  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff, people: staff };
+  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff, people: staff, menu: staff };
 }
 
 // timeline is the order's journey as rows a departure board can show. A
@@ -351,9 +351,27 @@ export function priceToCents(text) {
   return Number.isSafeInteger(cents) ? cents : null;
 }
 
+// The most of one menu item on an order and the most lines, as the server allows.
+export const MAX_LINE_QUANTITY = 50;
+export const MAX_ORDER_LINES = 30;
+
+// menuTotalCents is what the menu lines come to: `quantities` maps a menu item's id to how many.
+// It is only for showing a total; the server prices the order itself from the menu.
+export function menuTotalCents(items, quantities) {
+  let sum = 0;
+  for (const m of items || []) {
+    const q = Number((quantities || {})[m.id]);
+    if (Number.isInteger(q) && q > 0) sum += m.priceCents * q;
+  }
+  return sum;
+}
+
 // validateOrderForm mirrors the server's rules so mistakes are shown next to the
 // field, and builds the request body (prices in cents). Blank item rows are
 // ignored. The server validates again, so this is only for a kinder form.
+//
+// `form.menu` is the menu lines, [{ menuItemId, quantity }]: they carry no name or price, the
+// server takes those from the menu. `form.items` is the custom lines staff may type.
 export function validateOrderForm(form) {
   const errors = {};
   const need = (key, label) => {
@@ -365,6 +383,12 @@ export function validateOrderForm(form) {
   if (!['card', 'cash', 'wallet'].includes(form.paymentType)) errors.paymentType = 'Choose how the customer pays';
 
   const items = [];
+  (form.menu || []).forEach((line, index) => {
+    const qty = Number(line.quantity);
+    if (!String(line.menuItemId ?? '').trim()) errors[`menu.${index}`] = 'Choose an item from the menu';
+    else if (!Number.isInteger(qty) || qty < 1 || qty > MAX_LINE_QUANTITY) errors[`menu.${index}`] = `Order 1 to ${MAX_LINE_QUANTITY} of an item`;
+    else items.push({ menuItemId: line.menuItemId, quantity: qty });
+  });
   (form.items || []).forEach((row, index) => {
     const blank = !String(row.name ?? '').trim() && !String(row.price ?? '').trim();
     if (blank) return;
@@ -384,9 +408,10 @@ export function validateOrderForm(form) {
       name, quantity: qty, unitPriceCents: cents,
     });
   });
-  if (items.length === 0 && !Object.keys(errors).some((k) => k.startsWith('items.'))) {
+  if (items.length === 0 && !Object.keys(errors).some((k) => k.startsWith('items.') || k.startsWith('menu.'))) {
     errors.items = 'Add at least one item';
   }
+  if (items.length > MAX_ORDER_LINES) errors.items = `An order can have at most ${MAX_ORDER_LINES} lines`;
   if (Object.keys(errors).length) return { ok: false, errors, payload: null };
   return {
     ok: true, errors: {},
@@ -395,6 +420,29 @@ export function validateOrderForm(form) {
       paymentType: form.paymentType, items,
     },
   };
+}
+
+// validateMenuItemForm checks a menu item as typed (price in dollars) and builds the body (cents).
+export function validateMenuItemForm(form) {
+  const errors = {};
+  const name = String(form.name ?? '').trim();
+  const description = String(form.description ?? '').trim();
+  if (!name) errors.name = 'Name the item';
+  else if ([...name].length > 80) errors.name = 'Keep the name to 80 characters';
+  if ([...description].length > 300) errors.description = 'Keep the description to 300 characters';
+  const cents = priceToCents(form.price ?? '');
+  if (cents === null) errors.priceCents = 'Enter a price of 0 or more';
+  else if (cents > 1000000) errors.priceCents = 'The most for one item is $10,000.00';
+  if (Object.keys(errors).length) return { ok: false, errors, payload: null };
+  return { ok: true, errors: {}, payload: { name, description, priceCents: cents } };
+}
+
+// validateRestaurantName checks a restaurant's name as typed.
+export function validateRestaurantName(text) {
+  const name = String(text ?? '').trim();
+  if (!name) return { ok: false, error: 'Name the restaurant', name };
+  if ([...name].length > 80) return { ok: false, error: 'Keep the name to 80 characters', name };
+  return { ok: true, error: '', name };
 }
 
 // errorMessage is what the screen says when a call fails. The server's own words
@@ -431,7 +479,7 @@ export function lockoutMessage(seconds) {
 
 const FIELD_LABELS = {
   email: 'Email', name: 'Name', password: 'Password', newPassword: 'New password', currentPassword: 'Current password',
-  reference: 'Reference', note: 'Note',
+  reference: 'Reference', note: 'Note', description: 'Description', priceCents: 'Price', restaurantId: 'Restaurant',
 };
 
 // fieldErrors turns the server's {fields: {email: "must be ..."}} into sentences

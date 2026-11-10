@@ -1,5 +1,5 @@
 // Types for logic.js, which stays plain JavaScript so `node --test` can run it with no tooling.
-import type { AccountEvent, Alert, LedgerEvent, Order, Role, User } from './types';
+import type { AccountEvent, Alert, LedgerEvent, MenuItem, Order, Role, User } from './types';
 
 export interface Column { key: string; title: string; states: string[] }
 export const COLUMNS: Column[];
@@ -19,7 +19,7 @@ export interface OrderAction {
   why?: string;
 }
 export function actionsFor(order: Order, role?: Role | string): OrderAction[];
-export interface Capabilities { alerts: boolean; history: boolean; placeForOthers: boolean; everyonesOrders: boolean; kitchen: boolean; people: boolean }
+export interface Capabilities { alerts: boolean; history: boolean; placeForOthers: boolean; everyonesOrders: boolean; kitchen: boolean; people: boolean; menu: boolean }
 export function capabilities(role: Role | string | null | undefined): Capabilities;
 
 export interface JourneyStep { key: string; label: string; status: 'done' | 'current' | 'todo' | 'skipped' | 'stopped'; note?: string }
@@ -36,16 +36,31 @@ export function stats(orders: Order[]): Stats;
 export function newOrderId(rand?: () => number): string;
 export function priceToCents(text: string): number | null;
 
+export const MAX_LINE_QUANTITY: number;
+export const MAX_ORDER_LINES: number;
+export function menuTotalCents(items: MenuItem[], quantities: Record<string, number | string>): number;
+
 export interface OrderForm {
   id: string; customerId: string; restaurantId: string; paymentType: string;
+  /** menu lines: the server takes their names and prices from the menu */
+  menu?: { menuItemId: string; quantity: number | string }[];
+  /** custom lines, typed by staff */
   items: { name: string; quantity: string; price: string }[];
 }
+export type OrderPayloadLine =
+  | { menuItemId: string; quantity: number }
+  | { sku: string; name: string; quantity: number; unitPriceCents: number };
 export interface OrderPayload {
   id: string; customerId: string; restaurantId: string; paymentType: string;
-  items: { sku: string; name: string; quantity: number; unitPriceCents: number }[];
+  items: OrderPayloadLine[];
 }
 export type OrderFormErrors = Record<string, string | Record<string, string>>;
 export function validateOrderForm(form: OrderForm): { ok: boolean; errors: OrderFormErrors; payload: OrderPayload | null };
+
+export function validateMenuItemForm(form: { name?: string; description?: string; price?: string }): {
+  ok: boolean; errors: Record<string, string>; payload: { name: string; description: string; priceCents: number } | null;
+};
+export function validateRestaurantName(text: string | undefined): { ok: boolean; error: string; name: string };
 
 export function errorMessage(status: number, body: unknown): string;
 export function authErrorMessage(status: number, body: unknown, retryAfterSeconds?: number): string;

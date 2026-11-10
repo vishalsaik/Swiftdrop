@@ -13,7 +13,14 @@ export interface User {
 export interface AccountEvent { id: number; userId: string; actorId: string; actorEmail: string; kind: string; detail?: string; at: string }
 export interface Session { user: User; csrfToken: string }
 
-export interface OrderItem { sku: string; name: string; quantity: number; unitPriceCents: number }
+export interface OrderItem { sku: string; name: string; quantity: number; unitPriceCents: number; menuItemId?: string }
+
+export interface Restaurant { id: string; name: string; active: boolean; createdAt?: string }
+export interface MenuItem {
+  id: string; restaurantId: string; name: string; description?: string; priceCents: number;
+  /** false for something the kitchen has run out of; only staff see it */
+  available: boolean; createdAt?: string;
+}
 
 export interface PaymentView {
   status: string;

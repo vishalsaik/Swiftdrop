@@ -383,3 +383,22 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
   .waiting i { opacity: 0.7; }
 }
+
+/* Menu: what a restaurant sells, and picking from it when ordering */
+.grow { flex: 1; min-width: 0; }
+.price-tag { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.menu-list li { padding: 10px 16px; display: grid; gap: 4px; }
+.menu-list li + li { border-top: 0.5px solid var(--sep); }
+.menu-list .sold-out .row-title { color: var(--label-2); text-decoration: line-through; }
+.menu-row { display: flex; align-items: center; gap: 12px; }
+.menu-row .row-main { flex: 1; min-width: 0; display: grid; }
+.menu-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.menu-pick .pick-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.menu-pick .pick-row + .pick-row { border-top: 0.5px solid var(--sep); }
+.menu-pick .row-main { flex: 1; min-width: 0; display: grid; }
+.menu-list .row-sub, .menu-pick .row-sub { color: var(--label-2); font-size: 14px; white-space: normal; }
+.stepper { display: inline-flex; align-items: center; gap: 8px; }
+.stepper output { min-width: 1.5em; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+.stepper .icon-btn:disabled { opacity: 0.35; }
+.order-total { display: flex; justify-content: space-between; align-items: baseline; padding: 14px 16px 0; font-size: 17px; }
+.order-total strong { font-size: 22px; font-variant-numeric: tabular-nums; }

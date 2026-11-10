@@ -3,19 +3,21 @@ import { api } from '../api';
 import { useAlerts, useOrders } from '../hooks/data';
 import { capabilities, COLUMNS, columnOf, greeting, money, newOrderId, noticeFor, stats, type Notice } from '../lib/logic';
 import { STAGE_STYLE } from '../lib/present';
-import type { Order, User } from '../lib/types';
+import type { MenuItem, Order, Restaurant, User } from '../lib/types';
 import { useSession } from '../session';
+import { useToast } from '../toasts';
 import type { Theme } from '../theme';
 import { AccountSheet } from './AccountSheet';
 import { AlertsView } from './AlertsView';
 import { Icon } from './Icon';
+import { MenuView } from './Menu';
 import { NewOrderSheet } from './NewOrderSheet';
 import { OrderDetail } from './OrderDetail';
 import { OrderList, type Stage } from './OrderList';
 import { PeopleView } from './People';
 import { Avatar, Waiting } from './ui';
 
-type View = 'orders' | 'alerts' | 'people';
+type View = 'orders' | 'alerts' | 'people' | 'menu';
 type SheetName = 'new' | 'account' | null;
 
 interface NoticeEntry { id: string; orderId: string; notice: Notice }
@@ -23,6 +25,7 @@ interface NoticeEntry { id: string; orderId: string; notice: Notice }
 export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): void }) {
   const { user } = useSession() as { user: User };
   const caps = capabilities(user.role);
+  const toast = useToast();
 
   const { orders, loaded, online, offlineMessage, refresh } = useOrders(true);
   const { alerts, refresh: refreshAlerts } = useAlerts(caps.alerts);
@@ -70,16 +73,22 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
     if (caps.alerts) await refreshAlerts();
   }, [refresh, refreshAlerts, caps.alerts]);
 
+  // Three orders from the first open restaurant's menu, to have something to look at.
   async function createSamples() {
-    const samples: [string, [string, number, number][]][] = [
-      ['card', [['Smash burger', 2, 950], ['Fries', 1, 400]]],
-      ['wallet', [['Pad thai', 1, 1390], ['Miso soup', 1, 350]]],
-      ['cash', [['Margherita pizza', 1, 1200], ['Lemonade', 2, 325]]],
-    ];
-    for (const [paymentType, items] of samples) {
+    const rs = await api<{ restaurants: Restaurant[] | null }>('GET', '/restaurants');
+    const restaurant = rs.data?.restaurants?.[0];
+    const menu = restaurant ? await api<{ items: MenuItem[] | null }>('GET', `/restaurants/${encodeURIComponent(restaurant.id)}/menu`) : null;
+    const items = menu?.data?.items ?? [];
+    if (!restaurant || items.length === 0) {
+      toast(caps.menu ? 'There is no menu yet. Add a restaurant and some items in Menu first.' : 'No restaurant has a menu yet.', 'bad');
+      return;
+    }
+    const paymentTypes = ['card', 'wallet', 'cash'];
+    for (const [i, paymentType] of paymentTypes.entries()) {
+      const lines = [items[i % items.length], items[(i + 1) % items.length]].filter((m, at, all) => all.indexOf(m) === at);
       await api('POST', '/orders', {
-        id: newOrderId(), customerId: caps.placeForOthers ? 'cust-1' : user.id, restaurantId: 'rest-1', paymentType,
-        items: items.map(([name, quantity, unitPriceCents]) => ({ sku: name.replace(/\W/g, '').toUpperCase().slice(0, 8), name, quantity, unitPriceCents })),
+        id: newOrderId(), customerId: caps.placeForOthers ? 'walk-in' : user.id, restaurantId: restaurant.id, paymentType,
+        items: lines.map((m, at) => ({ menuItemId: m.id, quantity: at + 1 })),
       });
     }
     await refresh();
@@ -138,6 +147,7 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
           <>
             <h2 className="side-title">Admin</h2>
             <ul className="side-list">
+              <SideItem icon="flame" tint="orange" label="Menu" active={view === 'menu'} onClick={() => pick('menu')} />
               <SideItem icon="person" tint="purple" label="People" active={view === 'people'} onClick={() => pick('people')} />
             </ul>
           </>
@@ -155,8 +165,8 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <div className="main" id="content" tabIndex={-1}>
         <header className="page-head">
           <div>
-            <h1>{view === 'alerts' ? 'Alerts' : view === 'people' ? 'People' : `${greeting()}, ${user.name.trim().split(/\s+/)[0] || 'there'}`}</h1>
-            <p className="sub">{view === 'alerts' ? 'Things that need a person.' : view === 'people' ? 'Staff and customers, and what they can do.' : caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.'}</p>
+            <h1>{view === 'alerts' ? 'Alerts' : view === 'people' ? 'People' : view === 'menu' ? 'Menu' : `${greeting()}, ${user.name.trim().split(/\s+/)[0] || 'there'}`}</h1>
+            <p className="sub">{view === 'alerts' ? 'Things that need a person.' : view === 'people' ? 'Staff and customers, and what they can do.' : view === 'menu' ? 'Restaurants and what they sell.' : caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.'}</p>
           </div>
           <div className="head-tools">
             <span className={`live ${online === false ? 'off' : online ? 'on' : ''}`} role="status">
@@ -183,6 +193,8 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
           </>
         ) : view === 'people' && caps.people ? (
           <PeopleView me={user} />
+        ) : view === 'menu' && caps.menu ? (
+          <MenuView />
         ) : (
           <AlertsView alerts={alerts} knownOrders={new Set(byId.keys())} onOpenOrder={openOrder} onResolved={refreshAll} />
         )}
@@ -191,6 +203,7 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <nav className="tabbar" aria-label="Tabs">
         <TabButton icon="tray" label="Orders" active={view === 'orders'} onClick={() => pick('orders', stage)} />
         {caps.alerts && <TabButton icon="bell" label="Alerts" badge={alerts.length} active={view === 'alerts'} onClick={() => pick('alerts')} />}
+        {caps.menu && <TabButton icon="flame" label="Menu" active={view === 'menu'} onClick={() => pick('menu')} />}
         {caps.people && <TabButton icon="person" label="People" active={view === 'people'} onClick={() => pick('people')} />}
         <TabButton icon="plus" label="New" onClick={() => setSheet('new')} />
         <TabButton icon="person" label="Account" onClick={() => setSheet('account')} />
