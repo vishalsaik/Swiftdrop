@@ -1,0 +1,12 @@
+.git
+.github
+.agents
+.claude
+web/ui/node_modules
+*.test
+*.out
+*.exe
+docs
+scripts
+curls.txt
+skills-lock.json
