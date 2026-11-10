@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"swiftdrop/internal/auth"
+	"swiftdrop/internal/catalog"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
 	"swiftdrop/internal/order"
@@ -113,6 +114,12 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/orders/{id}/pickup", s.staffOnly(s.PickupOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/accept", s.staffOnly(s.AcceptOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/refund", s.staffOnly(s.RecordRefund)).Methods("POST")
+	s.Router.HandleFunc("/restaurants", s.signedIn(s.ListRestaurants)).Methods("GET")
+	s.Router.HandleFunc("/restaurants", s.staffOnly(s.CreateRestaurant)).Methods("POST")
+	s.Router.HandleFunc("/restaurants/{id}", s.staffOnly(s.UpdateRestaurant)).Methods("PATCH")
+	s.Router.HandleFunc("/restaurants/{id}/menu", s.signedIn(s.ListMenu)).Methods("GET")
+	s.Router.HandleFunc("/restaurants/{id}/menu", s.staffOnly(s.CreateMenuItem)).Methods("POST")
+	s.Router.HandleFunc("/menu/{id}", s.staffOnly(s.UpdateMenuItem)).Methods("PATCH")
 	s.Router.HandleFunc("/users", s.staffOnly(s.ListAccounts)).Methods("GET")
 	s.Router.HandleFunc("/users", s.staffOnly(s.CreateAccount)).Methods("POST")
 	s.Router.HandleFunc("/users/{id}", s.staffOnly(s.GetAccount)).Methods("GET")
@@ -250,6 +257,21 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		orderItem.CustomerID = p.User.ID
 	}
+
+	// Prices come from the menu, never from the request: a menu line is priced by the server
+	// and a customer may place nothing else. Staff may add a custom line with a price of their own.
+	priced, err := catalog.Pricer{Store: s.DB}.Price(r.Context(), orderItem.RestaurantID, orderItem.Items, principalFrom(r).User.Role == domain.RoleStaff)
+	var unfit *catalog.Problem
+	switch {
+	case errors.As(err, &unfit):
+		writeError(w, http.StatusUnprocessableEntity, unfit.Message)
+		return
+	case err != nil:
+		log.Printf("database error pricing order %s: %v", orderItem.ID, err)
+		writeError(w, http.StatusInternalServerError, "Failed to create order due to an internal server error")
+		return
+	}
+	orderItem.Items = priced
 
 	// The validator chain: first failing rule wins.
 	if err := validation.Order(orderItem); err != nil {

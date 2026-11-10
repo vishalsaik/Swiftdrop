@@ -20,6 +20,10 @@ const (
 // OrderItem is one line item on an order. Prices are stored in integer
 // cents to avoid floating-point rounding errors in money math.
 type OrderItem struct {
+	// MenuItemID names the menu item this line is. When it is set the server takes the name and
+	// the price from the menu and ignores whatever the client sent for them. A line without it is
+	// a custom line (a phone order), which only staff may place.
+	MenuItemID     string `json:"menuItemId,omitempty"`
 	SKU            string `json:"sku"`
 	Name           string `json:"name"`
 	Quantity       int    `json:"quantity"`

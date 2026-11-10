@@ -248,3 +248,24 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS user_events_no_update ON user_events;
 CREATE TRIGGER user_events_no_update BEFORE UPDATE ON user_events
     FOR EACH ROW EXECUTE FUNCTION user_events_append_only();
+
+-- What can be ordered. A customer orders menu items by id and the server prices them from
+-- here, so a customer cannot say what something costs. An order keeps copies of the name and
+-- price it was placed at (in orders.items), so changing a menu never changes an order.
+CREATE TABLE IF NOT EXISTS restaurants (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    active     BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS menu_items (
+    id            TEXT PRIMARY KEY,
+    restaurant_id TEXT NOT NULL REFERENCES restaurants (id),
+    name          TEXT NOT NULL CHECK (name <> ''),
+    description   TEXT NOT NULL DEFAULT '',
+    price_cents   BIGINT NOT NULL CHECK (price_cents >= 0 AND price_cents <= 1000000),
+    available     BOOLEAN NOT NULL DEFAULT true,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS menu_items_restaurant_idx ON menu_items (restaurant_id, name);
