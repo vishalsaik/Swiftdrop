@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { setSession } from '../api';
 import type { MenuItem, Restaurant, User } from '../lib/types';
+import { home, placeOrder } from '../test/deliver';
 import { customer, mockServer, order, session, staff, type Handler } from '../test/server';
 
 beforeEach(() => { localStorage.clear(); document.documentElement.dataset.theme = 'light'; });
@@ -20,6 +21,7 @@ function shop(user: User, extra: Record<string, Handler> = {}) {
   return mockServer({
     'GET /auth/me': () => ({ body: session(user) }),
     'GET /orders': () => ({ body: { orders: [] } }),
+    'GET /addresses': () => ({ body: { addresses: [home] } }),
     'GET /alerts': () => ({ body: { alerts: [] } }),
     'GET /users': () => ({ body: { accounts: [ada] } }),
     'GET /restaurants': () => ({ body: { restaurants: [kitchen, noodles] } }),
@@ -64,7 +66,7 @@ describe('ordering from the menu', () => {
     await openSheet(user);
     await more(user, 'Smash burger', 2);
     await more(user, 'Fries');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     const sent = server.callsTo('POST', '/orders')[0].body as { id: string; customerId: string; restaurantId: string; items: unknown[] };
     expect(sent.items).toEqual([{ menuItemId: 'burger', quantity: 2 }, { menuItemId: 'fries', quantity: 1 }]);
@@ -78,7 +80,7 @@ describe('ordering from the menu', () => {
     const user = userEvent.setup();
     const server = shop(customer);
     await openSheet(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     expect(await screen.findByText('Add at least one item')).toBeTruthy();
     expect(server.callsTo('POST', '/orders')).toHaveLength(0);
   });
@@ -92,7 +94,7 @@ describe('ordering from the menu', () => {
     expect(await screen.findByText('Pad thai')).toBeTruthy();
     expect(screen.queryByText('Smash burger')).toBeNull();
     await more(user, 'Pad thai');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     const sent = server.callsTo('POST', '/orders')[0].body as { restaurantId: string; items: unknown[] };
     expect(sent.restaurantId).toBe('r2');
@@ -129,7 +131,7 @@ describe('ordering from the menu', () => {
     shop(customer, { 'POST /orders': () => ({ status: 422, body: { error: 'items[0]: Fries is not available right now' } }) });
     await openSheet(user);
     await more(user, 'Fries');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     expect(await screen.findByText('items[0]: Fries is not available right now')).toBeTruthy();
   });
 
@@ -138,7 +140,7 @@ describe('ordering from the menu', () => {
     shop(customer, { 'POST /orders': () => ({ status: 422, body: { error: 'bad', fields: { restaurantId: 'is not a restaurant' } } }) });
     await openSheet(user);
     await more(user, 'Fries');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     expect(await screen.findByText('Restaurant is not a restaurant')).toBeTruthy();
   });
 
@@ -147,9 +149,9 @@ describe('ordering from the menu', () => {
     const server = shop(customer, { 'POST /orders': () => ({ status: 409, body: { error: 'order already exists' } }) });
     await openSheet(user);
     await more(user, 'Fries');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     expect(await screen.findByText(/order number was taken/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(2));
     const [first, second] = server.callsTo('POST', '/orders').map((c) => (c.body as { id: string }).id);
     expect(first).not.toBe(second);
@@ -166,7 +168,7 @@ describe('ordering as staff', () => {
     expect(select.value).toBe('walk-in');
     await user.selectOptions(select, 'u-ada');
     await more(user, 'Fries');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     expect((server.callsTo('POST', '/orders')[0].body as { customerId: string }).customerId).toBe('u-ada');
   });
@@ -181,7 +183,7 @@ describe('ordering as staff', () => {
     await user.type(screen.getByLabelText('Price in dollars'), '42');
     const total = () => within(document.querySelector('.order-total') as HTMLElement).getByText(/\$/).textContent;
     expect(total()).toBe('$51.50');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     expect((server.callsTo('POST', '/orders')[0].body as { items: unknown[] }).items).toEqual([
       { menuItemId: 'burger', quantity: 1 },
@@ -195,7 +197,7 @@ describe('ordering as staff', () => {
     await openSheet(user);
     await user.click(screen.getByRole('button', { name: 'Add a custom line' }));
     await user.type(screen.getByLabelText('Item name'), 'Cake');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     expect(await screen.findByText('Enter a price of 0 or more')).toBeTruthy();
     expect(server.callsTo('POST', '/orders')).toHaveLength(0);
     await user.click(screen.getByRole('button', { name: 'Remove item' }));
@@ -207,7 +209,7 @@ describe('ordering as staff', () => {
     shop(staff, { 'POST /orders': () => ({ status: 409, body: { error: 'order SD-1 already exists' } }) });
     await openSheet(user);
     await more(user, 'Fries');
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await placeOrder(user);
     expect(await screen.findByText('order SD-1 already exists')).toBeTruthy();
   });
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"swiftdrop/internal/auth"
+	"swiftdrop/internal/catalog/catalogtest"
 	"swiftdrop/internal/domain"
 )
 
@@ -43,6 +44,7 @@ type world struct {
 func newWorld(t *testing.T) *world {
 	t.Helper()
 	db := newFakeDB()
+	db.Catalog = catalogtest.New() // the world starts with no restaurants; each test opens its own
 	svc := auth.New(db)
 	svc.Params = cheapHashing
 	s := NewServer(db, testPayRouter())
@@ -573,9 +575,10 @@ func TestACustomerOrdersForThemselvesAndStaffForAnyone(t *testing.T) {
 	ann := w.customer(t, "ann@example.com")
 	staff := w.staff(t, "dispatch@example.com")
 	w.db.Open("r1", "Corner Kitchen")
+	w.db.Place("r1", "", testLat, testLng, 5)
 	w.db.Add("meal", "r1", "Meal", 500)
 	// a customer orders from the menu; staff may too (their custom lines have their own tests)
-	item := `"restaurantId":"r1","paymentType":"card","items":[{"menuItemId":"meal","quantity":1}]`
+	item := `"restaurantId":"r1","paymentType":"card","deliveryAddress":` + testAddress + `,"items":[{"menuItemId":"meal","quantity":1}]`
 
 	// no customer id in the body at all: it is theirs
 	rec := ann.do(http.MethodPost, "/orders", `{"id":"o-a",`+item+`}`)

@@ -344,15 +344,17 @@ func menuWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
 	w.db.Open("r1", "Corner Kitchen")
+	w.db.Place("r1", "", testLat, testLng, 5)
 	w.db.Add("burger", "r1", "Smash burger", 950)
 	w.db.Add("fries", "r1", "Fries", 400)
 	w.db.Open("r2", "Noodle Bar")
+	w.db.Place("r2", "", testLat, testLng, 5)
 	w.db.Add("noodles", "r2", "Pad thai", 1390)
 	return w
 }
 
 func orderBody(id, restaurant, items string) string {
-	return `{"id":"` + id + `","restaurantId":"` + restaurant + `","paymentType":"card","items":` + items + `}`
+	return `{"id":"` + id + `","restaurantId":"` + restaurant + `","paymentType":"card","deliveryAddress":` + testAddress + `,"items":` + items + `}`
 }
 
 func TestACustomerPaysTheMenuPriceWhateverTheyAsk(t *testing.T) {
@@ -428,7 +430,7 @@ func TestTheSameItemTwiceIsOneLineOnTheOrder(t *testing.T) {
 
 // staff place orders for a named customer
 func staffOrder(id, restaurant, items string) string {
-	return `{"id":"` + id + `","customerId":"walk-in-1","restaurantId":"` + restaurant + `","paymentType":"card","items":` + items + `}`
+	return `{"id":"` + id + `","customerId":"walk-in-1","restaurantId":"` + restaurant + `","paymentType":"card","deliveryAddress":` + testAddress + `,"items":` + items + `}`
 }
 
 func TestStaffMayEnterACustomLineAndMixItWithMenuLines(t *testing.T) {
