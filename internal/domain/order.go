@@ -47,8 +47,12 @@ type Order struct {
 	// state design notes: dispatch can start during Preparing).
 	FoodReady        *time.Time `json:"foodReady,omitempty"`
 	AssignedDriverID string     `json:"assignedDriverId"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	// DeliveryAddress is where the order is going: the customer's own copy, made when the order was
+	// placed, so editing or deleting a saved address never changes it. Nil on orders placed before
+	// addresses existed.
+	DeliveryAddress *Address  `json:"deliveryAddress,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // TotalCents sums the order's line items.

@@ -288,3 +288,21 @@ END $$;
 ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS veg BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS menu_items_name_trgm_idx ON menu_items USING gin (name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS restaurants_name_trgm_idx ON restaurants USING gin (name gin_trgm_ops);
+
+-- Where an order is going. A customer keeps a few addresses to use again; an order keeps its own
+-- copy of the one it was placed with (in orders.delivery_address, NULL for orders from before this
+-- existed), so changing or deleting a saved address never changes an order.
+CREATE TABLE IF NOT EXISTS addresses (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    label       TEXT NOT NULL DEFAULT '',
+    line1       TEXT NOT NULL CHECK (line1 <> ''),
+    landmark    TEXT NOT NULL DEFAULT '',
+    city        TEXT NOT NULL DEFAULT '',
+    postal_code TEXT NOT NULL DEFAULT '',
+    latitude    DOUBLE PRECISION NOT NULL CHECK (latitude BETWEEN -90 AND 90),
+    longitude   DOUBLE PRECISION NOT NULL CHECK (longitude BETWEEN -180 AND 180),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS addresses_user_idx ON addresses (user_id, created_at);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address JSONB;

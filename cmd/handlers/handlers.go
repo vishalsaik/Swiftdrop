@@ -8,11 +8,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/catalog"
 	"swiftdrop/internal/databases/ports"
 	"swiftdrop/internal/domain"
+	"swiftdrop/internal/geocode"
 	"swiftdrop/internal/order"
 	"swiftdrop/internal/paying"
 	"swiftdrop/internal/payment"
@@ -48,6 +50,11 @@ type Server struct {
 	// with the CSRF check for requests that change something. NewServer sets it;
 	// it is a field so a test can say who is signed in without a cookie.
 	Identify func(r *http.Request) (auth.Principal, error)
+	// Geocoder finds addresses for the address search. Optional: while nil, /geocode answers 503
+	// (nobody can search for an address, but a customer can still use their location or a saved address).
+	Geocoder geocode.Geocoder
+	// GeoLimit limits how often each person may ask the geocoder; NewServer sets it.
+	GeoLimit *geocode.Limiter
 	// SecureCookies marks the session cookie Secure, so a browser only sends it over
 	// HTTPS. It is on whenever the connection itself is TLS; set it too when TLS is
 	// ended by a proxy in front of the server.
@@ -83,6 +90,8 @@ func NewServer(db ports.Store, pay *payment.Router) *Server {
 		DB:      db,
 		Payment: pay,
 		Lookup:  db,
+		// 30 address searches a minute is more than anyone types, and fewer than a script would
+		GeoLimit: geocode.NewLimiter(30, time.Minute),
 	}
 	// The middleware chain: links run in this order for every route.
 	s.Router.Use(MaxBody(maxBodyBytes))
@@ -119,6 +128,12 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/restaurants/{id}", s.staffOnly(s.UpdateRestaurant)).Methods("PATCH")
 	s.Router.HandleFunc("/restaurants/{id}/place", s.staffOnly(s.SetRestaurantPlace)).Methods("PUT")
 	s.Router.HandleFunc("/search", s.signedIn(s.SearchFood)).Methods("GET")
+	s.Router.HandleFunc("/geocode", s.signedIn(s.Geocode)).Methods("GET")
+	s.Router.HandleFunc("/geocode/reverse", s.signedIn(s.ReverseGeocode)).Methods("GET")
+	s.Router.HandleFunc("/addresses", s.signedIn(s.ListAddresses)).Methods("GET")
+	s.Router.HandleFunc("/addresses", s.signedIn(s.CreateAddress)).Methods("POST")
+	s.Router.HandleFunc("/addresses/{id}", s.signedIn(s.UpdateAddress)).Methods("PUT")
+	s.Router.HandleFunc("/addresses/{id}", s.signedIn(s.DeleteAddress)).Methods("DELETE")
 	s.Router.HandleFunc("/restaurants/{id}/menu", s.signedIn(s.ListMenu)).Methods("GET")
 	s.Router.HandleFunc("/restaurants/{id}/menu", s.staffOnly(s.CreateMenuItem)).Methods("POST")
 	s.Router.HandleFunc("/menu/{id}", s.staffOnly(s.UpdateMenuItem)).Methods("PATCH")
@@ -237,10 +252,16 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Decode strictly: a field we don't know about is a client mistake worth
 	// telling them about, not something to silently drop.
-	var orderItem domain.Order
+	// Where it is going comes with the order but is not part of what is stored as sent: a saved
+	// address by id, or an address in the body.
+	var req struct {
+		domain.Order
+		DeliveryAddressID string        `json:"deliveryAddressId"`
+		DeliveryAddress   *addressInput `json:"deliveryAddress"`
+	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&orderItem); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
@@ -249,6 +270,8 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+
+	orderItem := req.Order
 
 	// A customer orders for themselves, whatever the body says; staff may place an
 	// order for any customer.
@@ -280,6 +303,20 @@ func (s *Server) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+
+	// Where it is going, and whether the restaurant delivers there. After the rules above, so a
+	// missing field is named before an address is looked at.
+	to, undeliverable, err := s.deliveryFor(r.Context(), orderItem.CustomerID, orderItem.RestaurantID, req.DeliveryAddressID, req.DeliveryAddress)
+	switch {
+	case err != nil:
+		log.Printf("database error checking delivery for order %s: %v", orderItem.ID, err)
+		writeError(w, http.StatusInternalServerError, "Failed to create order due to an internal server error")
+		return
+	case undeliverable != "":
+		writeError(w, http.StatusUnprocessableEntity, undeliverable)
+		return
+	}
+	orderItem.DeliveryAddress = to
 
 	// A new order always starts as "created"; the client doesn't choose its state.
 	orderItem.State = domain.OrderCreated

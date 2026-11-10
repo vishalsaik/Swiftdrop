@@ -107,4 +107,5 @@ type Store interface {
 	AuthStore
 	AccountAdminStore
 	CatalogStore
+	AddressStore
 }

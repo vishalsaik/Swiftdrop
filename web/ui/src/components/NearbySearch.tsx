@@ -8,12 +8,14 @@ import { Pill } from './ui';
 interface Props {
   /** the person chose a restaurant, or an item of it */
   onChoose(restaurantId: string, itemId?: string): void;
+  /** where the order is going, once chosen: the search is then near that, and asks nothing of the browser */
+  near?: { lat: number; lng: number; name: string } | null;
 }
 
 // Find food: by what it is called, by the restaurant or the cuisine, vegetarian only, and near the
 // person when they let the page know where they are. The browser asks for the position only when
 // "Use my location" is pressed, and the position is used for the search and kept nowhere.
-export function NearbySearch({ onChoose }: Props) {
+export function NearbySearch({ onChoose, near = null }: Props) {
   const where = useLocation();
   const [text, setText] = useState('');
   const [veg, setVeg] = useState(false);
@@ -21,7 +23,7 @@ export function NearbySearch({ onChoose }: Props) {
   const [failed, setFailed] = useState('');
   const latest = useRef(0);
 
-  const position = where.status === 'ready' ? where.position : null;
+  const position = near ?? (where.status === 'ready' ? where.position : null);
   const wantsSearch = text.trim() !== '' || position !== null || veg;
 
   useEffect(() => {
@@ -48,7 +50,9 @@ export function NearbySearch({ onChoose }: Props) {
       </div>
 
       <div className="find-tools">
-        {position ? (
+        {near ? (
+          <span className="chip active" role="status">Near {near.name}</span>
+        ) : position ? (
           <button type="button" className="chip active" aria-pressed="true" onClick={where.clear}>Near you · stop</button>
         ) : (
           <button type="button" className="chip" disabled={where.status === 'asking'} onClick={where.ask}>

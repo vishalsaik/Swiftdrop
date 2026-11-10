@@ -15,6 +15,14 @@ export interface Session { user: User; csrfToken: string }
 
 export interface OrderItem { sku: string; name: string; quantity: number; unitPriceCents: number; menuItemId?: string }
 
+/** Where an order is going: words a driver can read, and the point they stand for. */
+export interface DeliveryAddress {
+  label?: string; line1: string; landmark?: string; city?: string; postalCode?: string; latitude: number; longitude: number;
+}
+export interface SavedAddress extends DeliveryAddress { id: string; userId: string; createdAt?: string }
+/** A place the address search found. */
+export interface Candidate { label: string; line1: string; city?: string; postalCode?: string; latitude: number; longitude: number }
+
 export interface Restaurant {
   id: string; name: string; active: boolean; createdAt?: string;
   cuisine?: string;
@@ -52,6 +60,8 @@ export interface Order {
   items: OrderItem[];
   createdAt: string;
   assignedDriverId?: string;
+  /** absent on orders placed before addresses existed */
+  deliveryAddress?: DeliveryAddress;
   foodReady?: string;
   payment?: PaymentView;
   paymentIssue?: string;

@@ -418,8 +418,60 @@ export function validateOrderForm(form) {
     payload: {
       id: form.id.trim(), customerId: form.customerId.trim(), restaurantId: form.restaurantId.trim(),
       paymentType: form.paymentType, items,
+      // where it is going: a saved address by id, or an address in the body (never both)
+      ...(form.deliveryAddressId ? { deliveryAddressId: form.deliveryAddressId } : {}),
+      ...(!form.deliveryAddressId && form.deliveryAddress ? { deliveryAddress: form.deliveryAddress } : {}),
     },
   };
+}
+
+// ---- where an order is going ----------------------------------------------------------
+
+// addressLine is an address on one line: "12 MG Road, Bengaluru 560038".
+export function addressLine(a) {
+  if (!a) return '';
+  const place = [a.city, a.postalCode].filter(Boolean).join(' ');
+  return [a.line1, place].filter(Boolean).join(', ');
+}
+
+// candidateToDraft starts the address form from a place the address search found. The numbers are
+// kept as text because the form edits them as text.
+export function candidateToDraft(c) {
+  return {
+    label: '', line1: c.line1 ?? '', landmark: '', city: c.city ?? '', postalCode: c.postalCode ?? '',
+    latitude: String(c.latitude), longitude: String(c.longitude),
+  };
+}
+
+// validateAddressForm mirrors the server's rules for an address as typed and builds what is sent
+// (POST /addresses, or deliveryAddress on an order). A place is required: an address that is not
+// anywhere cannot be delivered to. The server checks again.
+export function validateAddressForm(form) {
+  const errors = {};
+  const text = (key, label, max, required) => {
+    const v = String(form[key] ?? '').trim();
+    if (!v && required) errors[key] = `${label} is required`;
+    else if ([...v].length > max) errors[key] = `${label} must be at most ${max} characters`;
+    return v;
+  };
+  const line1 = text('line1', 'The street address', 200, true);
+  const landmark = text('landmark', 'The landmark or instructions', 200, false);
+  const label = text('label', 'The name', 40, false);
+  const city = text('city', 'The city', 80, false);
+  const postalCode = text('postalCode', 'The postal code', 20, false);
+  const latText = String(form.latitude ?? '').trim();
+  const lngText = String(form.longitude ?? '').trim();
+  const lat = latText === '' ? NaN : Number(latText);
+  const lng = lngText === '' ? NaN : Number(lngText);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) errors.latitude = 'Latitude is a number from -90 to 90';
+  if (!Number.isFinite(lng) || lng < -180 || lng > 180) errors.longitude = 'Longitude is a number from -180 to 180';
+  if (Object.keys(errors).length) return { ok: false, errors, payload: null };
+  const payload = { line1, latitude: lat, longitude: lng };
+  if (label) payload.label = label;
+  if (landmark) payload.landmark = landmark;
+  if (city) payload.city = city;
+  if (postalCode) payload.postalCode = postalCode;
+  return { ok: true, errors: {}, payload };
 }
 
 // validateMenuItemForm checks a menu item as typed (price in dollars) and builds the body (cents).
@@ -550,6 +602,7 @@ const FIELD_LABELS = {
   email: 'Email', name: 'Name', password: 'Password', newPassword: 'New password', currentPassword: 'Current password',
   reference: 'Reference', note: 'Note', description: 'Description', priceCents: 'Price', restaurantId: 'Restaurant',
   cuisine: 'Cuisine', latitude: 'Latitude', longitude: 'Longitude', deliveryRadiusKm: 'Delivery radius',
+  label: 'Name', line1: 'Street', landmark: 'Landmark', city: 'City', postalCode: 'Postal code',
 };
 
 // fieldErrors turns the server's {fields: {email: "must be ..."}} into sentences
