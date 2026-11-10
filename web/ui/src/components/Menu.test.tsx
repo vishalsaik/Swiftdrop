@@ -168,7 +168,7 @@ describe('the menu screen', () => {
     await user.type(form.getByLabelText('Price'), '5.50');
     await user.click(form.getByRole('button', { name: 'Add to the menu' }));
     await waitFor(() => expect(server.callsTo('POST', '/restaurants/r1/menu')).toHaveLength(1));
-    expect(server.callsTo('POST', '/restaurants/r1/menu')[0].body).toEqual({ name: 'Milkshake', description: '', priceCents: 550 });
+    expect(server.callsTo('POST', '/restaurants/r1/menu')[0].body).toEqual({ name: 'Milkshake', description: '', priceCents: 550, veg: false });
   });
 
   it('edits an item, starting from what it is now, and shows the server\'s complaint', async () => {
@@ -187,7 +187,7 @@ describe('the menu screen', () => {
     await user.type(price, '12');
     await user.click(form.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText(/Price must be between 0 and 1000000/)).toBeTruthy();
-    expect(server.callsTo('PATCH', '/menu/burger')[0].body).toEqual({ name: 'Smash burger', description: 'Two patties', priceCents: 1200 });
+    expect(server.callsTo('PATCH', '/menu/burger')[0].body).toEqual({ name: 'Smash burger', description: 'Two patties', priceCents: 1200, veg: false });
   });
 
   it('tells the person when a change is refused', async () => {

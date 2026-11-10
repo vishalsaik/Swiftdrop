@@ -14,11 +14,11 @@ import (
 func TestSeedingAddsTheDemoMenuOnce(t *testing.T) {
 	c := catalogtest.New()
 	restaurants, items, err := Seed(ctx, c)
-	if err != nil || restaurants != 2 || items != 5 {
-		t.Fatalf("first seed = %d restaurants, %d items, %v, want 2, 5", restaurants, items, err)
+	if err != nil || restaurants != 3 || items != 7 {
+		t.Fatalf("first seed = %d restaurants, %d items, %v, want 3, 7", restaurants, items, err)
 	}
 	open, _ := c.ListRestaurants(ctx, false)
-	if len(open) != 2 {
+	if len(open) != 3 {
 		t.Errorf("open restaurants = %+v, want both open", open)
 	}
 	menu, _ := c.ListMenuItems(ctx, "demo-corner-kitchen", false)
@@ -68,7 +68,14 @@ func TestSeedingChangesNothingThatIsThere(t *testing.T) {
 
 type createsFail struct {
 	*catalogtest.Catalog
-	restaurant, item bool
+	restaurant, item, place bool
+}
+
+func (c createsFail) SetRestaurantPlace(ctx context.Context, id string, p ports.Place) (domain.Restaurant, error) {
+	if c.place {
+		return domain.Restaurant{}, errors.New("disk full")
+	}
+	return c.Catalog.SetRestaurantPlace(ctx, id, p)
 }
 
 func (c createsFail) CreateRestaurant(ctx context.Context, r domain.Restaurant) (domain.Restaurant, error) {
@@ -96,9 +103,57 @@ func TestSeedingReportsEachKindOfStorageFailure(t *testing.T) {
 		"adding a restaurant":      {createsFail{Catalog: catalogtest.New(), restaurant: true}, "adding Corner Kitchen"},
 		"reading a menu":           {menuFails{catalogtest.New()}, "looking at the menu of Corner Kitchen"},
 		"adding an item":           {createsFail{Catalog: catalogtest.New(), item: true}, "adding Smash burger"},
+		"placing a restaurant":     {createsFail{Catalog: catalogtest.New(), place: true}, "placing Corner Kitchen"},
 	} {
 		if _, _, err := Seed(ctx, c.store); err == nil || !strings.Contains(err.Error(), c.said) {
 			t.Errorf("%s: err = %v, want it to say %q", name, err, c.said)
 		}
+	}
+}
+
+// ---- places and vegetarian items ---------------------------------------------------
+
+func TestSeededRestaurantsAreInPlaceWithTheirCuisineAndVegetarianItems(t *testing.T) {
+	c := catalogtest.New()
+	if _, _, err := Seed(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range c.Restaurants {
+		if r.Latitude == nil || r.Longitude == nil || r.Cuisine == "" || r.DeliveryRadiusKm <= 0 || !domain.ValidPoint(*r.Latitude, *r.Longitude) {
+			t.Errorf("%s is not placed: %+v", r.Name, r)
+		}
+	}
+	if !c.Items["demo-fries"].Veg || c.Items["demo-smash-burger"].Veg || !c.Items["demo-paneer-tikka"].Veg {
+		t.Error("the demo items' vegetarian flags are not as seeded")
+	}
+	// a search near Bengaluru finds the two there and not the one in Mumbai, and the other way round
+	bengaluru := &ports.Point{Lat: 12.9750, Lng: 77.6410}
+	hits, _ := c.Search(ctx, ports.SearchQuery{Near: bengaluru})
+	if len(hits) != 2 || hits[0].Restaurant.ID != "demo-corner-kitchen" || hits[1].Restaurant.ID != "demo-noodle-bar" {
+		t.Errorf("near Bengaluru = %+v, want Corner Kitchen and Noodle Bar", hits)
+	}
+	hits, _ = c.Search(ctx, ports.SearchQuery{Near: &ports.Point{Lat: 19.0760, Lng: 72.8777}})
+	if len(hits) != 1 || hits[0].Restaurant.ID != "demo-harbour-grill" {
+		t.Errorf("near Mumbai = %+v, want Harbour Grill", hits)
+	}
+}
+
+func TestSeedingPlacesADemoRestaurantThatHasNoPlaceAndLeavesOthersAlone(t *testing.T) {
+	c := catalogtest.New()
+	// seeded by an older version: there, but not placed
+	c.Open("demo-corner-kitchen", "Corner Kitchen")
+	// seeded and then moved by staff
+	c.Open("demo-noodle-bar", "Noodle Bar")
+	c.Place("demo-noodle-bar", "Pan-Asian", 1.5, 2.5, 3)
+
+	if _, _, err := Seed(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.Restaurants["demo-corner-kitchen"]; r.Latitude == nil || r.Cuisine != "American" {
+		t.Errorf("the unplaced demo restaurant = %+v, want it placed", r)
+	}
+	r := c.Restaurants["demo-noodle-bar"]
+	if r.Cuisine != "Pan-Asian" || r.Latitude == nil || *r.Latitude != 1.5 || r.DeliveryRadiusKm != 3 {
+		t.Errorf("a restaurant that staff placed was changed: %+v", r)
 	}
 }

@@ -143,6 +143,26 @@ func (s *session) order(id string, restaurant string, items []map[string]any) an
 	return s.do("POST", "/orders", map[string]any{"id": id, "restaurantId": restaurant, "paymentType": "card", "items": items})
 }
 
+// found is what a search answered: each restaurant's id with the ids of the items shown under it.
+func (s *session) found(query string) map[string][]string {
+	s.t.Helper()
+	body := s.want(s.do("GET", "/search"+query, nil), 200, "search "+query).body
+	out := map[string][]string{}
+	results, _ := body["results"].([]any)
+	for _, r := range results {
+		hit, _ := r.(map[string]any)
+		restaurant, _ := hit["restaurant"].(map[string]any)
+		id := str(restaurant["id"])
+		out[id] = []string{}
+		items, _ := hit["items"].([]any)
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			out[id] = append(out[id], str(m["id"]))
+		}
+	}
+	return out
+}
+
 func (s *session) fetchOrder(id string) map[string]any {
 	s.t.Helper()
 	return s.want(s.do("GET", "/orders/"+id, nil), 200, "read order "+id).body
@@ -166,6 +186,11 @@ func TestACustomerOrdersAndTheOrderIsDelivered(t *testing.T) {
 		return str(a.body["item"].(map[string]any)["id"])
 	}
 	burger, fries := addItem("Smash burger", 950), addItem("Fries", 400)
+	// staff say where it is: Reykjavik, where no demo restaurant is, so a search there finds only this one
+	staff.want(staff.do("PUT", "/restaurants/"+restaurantID+"/place", map[string]any{
+		"cuisine": "E2E fusion", "latitude": 64.1466, "longitude": -21.9426, "deliveryRadiusKm": 3,
+	}), 200, "place the restaurant")
+	staff.want(staff.do("PATCH", "/menu/"+fries, map[string]any{"veg": true}), 200, "mark the fries vegetarian")
 
 	// -- a customer signs up and sees the menu
 	customer := newSession(t, base)
@@ -184,6 +209,26 @@ func TestACustomerOrdersAndTheOrderIsDelivered(t *testing.T) {
 	if items := menu["items"].([]any); len(items) != 2 {
 		t.Fatalf("menu = %v, want two items", items)
 	}
+
+	// -- a customer finds food near them
+	here := "lat=64.147&lng=-21.943" // about 50 metres from the restaurant
+	if got := customer.found("?" + here); len(got) != 1 || len(got[restaurantID]) != 2 {
+		t.Fatalf("near the restaurant a customer found %v, want just this restaurant with both items", got)
+	}
+	if got := customer.found("?veg=true&" + here); len(got) != 1 || len(got[restaurantID]) != 1 || got[restaurantID][0] != fries {
+		t.Fatalf("vegetarian near the restaurant = %v, want only the fries", got)
+	}
+	if got := customer.found("?q=smash&" + here); len(got[restaurantID]) != 1 || got[restaurantID][0] != burger {
+		t.Fatalf("searching for smash near the restaurant = %v, want only the burger", got)
+	}
+	if got := customer.found("?lat=64.2&lng=-21.943"); len(got) != 0 { // about 6 km north: beyond its 3 km
+		t.Fatalf("6 km away a customer found %v, want nothing, the restaurant does not deliver that far", got)
+	}
+	if got := customer.found("?q=E2E+fusion"); len(got[restaurantID]) != 2 { // by cuisine, with no location
+		t.Fatalf("searching by cuisine = %v, want this restaurant", got)
+	}
+	customer.want(customer.do("GET", "/search?lat=north&lng=1", nil), 400, "a position that is not numbers")
+	customer.want(customer.do("PUT", "/restaurants/"+restaurantID+"/place", map[string]any{"latitude": 1, "longitude": 1}), 403, "a customer moving a restaurant")
 
 	// -- a customer cannot name a price, or order anything but the menu, or change the menu
 	cheat := "E2E-" + run + "-cheat"
@@ -250,6 +295,9 @@ func TestACustomerOrdersAndTheOrderIsDelivered(t *testing.T) {
 	closed := customer.order("E2E-"+run+"-closed", restaurantID, []map[string]any{{"menuItemId": fries, "quantity": 1}})
 	if closed.status != 422 || !strings.Contains(closed.raw, "closed") {
 		t.Errorf("ordering from a closed restaurant = %d %s, want 422 saying it is closed", closed.status, closed.raw)
+	}
+	if got := customer.found("?" + here); len(got) != 0 {
+		t.Errorf("a closed restaurant is still found by a search near it: %v", got)
 	}
 	list = customer.want(customer.do("GET", "/restaurants", nil), 200, "list restaurants again").body
 	for _, x := range list["restaurants"].([]any) {
