@@ -23,7 +23,9 @@ func kitchen() (*catalogtest.Catalog, Pricer) {
 	return c, Pricer{Store: c}
 }
 
-func line(id string, qty int) domain.OrderItem { return domain.OrderItem{MenuItemID: id, Quantity: qty} }
+func line(id string, qty int) domain.OrderItem {
+	return domain.OrderItem{MenuItemID: id, Quantity: qty}
+}
 
 func wantProblem(t *testing.T, err error, parts ...string) {
 	t.Helper()
@@ -60,7 +62,7 @@ func TestAMenuLineIsPricedByTheServerWhateverTheRequestSaid(t *testing.T) {
 func TestACustomerMayOnlyOrderFromTheMenu(t *testing.T) {
 	_, pr := kitchen()
 	for name, items := range map[string][]domain.OrderItem{
-		"only a custom line":    {{Name: "Burger", Quantity: 1, UnitPriceCents: 1}},
+		"only a custom line":     {{Name: "Burger", Quantity: 1, UnitPriceCents: 1}},
 		"a custom line mixed in": {line("burger", 1), {SKU: "X", Name: "Free", Quantity: 1}},
 	} {
 		got, err := pr.Price(ctx, "r1", items, false)

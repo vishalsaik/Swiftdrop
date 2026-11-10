@@ -247,8 +247,14 @@ func TestAStorageFailureIsNotMistakenForNotFound(t *testing.T) {
 		"UpdateRestaurant": func() error { _, err := db.UpdateRestaurant(ctx, "a", &name, &on); return err },
 		"ListMenuItems":    func() error { _, err := db.ListMenuItems(ctx, "a", true); return err },
 		"GetMenuItems":     func() error { _, err := db.GetMenuItems(ctx, []string{"a"}); return err },
-		"CreateMenuItem":   func() error { _, err := db.CreateMenuItem(ctx, domain.MenuItem{ID: "a", RestaurantID: "a", Name: "a"}); return err },
-		"UpdateMenuItem":   func() error { _, err := db.UpdateMenuItem(ctx, "a", ports.MenuItemPatch{PriceCents: &price}); return err },
+		"CreateMenuItem": func() error {
+			_, err := db.CreateMenuItem(ctx, domain.MenuItem{ID: "a", RestaurantID: "a", Name: "a"})
+			return err
+		},
+		"UpdateMenuItem": func() error {
+			_, err := db.UpdateMenuItem(ctx, "a", ports.MenuItemPatch{PriceCents: &price})
+			return err
+		},
 	}
 	for name, call := range calls {
 		err := call()

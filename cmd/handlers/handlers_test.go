@@ -72,8 +72,8 @@ type fakeDB struct {
 	getFailOnCall int
 	getCalls      int
 
-	getErr    error
-	listErr   error
+	getErr  error
+	listErr error
 	// events is the payment history FakeDB answers with, keyed by ORDER id.
 	events    map[string][]domain.PaymentEvent
 	eventsErr error
@@ -91,11 +91,11 @@ type fakeDB struct {
 	// manualRefundErr makes RecordManualRefund fail; manualRefunds records what was asked of it.
 	manualRefundErr error
 	manualRefunds   []manualRefundCall
-	beforeMark   func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
-	createErr error
-	readyErr  error
-	acceptErr error
-	updateErr error
+	beforeMark      func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
+	createErr       error
+	readyErr        error
+	acceptErr       error
+	updateErr       error
 	// updateErrOn restricts updateErr to moves into this state; "" means every move.
 	updateErrOn domain.OrderState
 
