@@ -16,6 +16,20 @@ v1 is the whole journey working end to end (see the README). This is what it lea
 - **The CI workflow has been verified in pieces, not run by GitHub.** Every step was run locally (gofmt, vet, the race-detector tests against Postgres, the dashboard's checks, the stale-build check in a clean Linux container, the Compose stack and the end-to-end test against it). The first run on GitHub may still find a difference such as a tool version.
 - **The dashboard shows what a customer would, to a customer too**, but it was designed for dispatch first: there is no separate customer app.
 
+## Finding food near you
+
+Built: restaurant places, a delivery radius, vegetarian items, and `GET /search` (README, "Finding food near you"). What it leaves open:
+
+- **Distance is in a straight line, not by road.** A restaurant 2 km away across a river may be a 15-minute ride. The delivery radius is a circle for the same reason.
+- **There is no typed address.** If a customer refuses location, or wants food for somewhere else, they can only search by name. Typing an address needs geocoding (OpenStreetMap's Nominatim has usage rules; a paid service costs money), which is a decision still to make. Orders also carry no delivery address yet, so nothing checks again at order time that a restaurant really delivers to where the order is going.
+- **Places are typed in by staff.** There is no menu or restaurant import yet, so a new restaurant has no place until someone enters its latitude and longitude (or stands in it and presses "Use my current location"). A restaurant that is not placed is found by name but never by a search that has a position.
+- **The position is looked up once, not followed.** A customer who moves presses the button again. Following a moving person or driver on a map belongs with the driver work.
+- **The position is in the address of the request** (`/search?lat=...&lng=...`), rounded to about 110 metres first. Server logs that record addresses would hold that rounded position; the server itself logs no request addresses and keeps nothing.
+- **Search is simple.** Words are matched as substrings, and an item's own name also by trigram similarity (so "pad thay" finds "Pad thai"). There is no stemming, synonyms ("fries" and "chips"), spelling correction of restaurant names or descriptions, other languages, or ranking by popularity or rating. Postgres is fast enough for tens of thousands of items; a search engine (Meilisearch or Typesense) behind the same route is the next step, and instant as-you-type results would need it.
+- **Location needs `https://`.** Browsers only offer it on secure pages (and `localhost`), so the Docker stack on plain HTTP works on the same computer but not from a phone on the network until TLS is in front of it.
+- **The search answers are not cached and not paged.** At most 30 restaurants with 8 items each.
+- **The demo seed's places are real (Indiranagar in Bengaluru, Bandra in Mumbai) but the restaurants are not.** Running `seed` on a database seeded before places existed places the demo restaurants that have no place yet, and changes nothing else; items seeded earlier keep their old vegetarian flag (not vegetarian) until staff mark them.
+
 ## Payments: production issues we are accepting for now
 
 | # | Issue | What happens | Why we accept it for now | Unlocked by |

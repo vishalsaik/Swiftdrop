@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Find food near you.** Restaurants have a place (latitude, longitude), a delivery radius and a cuisine, and items can be vegetarian. `GET /search` finds items by name, description, restaurant or cuisine (forgiving a typing mistake in an item's name), filters by vegetarian and price, and with the customer's position keeps only restaurants that deliver there, nearest first. The order sheet has a **Find food** box with a **Use my location** button: the browser is asked only when it is pressed, the position is rounded to about 110 metres, used for that search and kept nowhere, and refusing it leaves search by name working. Staff place a restaurant under **Menu** (or `PUT /restaurants/{id}/place`) and mark items vegetarian.
+- The demo seed now has three restaurants, placed in Bengaluru and Mumbai, with cuisines and vegetarian flags; running it again places demo restaurants that had no place and changes nothing else.
+
+### Changed
+
+- The schema gains `pg_trgm`, restaurant place columns and `menu_items.veg` (applied in place by `migrate`).
+- CORS allows `PUT`.
+
 ## v1.0.0
 
 The first complete version: the whole journey from signing up to a delivered order, runnable with one command.
