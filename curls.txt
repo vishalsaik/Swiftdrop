@@ -55,7 +55,40 @@ curl -i -X POST http://127.0.0.1:8080/auth/logout
 curl -i http://127.0.0.1:8080/health
 
 
-## Create order
+## Restaurants and menus. Anyone signed in reads; only staff change them (sign in as staff above).
+## Run `go run ./cmd/seed` first for a demo menu, or add your own below.
+
+## The open restaurants - 200 (staff may add ?all=true for closed ones too)
+curl -i http://127.0.0.1:8080/restaurants
+
+## A menu - a customer sees only the available items of an open restaurant; staff ?all=true see everything
+curl -i http://127.0.0.1:8080/restaurants/demo-corner-kitchen/menu
+
+## Open a restaurant (staff) - 201 with its id
+curl -i -X POST http://127.0.0.1:8080/restaurants -H "Content-Type: application/json" -d '{"name":"Noodle House"}'
+
+## Add an item (staff) - 201; priceCents is 0 to 1000000. Put the restaurant's id in the path.
+curl -i -X POST http://127.0.0.1:8080/restaurants/demo-noodle-bar/menu -H "Content-Type: application/json" -d '{"name":"Ramen","description":"Pork, egg","priceCents":1250}'
+
+## Change a price or mark an item sold out (staff). Orders already placed keep their price.
+curl -i -X PATCH http://127.0.0.1:8080/menu/demo-fries -H "Content-Type: application/json" -d '{"priceCents":450}'
+curl -i -X PATCH http://127.0.0.1:8080/menu/demo-fries -H "Content-Type: application/json" -d '{"available":false}'
+
+## Close a restaurant (staff): customers no longer see it and orders from it are refused with 422
+curl -i -X PATCH http://127.0.0.1:8080/restaurants/demo-noodle-bar -H "Content-Type: application/json" -d '{"active":false}'
+
+
+## Order from the menu (what a customer sends): item ids and counts, never prices. The server prices
+## it from the menu, so a unitPriceCents here would be ignored.
+curl -i -X POST http://127.0.0.1:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":"menu-order-1","customerId":"walk-in","restaurantId":"demo-corner-kitchen","paymentType":"card","items":[{"menuItemId":"demo-smash-burger","quantity":2},{"menuItemId":"demo-fries","quantity":1}]}'
+
+## A customer cannot place a line that is not on the menu - 422 "menuItemId is required"
+## (staff can: a custom line carries its own name and price, as in the examples below)
+
+
+## Create order (a custom line, which only staff may place)
 curl -i -X POST http://127.0.0.1:8080/orders \
   -H "Content-Type: application/json" \
   -d '{"id":"order-1","customerId":"cust-1","restaurantId":"rest-1","items":[{"sku":"SKU1","name":"Burger","quantity":2,"unitPriceCents":599}],"paymentType":"card"}'

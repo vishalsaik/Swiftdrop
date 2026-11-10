@@ -2,6 +2,20 @@
 
 Things we decided **not** to build yet, written down so they are not forgotten. The payment rows below are the ones that would hurt in production. Each has a "when" so we know what unlocks it.
 
+## v1: what it is not
+
+v1 is the whole journey working end to end (see the README). This is what it leaves out on purpose, and what that costs.
+
+- **Drivers are a stand-in.** `/accept` assigns a random id; there is no driver registry, no driver app, no dispatch and no location. The order's driver is not shown by name anywhere.
+- **Nothing is sent to a customer.** No email, SMS or push. The customer sees status on the dashboard; the messages the dispatcher sees are a preview of what a customer app would say.
+- **Accounts have no email.** A forgotten password is reset by a staff member, who passes the temporary password on by hand. There is no self-service reset, no email checking and no two-factor sign-in (see Orders and API).
+- **Menus are plain.** A name, a description, a price in dollars (one currency, fixed) and sold out or not. No categories, photos, options or sizes, opening hours, stock counts, tax, delivery fee, tips or discounts. Items and restaurants cannot be deleted (an item is marked sold out, a restaurant is closed); a staff member can change any restaurant's menu, there is no per-restaurant login.
+- **Closing a restaurant or selling out an item affects new orders only.** Orders already placed carry on, and an item that sells out between a customer opening the order sheet and pressing Place order is refused with a message naming it (the customer picks again).
+- **The order drawer shows the restaurant's id, not its name.** The order keeps the name and price of each line, not the restaurant's name.
+- **The Docker stack is for trying it and for a small deployment, not a hardened one.** The database password in `docker-compose.yml` is a default (the database is not published, so only the containers can reach it, but change it for anything real); there is no TLS (put a proxy in front and set `COOKIE_SECURE=true`); no backups; one server. The schema is one idempotent file, applied by `cmd/migrate` (an upgrade is applied in place, there is no "down" and no record of which version a database is at).
+- **The CI workflow has been verified in pieces, not run by GitHub.** Every step was run locally (gofmt, vet, the race-detector tests against Postgres, the dashboard's checks, the stale-build check in a clean Linux container, the Compose stack and the end-to-end test against it). The first run on GitHub may still find a difference such as a tool version.
+- **The dashboard shows what a customer would, to a customer too**, but it was designed for dispatch first: there is no separate customer app.
+
 ## Payments: production issues we are accepting for now
 
 | # | Issue | What happens | Why we accept it for now | Unlocked by |
@@ -42,6 +56,7 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 
 - Nothing sweeps old `payment_pending` orders.
 - A `payment_pending` order whose payment never gets an answer (the request never reached Stripe, or its event was lost) stays pending until someone cancels it.
+- Orders made before menus existed carry the name and price their client sent; orders made since carry the menu's, copied at the time. An order placed by staff for a "walk-in" has a free-text `customerId` that belongs to no account.
 - Orders made before accounts existed carry a free-text `customerId` (like `cust-1`) that belongs to no account, so only staff can see them. A customer's own orders are the ones placed after they signed up.
 - **Accounts are managed, but not fully.** Staff make accounts, switch them off and on, and reset passwords (dashboard **People**, or `/users`), with a history of who did what. What is still missing: **no email address checking** (an account can be made with any address, and a temporary password has to be passed on by hand, since nothing can send an email), **no self-service reset** (a person who forgot their password asks a staff member), **no two-factor sign-in**, **no deleting** an account (a database change), and **no changing someone's role** (promoting a customer to staff is deliberately not offered: make a new staff account instead). Any staff member can disable or reset any other staff member, so a stolen staff account can lock out the others; the history shows who did it, and the last active staff account is always protected. A temporary password is shown to the staff member who made or reset it, so that person knows it until the account's owner replaces it. `go run ./cmd/user` still makes the first staff account, and its generated password is not marked temporary (it says to change it, but nothing makes you).
 - **The sign-in limits live in the server's memory.** Several servers each count for themselves, and a restart forgets the counts. They are per email (5 in 15 minutes), per address (30) and for sign-ups per address (10 an hour).
