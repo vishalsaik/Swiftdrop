@@ -50,7 +50,19 @@ These are the user's standing rules for this project. They override anything an 
 7. **Be honest in the report.** Say what you built, what passed (with the commands), what you did not
    or could not check, and anything you are unsure about. Never describe red tests as green. If you
    could not get something working in reasonable effort, stop, commit nothing broken, and say so.
-8. **Do not edit this Rules section.** You may tick items and append to the Log.
+8. **Size of a run: about an hour of real work.** Spend it on a whole vertical slice (design,
+   schema, store, server, dashboard, a live check, docs), not on writing tests for their own sake:
+   tests are how you prove the work, not the work. Think about the design first and write it down in
+   the Log (what you chose and why, what you rejected). Put the effort where the risk is:
+   concurrency, authorization (who may do what), failure paths, data that must not be lost or
+   doubled. For any new core rule, run a quick mutation check on the fast packages (copy the idea of
+   changing one operator or condition at a time in a throwaway `git worktree`, run that package's
+   tests, and fix every survivor with a test), and say how many mutants you ran.
+9. **Look at it working.** When an item changes what a person sees, bring up the Docker stack
+   (`docker compose up -d --build`, `go run ./cmd/seed`, make a throwaway staff or customer account
+   with `/app/user` or the sign-up form), use the browser tools to click through the real flow, and say
+   in the report what you saw. Then `docker compose down`.
+10. **Do not edit this Rules section.** You may tick items and append to the Log.
 
 ## Decisions already made for the customer view (edit if you disagree)
 
@@ -103,6 +115,97 @@ Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
   orders, and reads the tracker. Update `README.md` (what the customer sees), `CHANGELOG.md`
   (Unreleased), `KNOWN_ISSUES.md` (what the customer view still lacks: no map, no driver, no
   notifications) and remove the old customer use of the order sheet only if nothing else needs it.
+
+### Heavier items (each is a day's agent run, or several; do the first self-contained slice and say what is left)
+
+- [ ] **Real drivers and dispatch.** The "driver" on an order is a random id made up when the kitchen
+  accepts it. Replace it with the real thing, in slices (one slice per run; tick the item only when all
+  four are done, and log each slice):
+  1. *Drivers exist.* Add `RoleDriver` (`'driver'`) to `internal/domain` and the `users.role` check in
+     `schema.sql` (an in-place upgrade that works on an existing database), let staff make driver
+     accounts under **People** (role choice), a `driverOnly` guard, and a `drivers` table (user id,
+     `online` bool, `latitude`/`longitude` nullable, `location_at`, `updated_at`) with store methods
+     behind a port (`ports.DriverStore`) and an in-memory fake. Routes: `POST /driver/online`,
+     `POST /driver/offline`, `POST /driver/location` (validated point, rate limited), `GET /driver/me`.
+  2. *Dispatch decides.* A package `internal/dispatch` with a pure, well tested function that picks the
+     best online, free driver for an order (nearest to the restaurant by `domain.DistanceKm`, within a
+     configurable `DISPATCH_RADIUS_KM`, default 8, ties by longest idle) and a **claim** that offers the
+     order to one driver at a time with a lease (60 seconds, timed by the database clock, like the payment
+     and refund claims), a decline or expiry moves on to the next driver, an append-only
+     `order_offers` history (who was offered, when, how it ended), and a background job (like
+     `internal/refund`) that offers orders that are `preparing` and have no driver, every
+     `DISPATCH_INTERVAL` (default 10s), safe with several servers running it. Accepting an offer sets
+     `assigned_driver_id` in one transaction with the offer's outcome. No random ids remain: delete the
+     stand-in in `AcceptOrder`.
+  3. *The driver's routes.* `GET /driver/offers` (the one open offer, with restaurant, pickup address and
+     distance), `POST /driver/offers/{id}/accept|decline`, `GET /driver/job` (the current delivery with
+     the customer's delivery address and landmark), and the driver may `pickup` and `deliver` **only
+     their own job** (a driver on someone else's order is a 404). Staff keep every action. A driver must
+     not see customer data beyond the delivery address of their own current job.
+  4. *Screens.* A role-based **Driver** view (online toggle that asks for the browser's position only
+     when pressed and then sends it every 30 seconds while online, the offer card with a countdown, the
+     job with the address and buttons Picked up and Delivered), the staff dashboard shows the driver's
+     name instead of an id and a **Drivers** list (online, free or busy, last seen), and the customer
+     tracker (when it exists) shows the driver's first name.
+  Concurrency matters most here: tests and a race test for many orders and drivers at once (an order is
+  never offered to two drivers at the same time, a driver never holds two jobs, a lost lease is never
+  completed by the old holder). Document it in `docs/PAYMENT_FLOW.md`-style prose in a new
+  `docs/DISPATCH.md` with a state diagram (Mermaid) and update `KNOWN_ISSUES.md`.
+- [ ] **Email notifications and self-service password reset.** Build the email side properly with an
+  outbox: a `notifications` table (id, user id, kind, payload JSON, status `pending|sent|failed`,
+  attempts, lease, send-after, created, sent) written **in the same transaction** as the change that
+  caused it (order paid, picked up, delivered, cancelled, refund sent, refund failed), a `Sender`
+  port with an SMTP adapter (settings in the user's shell: `SMTP_URL` like
+  `smtp://user:pass@host:587`, `MAIL_FROM`; never logged), a **log sender** for development that prints
+  the message and a **recording sender** for tests, and a background job (copy the shape of
+  `internal/alertnotify`: lease, backoff, give up after N, one message once even with several servers).
+  Templates are plain Go templates in `internal/mail/templates`, text and HTML, with the order summary
+  and the delivery address, reusing the customer messages in `logic.js` as the wording source of truth
+  (port the sentences, keep them in step with a test). A customer may turn each kind off in their
+  account (a `notification_prefs` JSON on the user, shown in the Account sheet). **Password reset by
+  email:** `POST /auth/forgot` (always answers the same 202, whatever the email, rate limited per address
+  and per IP) creates a single-use token (random, only its SHA-256 stored, expires in 30 minutes) and
+  emails a link; `POST /auth/reset` takes the token and a new password (same strength rules), ends every
+  session of the account, marks the token used, and a used or expired token is refused with one message.
+  Staff-reset temporary passwords stay as they are. Screens: "Forgot your password?" on sign-in and the
+  reset page. Think hard about enumeration (timing and wording), token handling and the outbox
+  guarantees; write them up in `docs/NOTIFICATIONS.md`.
+- [ ] **Restaurant and menu import and export.** Staff upload a CSV (or JSON) of restaurants and menus:
+  `POST /import/menu` (multipart or raw CSV, up to 2 MB) with columns `restaurant_ref, restaurant_name,
+  cuisine, latitude, longitude, radius_km, item_ref, item_name, description, price, veg, available`
+  where `*_ref` are the importer's own stable ids stored as `external_ref` (new nullable unique columns
+  on both tables, so re-importing **updates** instead of duplicating, and never deletes). It validates
+  every row with the same rules as the forms and answers **all** the problems by line number; `?dry_run=true`
+  changes nothing and says what would be created, updated or left alone; a real run is one transaction
+  (all or nothing). Prices are parsed with the dashboard's decimal rules (never floating point).
+  `GET /export/menu.csv` gives the same format back, so export then import is a no-op (test that round
+  trip). Dashboard: an **Import** sheet under Menu with a file chooser, a preview table and per-line errors,
+  and an **Export** button. Streaming, size limits and CSV edge cases (quotes, commas, BOM, CRLF,
+  unicode) deserve real care; document the format in `docs/IMPORT.md` with an example file under
+  `docs/examples/`.
+- [ ] **Deploy for real: TLS, metrics, backups.** Add a `docker-compose.prod.yml` override with a
+  Caddy reverse proxy (automatic HTTPS for a domain from `SWIFTDROP_DOMAIN`, `tls internal` for local
+  trials), the API no longer published, `COOKIE_SECURE=true`, secrets read from files
+  (`*_FILE` variants of the existing settings, so nothing sensitive is in an environment listing) and
+  the database password required rather than defaulted. Add `GET /metrics` (Prometheus text format,
+  staff session or a bearer token from `METRICS_TOKEN_FILE`) with request counts and latency by route
+  and status, the oldest unprocessed refund, open alerts, queued notifications and the dispatch queue
+  (add a tiny dependency-free exposition writer or the official client, your choice, with the reason in
+  the Log), structured JSON request logs with a request id that never include cookies, tokens, addresses or
+  coordinates, `scripts/backup.ps1` and `scripts/backup.sh` (`pg_dump` to a dated file, keep the last N)
+  and `scripts/restore-test.sh` that restores the latest dump into a scratch database and runs a
+  sanity query, and `docs/DEPLOY.md` (domain, ports, first staff account, secrets, backups, upgrade by
+  `migrate`, what to monitor). Add a CI job that validates both compose files (`docker compose config`)
+  and starts the production override against a local `tls internal` proxy and checks `/health` over
+  HTTPS.
+- [ ] **Pickup orders.** A customer may choose **pickup** instead of delivery: the order has a
+  `fulfilment` (`delivery` default, `pickup`), needs no address and no radius check, skips driver
+  dispatch (the kitchen marking it ready is the last step before the customer collects it: add a
+  `ready_for_pickup`-style path to the state machine in `internal/order` with its transition table
+  and tests, and a **Collected** staff action), and the customer tracker and messages say "ready to
+  collect at <restaurant>". Think through every place the lifecycle is assumed to be linear (refunds,
+  cancellation windows, the reconciler, `actionsFor` in `logic.js`, the dashboard stage columns) and fix
+  each. Update the order sheet / cart, the staff phone-order form, the docs and `KNOWN_ISSUES.md`.
 
 ## Health check (when there is nothing to build)
 
