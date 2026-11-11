@@ -55,7 +55,7 @@ export function OrderList({ orders, stage, selectedId, loaded, showCustomer, onS
   );
 }
 
-function OrderRow({ order, selected, showCustomer, onSelect }: { order: Order; selected: boolean; showCustomer: boolean; onSelect(id: string): void }) {
+export function OrderRow({ order, selected, showCustomer, onSelect }: { order: Order; selected: boolean; showCustomer: boolean; onSelect(id: string): void }) {
   const stamp = stampFor(order);
   const style = STAGE_STYLE[columnOf(order)] ?? STAGE_STYLE.closed;
   const meta = [timeAgo(order.createdAt), order.paymentType, showCustomer ? order.customerId : ''].filter(Boolean).join(' / ');

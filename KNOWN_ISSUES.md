@@ -95,6 +95,13 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 - **Sessions use the application's clock.** Their lifetimes are days and hours, so a few seconds of drift between servers does not matter, unlike the payment leases, which use the database's.
 - **One CSRF token per session, kept for the session's life.** The cookie is `SameSite=Strict` as well, which already stops other sites from sending it, so the token is the second layer.
 
+## The customer view
+
+- **Food is a button, not a home yet.** The Food tab greets the customer and starts an order with the order sheet (address, search, menu, pay). There are no restaurant cards or restaurant pages, and the cart button opens an empty cart: the cart is a placeholder held in memory (gone on reload), and the real cart (kept in the browser, one restaurant at a time) is a later item on the roadmap.
+- **The tracker is the order drawer.** A customer's order opens in the same panel staff use (journey, items, delivery address, pay and cancel), with no payment history. It has no map and no driver, because drivers are still a stand-in.
+- **One app, two shells.** A customer and staff run the same bundle and the same API; the role decides the shell. Hiding a staff tool is only a convenience, as it always was: the server answers `403` or `404` for anything a customer may not do, and a test checks that a customer's view never asks for staff-only routes.
+- **Sample orders are a staff tool.** A customer with no orders is pointed at Food instead.
+
 ## The dashboard
 
 - It polls every 3 seconds. Pushing changes to the screen (server-sent events) is not built.

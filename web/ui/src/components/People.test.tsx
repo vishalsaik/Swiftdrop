@@ -69,7 +69,7 @@ describe('the people screen', () => {
       'GET /orders': () => ({ body: { orders: [] } }),
     });
     render(<App />);
-    await screen.findByText('Here are your orders.');
+    await screen.findByText(/good (morning|afternoon|evening|night), casey/i);
     expect(screen.queryAllByRole('button', { name: /^people$/i })).toHaveLength(0);
     expect(server.calls.filter((c) => c.path.startsWith('/users'))).toHaveLength(0);
   });

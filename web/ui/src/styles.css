@@ -335,6 +335,27 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
 
 .tabbar { display: none; }
 
+/* ---------- the customer view: a header with tabs, one column ---------- */
+
+.capp { min-height: 100dvh; }
+.capp-head {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; padding: 10px clamp(16px, 3.4vw, 44px);
+  background: var(--material); border-bottom: 0.5px solid var(--sep);
+  -webkit-backdrop-filter: blur(30px) saturate(1.8); backdrop-filter: blur(30px) saturate(1.8);
+}
+.capp-brand { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
+.capp-brand .mark { width: 30px; height: 30px; }
+.ctabs { flex: 1; display: flex; justify-content: center; gap: 4px; }
+.ctab { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 8px 14px; border-radius: 999px; font-size: 16px; font-weight: 500; color: var(--label-2); }
+.ctab:hover { background: var(--fill); }
+.ctab.active { background: var(--blue); color: #fff; }
+.capp-tools { display: flex; align-items: center; gap: 10px; }
+.capp-tools .icon-btn { position: relative; width: 40px; height: 40px; }
+.capp-tools .avatar { width: 40px; height: 40px; }
+.cart-btn .badge { position: absolute; top: -4px; right: -6px; min-width: 20px; height: 20px; padding: 0 6px; font-size: 12px; }
+.capp-main { max-width: 860px; margin: 0 auto; padding: 24px clamp(16px, 3.4vw, 44px) 60px; outline: none; }
+.capp-account { max-width: 520px; }
+
 /* people */
 .people-tools { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr) auto; gap: 12px; align-items: center; margin-bottom: 4px; }
 .search { min-width: 0; width: 100%; border: 0; border-radius: 10px; background: var(--fill); padding: 9px 14px; font-size: 16px; color: var(--label); outline: none; }
@@ -375,6 +396,15 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
   .notices { left: 12px; right: 12px; width: auto; bottom: calc(84px + env(safe-area-inset-bottom)); }
   .item-row { grid-template-columns: minmax(0, 1fr) 48px 72px auto; }
   .people-tools { grid-template-columns: 1fr; }
+
+  /* the customer's tabs move to the bottom, like the dashboard's tab bar */
+  .capp-main { padding: 18px 16px calc(96px + env(safe-area-inset-bottom)); }
+  /* a backdrop filter would make the header the box the fixed tab bar is placed in */
+  .capp-head { justify-content: space-between; background: var(--material-strong); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .ctabs { position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; justify-content: space-around; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: var(--material); border-top: 0.5px solid var(--sep); -webkit-backdrop-filter: blur(30px) saturate(1.8); backdrop-filter: blur(30px) saturate(1.8); }
+  .ctab { flex: 1; display: grid; justify-items: center; gap: 2px; padding: 6px 4px; border-radius: 0; font-size: 11px; }
+  .ctab:hover, .ctab.active { background: none; }
+  .ctab.active { color: var(--blue-text); }
   .person .row-trail { display: none; }
 }
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }

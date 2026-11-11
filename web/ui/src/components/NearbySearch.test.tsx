@@ -47,7 +47,7 @@ function shop(search: Handler = () => ({ body: { results: [], located: false } }
 
 async function openSheet(user: ReturnType<typeof userEvent.setup>) {
   render(<App />);
-  await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
+  await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
   await screen.findByLabelText('Search food');
 }
 

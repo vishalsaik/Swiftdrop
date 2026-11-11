@@ -30,7 +30,7 @@ export function signature(o: Order): string {
 }
 
 export type IconName = 'tray' | 'bell' | 'plus' | 'moon' | 'sun' | 'xmark' | 'chevron' | 'check' | 'clock' | 'card' | 'flame' | 'scooter'
-  | 'archive' | 'person' | 'warning' | 'eye' | 'eyeSlash';
+  | 'archive' | 'person' | 'warning' | 'eye' | 'eyeSlash' | 'bag';
 
 // Each stage of the board has a colour and a symbol, like the tiles in a SwiftUI sidebar.
 export const STAGE_STYLE: Record<string, { tint: string; icon: IconName }> = {

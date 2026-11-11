@@ -35,7 +35,7 @@ function shop(user: User, extra: Record<string, Handler> = {}) {
 
 async function openSheet(user: ReturnType<typeof userEvent.setup>) {
   render(<App />);
-  const buttons = await screen.findAllByRole('button', { name: /new order/i });
+  const buttons = await screen.findAllByRole('button', { name: /new order|start an order/i });
   await user.click(buttons[0]);
   await screen.findByText('Smash burger');
 }
@@ -74,6 +74,8 @@ describe('ordering from the menu', () => {
     expect(sent.customerId).toBe('u-cust');
     expect(JSON.stringify(sent)).not.toMatch(/unitPriceCents|sku/);
     expect(await screen.findByText(`Order ${sent.id} placed`)).toBeTruthy();
+    // the customer is taken to their orders (CustomerApp.test opens the new one)
+    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
   });
 
   it('asks for something before an empty order goes anywhere', async () => {
@@ -105,7 +107,7 @@ describe('ordering from the menu', () => {
     const user = userEvent.setup();
     shop(customer, { 'GET /restaurants': () => ({ body: { restaurants: [] } }) });
     render(<App />);
-    await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
+    await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
     expect(await screen.findByText(/No restaurant is open right now/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Place order' }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -114,7 +116,7 @@ describe('ordering from the menu', () => {
     const user = userEvent.setup();
     shop(customer, { 'GET /restaurants/r1/menu': () => ({ body: { restaurant: kitchen, items: [] } }) });
     render(<App />);
-    await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
+    await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
     expect(await screen.findByText(/Nothing is available from this restaurant/)).toBeTruthy();
   });
 
@@ -122,7 +124,7 @@ describe('ordering from the menu', () => {
     const user = userEvent.setup();
     shop(customer, { 'GET /restaurants': () => ({ status: 500, body: { error: 'Failed to list restaurants due to an internal server error' } }) });
     render(<App />);
-    await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
+    await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
     expect((await screen.findAllByRole('alert')).some((a) => /internal server error/.test(a.textContent ?? ''))).toBe(true);
   });
 
@@ -217,7 +219,7 @@ describe('ordering as staff', () => {
     const user = userEvent.setup();
     shop(staff, { 'GET /restaurants': () => ({ body: { restaurants: [] } }) });
     render(<App />);
-    await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
+    await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
     expect(await screen.findByText(/Open one in Menu/)).toBeTruthy();
   });
 });
@@ -248,11 +250,15 @@ describe('the sample orders', () => {
     expect(server.callsTo('POST', '/orders')).toHaveLength(0);
   });
 
-  it('say so to a customer in words that fit them', async () => {
+  it('are a staff tool: a customer with no orders is pointed at the food instead', async () => {
     const user = userEvent.setup();
-    shop(customer, { ...emptyBoard, 'GET /restaurants': () => ({ body: { restaurants: [] } }) });
+    const server = shop(customer, emptyBoard);
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /sample/i }));
-    expect(await screen.findByText(/No restaurant has a menu yet/)).toBeTruthy();
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
+    expect(await screen.findByText('No orders yet')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /sample/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Find food' }));
+    expect(await screen.findByRole('button', { name: 'Start an order' })).toBeTruthy();
+    expect(server.callsTo('POST', '/orders')).toHaveLength(0);
   });
 });
