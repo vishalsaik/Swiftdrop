@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
-import { App } from '../App';
+import { App, Gate } from '../App';
 import { setSession } from '../api';
+import { SessionProvider, useSession } from '../session';
+import { ToastProvider } from '../toasts';
 import { CartProvider, useCart, type CartLine } from '../hooks/cart';
 import type { MenuItem, Order, Restaurant } from '../lib/types';
 import { home, placeOrder } from '../test/deliver';
@@ -244,5 +246,34 @@ describe('staff are unchanged', () => {
     expect(await screen.findByText(/someone/)).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Sections' })).toBeNull();
     expect(screen.queryByRole('button', { name: /^cart/i })).toBeNull();
+  });
+});
+
+describe('switching accounts', () => {
+  // signIn while already signed in replaces the user without the sign-in screen in between, so the
+  // customer view is not unmounted: only its key (the user's id) makes it start afresh.
+  function Switcher() {
+    const { signIn } = useSession();
+    return <button type="button" onClick={() => void signIn('bea@example.com', 'a long enough phrase')}>switch account</button>;
+  }
+
+  it('starts the next customer on the Food tab with no order open, nothing left of the last', async () => {
+    const user = userEvent.setup();
+    const bea = { ...customer, id: 'u-bea', email: 'bea@example.com', name: 'Bea Buyer' };
+    serve(customer, [order({ id: 'o1', state: 'created' })], { 'POST /auth/login': () => ({ body: session(bea) }) });
+    render(<SessionProvider><ToastProvider><Gate /><Switcher /></ToastProvider></SessionProvider>);
+    expect(await screen.findByRole('heading', { name: /, casey$/i })).toBeTruthy();
+
+    // casey is on the Orders tab with an order open
+    await user.click(tabs().getByRole('button', { name: 'Orders' }));
+    await user.click(await screen.findByRole('button', { name: /order o1/i }));
+    expect(within(await screen.findByLabelText('Order details')).getByText('o1')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'switch account' }));
+
+    expect(await screen.findByRole('heading', { name: /, bea$/i })).toBeTruthy();
+    expect(tabs().getByRole('button', { name: 'Food' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByLabelText('Order details').getAttribute('aria-hidden')).toBe('true');
+    expect(within(screen.getByLabelText('Order details')).queryByText('o1')).toBeNull();
   });
 });
