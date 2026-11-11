@@ -5,7 +5,7 @@ import { useSession } from '../session';
 import { useToast } from '../toasts';
 import { Avatar, Segmented, Sheet } from './ui';
 
-interface Props {
+export interface AccountProps {
   open: boolean;
   user: User;
   theme: Theme;
@@ -13,7 +13,7 @@ interface Props {
   onClose(): void;
 }
 
-export function AccountSheet(props: Props) {
+export function AccountSheet(props: AccountProps) {
   return (
     <Sheet open={props.open} onClose={props.onClose} title="Account" className="form-sheet"
       trailing={<button type="button" className="text-btn strong" onClick={props.onClose}>Done</button>}>
@@ -22,7 +22,7 @@ export function AccountSheet(props: Props) {
   );
 }
 
-function AccountBody({ user, theme, onTheme, onClose }: Props) {
+export function AccountBody({ user, theme, onTheme, onClose }: AccountProps) {
   const { changePassword, signOut } = useSession();
   const toast = useToast();
   const [current, setCurrent] = useState('');
