@@ -33,7 +33,7 @@ function shop(user = customer, extra: Record<string, Handler> = {}) {
 
 async function openSheet(user: ReturnType<typeof userEvent.setup>) {
   render(<App />);
-  await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
+  await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
   await screen.findByRole('region', { name: 'Deliver to' });
 }
 

@@ -102,18 +102,21 @@ describe('who sees what', () => {
   });
 
   it('shows a customer no alerts, and never asks for them', async () => {
+    const user = userEvent.setup();
     const server = board(customer, [order({ id: 'o1' })]);
     render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
     expect(await screen.findByText('o1')).toBeTruthy();
     expect(screen.queryAllByRole('button', { name: /alerts/i })).toHaveLength(0);
     expect(server.callsTo('GET', '/alerts')).toHaveLength(0);
-    expect(screen.getByText('Here are your orders.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Your orders' })).toBeTruthy();
   });
 
   it('offers a customer only paying and cancelling their own order', async () => {
     const user = userEvent.setup();
     board(customer, [order({ id: 'o1', state: 'created' })]);
     render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
     await user.click(await screen.findByRole('button', { name: /order o1/i }));
     const panel = await screen.findByLabelText('Order details');
     expect(within(panel).getByRole('button', { name: 'Pay now' })).toBeTruthy();
@@ -199,6 +202,7 @@ describe('recording a refund done by hand', () => {
   async function open(user: ReturnType<typeof userEvent.setup>, extra: Record<string, Handler> = {}, who = staff) {
     const server = board(who, [failed], { 'GET /orders/o1/payment-history': () => ({ body: { events: [] } }), ...extra });
     render(<App />);
+    if (who.role === 'customer') await user.click(await screen.findByRole('button', { name: 'Orders' }));
     await user.click(await screen.findByRole('button', { name: /order o1/i }));
     return { server, panel: await screen.findByLabelText('Order details') };
   }
