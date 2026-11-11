@@ -62,7 +62,22 @@ These are the user's standing rules for this project. They override anything an 
    (`docker compose up -d --build`, `go run ./cmd/seed`, make a throwaway staff or customer account
    with `/app/user` or the sign-up form), use the browser tools to click through the real flow, and say
    in the report what you saw. Then `docker compose down`.
-10. **Do not edit this Rules section.** You may tick items and append to the Log.
+10. **Definition of done: do not report until every box is true, and say so in the report.**
+    - The item is ticked (or the Log says exactly what is left), and the Log entry is committed on
+      your branch (design choices, commands, results).
+    - There is a **docs commit** (README, CHANGELOG "Unreleased", KNOWN_ISSUES as the item needs).
+    - If anything under `web/ui` changed, `web/static` is **rebuilt on Linux from the committed
+      sources and committed** (rule 5). Prove it: after committing, rebuild again in a scratch copy and
+      `diff -r` it against `web/static`; the diff must be empty.
+    - You looked at it working in the browser against the real stack (rule 9), and the report says what
+      you saw (or why you could not).
+    - A run is about an hour. If you are done in far less, you have not finished: review your own
+      diff against the item and the decisions, look for the cases the item names that you skipped,
+      run the mutation check on new core rules, and read the code as a reviewer would.
+    - **You are back on `main` with a clean tree.** Run `git switch main`, then print
+      `git branch --show-current` and `git status --short` and put that output in the report. Docker
+      containers you started are stopped.
+11. **Do not edit this Rules section.** You may tick items and append to the Log.
 
 ## Decisions already made for the customer view (edit if you disagree)
 
