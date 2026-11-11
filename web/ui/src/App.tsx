@@ -7,7 +7,8 @@ import { SessionProvider, useSession } from './session';
 import { useTheme } from './theme';
 import { ToastProvider } from './toasts';
 
-function Gate() {
+// Exported so a test can put it inside its own session and switch accounts without signing out.
+export function Gate() {
   const { status, user } = useSession();
   const [theme, setTheme] = useTheme();
   if (status === 'loading') return <div className="boot"><Waiting label="Loading" /></div>;
