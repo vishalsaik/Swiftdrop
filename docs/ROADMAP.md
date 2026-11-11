@@ -82,7 +82,7 @@ These are the user's standing rules for this project. They override anything an 
 
 Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
 
-- [ ] **Customer shell.** In `web/ui/src/App.tsx`/`Shell.tsx`, render a new `CustomerApp` for
+- [x] **Customer shell.** In `web/ui/src/App.tsx`/`Shell.tsx`, render a new `CustomerApp` for
   `role === 'customer'` and the existing `Shell` for staff. `CustomerApp` has a header (greeting,
   account button, cart button with a count) and three tabs: **Food** (home), **Orders**, **Account**.
   Nothing from the dispatch dashboard (stage columns, stats tiles, alerts, People, Menu admin)
@@ -218,3 +218,25 @@ stale branches, and report what needs a person's attention.
 
 (The agent appends one entry per run, newest last: date, branch, what it did, the commands it ran and
 their results, what is left.)
+
+### 2026-11-11, `agent/2026-11-11-customer-shell`: Customer shell (first run, then reviewed and finished by Claude)
+
+- **Agent run (07:40 to 07:48, about 8 minutes):** `CustomerApp` for `role === 'customer'` (App.tsx picks the shell by role,
+  keyed by the user's id), three tabs, a header with the cart button, `useCart` as an in-memory placeholder, the order list
+  and drawer reused with customer-only actions, 16 new tests, five existing test files adapted to the new customer path.
+  Commits: 0511f5c (code), 84058c3 (tests). It did not tick the item, write a Log entry or docs, rebuild `web/static`, or
+  switch back to `main`.
+- **Review (Claude, on the user's word):** `tsc` clean, web tests 152 passing (136 before). Live on a throwaway compose
+  project (demo seed): a new customer sees Food, Orders, Account and none of stage columns, totals, alerts, Menu or
+  People, places an order and lands on Orders with it open, the drawer offers only Pay now and Cancel order, and no
+  alerts, users or payment-history request was made; the cart sheet, account tab and a 375 px phone layout (tab bar at the
+  bottom, no sideways scroll) work. Six hand mutants of the new code: five caught, one survived (removing the `key` on
+  `CustomerApp`, so one account's tab and open order would survive a direct account switch).
+- **Fixes (Claude):** `Gate` exported so a test can switch accounts inside one session (a8f6165); a test that signs in as
+  another customer without the sign-in screen in between and checks the Food tab and no order open (c4af1a0), after which all
+  six mutants are caught; `web/static` rebuilt on Linux from the committed sources (656d423) and proved identical to a
+  second fresh Linux build of HEAD (`cmp` on all three files); docs (this commit). Not done by anyone yet: the restaurant
+  page, the real cart and the tracker (the next three items).
+- **Design notes:** a role-based shell in one bundle (decided in advance); the cart behind one hook so only that file changes
+  when it gets `localStorage`; `AccountBody` and `OrderRow` exported for reuse rather than copied. Rejected: a separate
+  route or bundle for customers (more to build and to keep in step, and the server checks the role anyway).

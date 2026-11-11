@@ -4,6 +4,8 @@
 
 ### New
 
+- **A customer view.** A signed-in customer now gets their own app instead of a cut-down dispatch dashboard: **Food**, **Orders** (newest first, with the order drawer limited to what a customer may do) and **Account** tabs, and a cart button in the header. Staff keep the dashboard unchanged. Placing an order takes the customer to Orders with it open. The Food tab still starts an order with the order sheet; the restaurant page, the cart and the order tracker are the next items on the roadmap. The cart is a placeholder held in memory behind one hook.
+
 - **Delivery addresses.** Every order says where it is going, and the server checks that its restaurant exists, has said where it is and delivers that far (a restaurant that has not been placed takes no delivery orders). An order keeps its own copy of the address. Customers save up to ten addresses and use them again (`/addresses`); staff placing a phone order choose or type one.
 - **Address search.** `GET /geocode` and `/geocode/reverse` turn typed words into places and a place into words, through OpenStreetMap's Nominatim (or any service that speaks it) or a built-in demo list, chosen by `GEOCODER`; cached for an hour, limited to 30 a minute per person, and the key (`GEOCODER_KEY`) is never logged. The order sheet has a **Deliver to** chooser: saved, search, where I am, or type it in; the food search follows the chosen address.
 
