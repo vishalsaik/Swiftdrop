@@ -41,10 +41,12 @@ export function RestaurantPage({ restaurantId, near, addItemId, onBack, onViewCa
     return () => { current = false; };
   }, [restaurantId]);
 
-  // one of the item chosen in the search results, once (a re-render must not add another)
+  // one of the item chosen in the search results, once (a re-render must not add another), and never
+  // by replacing a cart of another restaurant unseen: then the page warns and the customer presses +
   useEffect(() => {
     if (added.current || !addItemId || !items || !restaurant) return;
     added.current = true;
+    if (cart.count > 0 && cart.restaurantId !== restaurant.id) return;
     const item = items.find((m) => m.id === addItemId);
     if (item) cart.setQuantity(item, cart.quantityOf(item.id) + 1, restaurant.name);
   }, [addItemId, items, restaurant, cart]);
