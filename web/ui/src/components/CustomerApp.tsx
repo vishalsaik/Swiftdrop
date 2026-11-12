@@ -66,6 +66,9 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
 
   const openOrder = useCallback((id: string) => { setTab('orders'); setSelectedId(id); }, []);
   const first = user.name.trim().split(/\s+/)[0] || 'there';
+  // A <dialog> says it closed a moment after it is told to, so going straight from one sheet to another
+  // (the cart's Check out) must not let the first one's close shut the second.
+  const closeSheet = (which: 'account' | 'cart' | 'order') => () => setSheet((s) => (s === which ? null : s));
 
   return (
     <div className="capp">
@@ -163,7 +166,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         {selected && <OrderDetail order={selected} role={user.role} canSeeHistory={false} onClose={() => setSelectedId(null)} onChanged={refresh} />}
       </aside>
 
-      <Sheet open={sheet === 'cart'} onClose={() => setSheet(null)} title="Cart" className="form-sheet"
+      <Sheet open={sheet === 'cart'} onClose={closeSheet('cart')} title="Cart" className="form-sheet"
         trailing={<button type="button" className="text-btn strong" onClick={() => setSheet(null)}>Done</button>}>
         <div className="sheet-form">
           {cart.count === 0 ? (
@@ -191,14 +194,14 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         </div>
       </Sheet>
 
-      <NewOrderSheet open={sheet === 'order'} user={user} placeForOthers={false} onClose={() => setSheet(null)}
+      <NewOrderSheet open={sheet === 'order'} user={user} placeForOthers={false} onClose={closeSheet('order')}
         start={cart.restaurantId ? {
           restaurantId: cart.restaurantId,
           quantities: Object.fromEntries(cart.lines.map((l) => [l.menuItemId, l.quantity])),
           destination,
         } : undefined}
         onPlaced={async (id) => { cart.clear(); setShop(null); await refresh(); openOrder(id); }} />
-      <AccountSheet open={sheet === 'account'} user={user} theme={theme} onTheme={onTheme} onClose={() => setSheet(null)} />
+      <AccountSheet open={sheet === 'account'} user={user} theme={theme} onTheme={onTheme} onClose={closeSheet('account')} />
     </div>
   );
 }
