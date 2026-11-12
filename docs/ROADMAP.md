@@ -43,6 +43,13 @@ These are the user's standing rules for this project. They override anything an 
      A security hook also blocks file content that names one particular Python serialization module,
      so avoid that module's name, even in prose.
    - Put scratch files in the session scratchpad, not the repo.
+   - **A throwaway worktree must be self-contained.** Never link `node_modules` (or anything else
+     that lives outside it) into a worktree with a junction or a symlink: `git worktree remove
+     --force` follows the link and deletes the real folder. This happened on 2026-11-12 and
+     `web/ui/node_modules` had to be reinstalled. For web mutation checks, change the file in the
+     main working copy on your own branch and restore it with `git checkout -- <file>` (the tree must
+     be clean before and after), or run `npm ci` inside the worktree. Go mutation checks need no
+     `node_modules`. Before removing any worktree, look at what is in it.
 6. **Leave things as you found them.** At the end: be back on `main` with a clean tree (your work is
    on your branch), stop the `postgres` container and any `swiftdrop` compose stack you started
    (`docker compose down`, keep volumes), and do not touch the `kind` clusters, which belong to other
