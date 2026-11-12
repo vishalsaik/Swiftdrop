@@ -15,6 +15,8 @@ test('distance is the great-circle distance, the same sum as the server', () => 
   assert.equal(distanceKm(12.9719, 77.6412, 19.0596, 72.8295), distanceKm(19.0596, 72.8295, 12.9719, 77.6412));
   // the far side of the earth does not fail on rounding (a is capped at 1)
   assert.ok(Math.abs(distanceKm(0, 0, 0, 180) - Math.PI * 6371) < 0.001);
+  // here the sum rounds to just over 1 (the square root rounds it back, and the cap keeps it so)
+  assert.ok(Math.abs(distanceKm(-87.5, 0, 87.5, 180) - Math.PI * 6371) < 0.001);
 });
 
 const place = (id, name, lat, lng, radius = 5) => ({ id, name, active: true, latitude: lat, longitude: lng, deliveryRadiusKm: radius });
