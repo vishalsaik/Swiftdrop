@@ -284,6 +284,20 @@ describe('the steppers', () => {
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, 2 items');
   });
 
+  it('Add in the search results never replaces a cart of another restaurant unseen', async () => {
+    const user = userEvent.setup();
+    serve({ 'GET /search': () => ({ body: { located: false, results: [{ restaurant: tandoor, items: [paneer] }] } }) });
+    await openKitchen(user);
+    await user.click(screen.getByRole('button', { name: 'More Smash burger' }));
+    await user.click(screen.getByRole('button', { name: 'Restaurants' }));
+    await user.type(await screen.findByLabelText('Search food'), 'paneer');
+    await user.click(await screen.findByRole('button', { name: 'Add Paneer tikka from Bandra Tandoor' }));
+    await screen.findByRole('list', { name: 'Menu' });
+    expect(screen.getByRole('note').textContent).toContain('Corner Kitchen');
+    expect(screen.getByLabelText('Paneer tikka in cart').textContent).toBe('0');
+    expect(cartButton().getAttribute('aria-label')).toBe('Cart, 1 item');
+  });
+
   it('an item the search found but the menu no longer has adds nothing', async () => {
     const user = userEvent.setup();
     const gone: MenuItem = { ...fries, id: 'gone', name: 'Old special' };
