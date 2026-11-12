@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useOrders } from '../hooks/data';
 import { CartProvider, useCart } from '../hooks/cart';
-import { greeting } from '../lib/logic';
+import { greeting, money } from '../lib/logic';
 import type { IconName } from '../lib/present';
 import type { User } from '../lib/types';
 import { useSession } from '../session';
 import type { Theme } from '../theme';
 import { AccountBody, AccountSheet } from './AccountSheet';
 import { Icon } from './Icon';
+import type { Destination } from './DeliverTo';
+import { FoodHome, nearOf } from './FoodHome';
 import { NewOrderSheet } from './NewOrderSheet';
+import { RestaurantPage } from './RestaurantPage';
 import { OrderDetail } from './OrderDetail';
 import { OrderRow } from './OrderList';
 import { Avatar, Sheet, Waiting } from './ui';
@@ -41,6 +44,10 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
   const [tab, setTab] = useState<CustomerTab>('food');
   const [sheet, setSheet] = useState<'account' | 'cart' | 'order' | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // where the food goes, kept while the customer moves between the Food home and a restaurant page
+  const [destination, setDestination] = useState<Destination | null>(null);
+  // the restaurant page that is open on the Food tab; `visit` remounts it when it is opened again
+  const [shop, setShop] = useState<{ id: string; addItemId?: string; visit: number } | null>(null);
 
   const newestFirst = useMemo(
     () => [...orders].sort((a, b) => Date.parse(b.createdAt ?? '') - Date.parse(a.createdAt ?? '') || 0),
@@ -76,7 +83,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         <nav className="ctabs" aria-label="Sections">
           {TABS.map((t) => (
             <button key={t.key} type="button" className={`ctab ${tab === t.key ? 'active' : ''}`} aria-current={tab === t.key ? 'page' : undefined}
-              onClick={() => setTab(t.key)}>
+              onClick={() => { if (t.key === 'food' && tab === 'food') setShop(null); setTab(t.key); }}>
               <Icon name={t.icon} size={22} />
               <span>{t.label}</span>
             </button>
@@ -97,21 +104,25 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <main className="capp-main" id="content" tabIndex={-1}>
         {online === false && <div className="banner" role="alert">{offlineMessage}</div>}
 
-        {tab === 'food' && (
+        {tab === 'food' && !shop && (
           <section aria-labelledby="food-title">
             <div className="page-head">
               <div>
                 <h1 id="food-title">{`${greeting()}, ${first}`}</h1>
                 <p className="sub">What would you like to eat?</p>
               </div>
+              <button className="btn tinted head-order" type="button" onClick={() => setSheet('order')}>Start an order</button>
             </div>
-            <div className="empty">
-              <Icon name="flame" size={44} />
-              <h3>Order food</h3>
-              <p>Choose a restaurant, what to eat and where it goes.</p>
-              <button className="btn primary" type="button" onClick={() => setSheet('order')}>Start an order</button>
-            </div>
+            {/* the order sheet has its own address and search; one of each at a time */}
+            {sheet !== 'order' && (
+              <FoodHome destination={destination} onDestination={setDestination}
+                onOpen={(id, itemId) => setShop((s) => ({ id, addItemId: itemId, visit: (s?.visit ?? 0) + 1 }))} />
+            )}
           </section>
+        )}
+        {tab === 'food' && shop && sheet !== 'order' && (
+          <RestaurantPage key={shop.visit} restaurantId={shop.id} addItemId={shop.addItemId} near={nearOf(destination)}
+            onBack={() => setShop(null)} onViewCart={() => setSheet('cart')} />
         )}
 
         {tab === 'orders' && (
@@ -163,15 +174,30 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
               <button className="btn tinted" type="button" onClick={() => { setSheet(null); setTab('food'); }}>Find food</button>
             </div>
           ) : (
-            <ul className="list">
-              {cart.lines.map((l) => <li key={l.menuItemId} className="kv"><span>{l.name}</span><span>{l.quantity}</span></li>)}
-            </ul>
+            <>
+              {cart.restaurantName && <h3 className="group-title">{cart.restaurantName}</h3>}
+              <ul className="list cart-lines" aria-label="In your cart">
+                {cart.lines.map((l) => (
+                  <li key={l.menuItemId} className="kv">
+                    <span>{l.quantity} × {l.name}</span><span className="price-tag">{money(l.unitPriceCents * l.quantity)}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="order-total"><span>Total</span><strong>{money(cart.totalCents)}</strong></div>
+              <p className="hint">From the menu prices you saw. The restaurant's price when you order is the one that counts.</p>
+              <button className="btn primary wide" type="button" onClick={() => setSheet('order')}>Check out</button>
+            </>
           )}
         </div>
       </Sheet>
 
       <NewOrderSheet open={sheet === 'order'} user={user} placeForOthers={false} onClose={() => setSheet(null)}
-        onPlaced={async (id) => { await refresh(); openOrder(id); }} />
+        start={cart.restaurantId ? {
+          restaurantId: cart.restaurantId,
+          quantities: Object.fromEntries(cart.lines.map((l) => [l.menuItemId, l.quantity])),
+          destination,
+        } : undefined}
+        onPlaced={async (id) => { cart.clear(); setShop(null); await refresh(); openOrder(id); }} />
       <AccountSheet open={sheet === 'account'} user={user} theme={theme} onTheme={onTheme} onClose={() => setSheet(null)} />
     </div>
   );

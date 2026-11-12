@@ -523,6 +523,62 @@ export function formatDistance(km) {
   return `${Math.round(km)} km`;
 }
 
+// distanceKm is the straight-line (great-circle) distance between two points, the same sum as the
+// server's domain.DistanceKm, so a card says what the server will decide. Display only: the server
+// checks the radius again when the order is placed.
+export function distanceKm(lat1, lng1, lat2, lng2) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLng = rad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+}
+
+const placed = (r) => Number.isFinite(r?.latitude) && Number.isFinite(r?.longitude);
+
+// restaurantCards turns GET /restaurants (only open ones reach a customer) into the cards of the Food
+// home. With no address chosen every card is 'open' and they keep the server's order. With an address
+// (near = {lat, lng}) each card says whether the restaurant delivers there, by the server's own rule
+// (not placed: no delivery orders at all; further than its radius: too far; the radius itself still
+// delivers), and those that deliver come first, nearest first, then the rest by name.
+export function restaurantCards(restaurants, near) {
+  const list = (restaurants || []).filter((r) => r && r.active !== false);
+  if (!near || !Number.isFinite(near.lat) || !Number.isFinite(near.lng)) {
+    return list.map((restaurant) => ({ restaurant, status: 'open' }));
+  }
+  const cards = list.map((restaurant) => {
+    if (!placed(restaurant)) return { restaurant, status: 'not_placed' };
+    const away = distanceKm(near.lat, near.lng, restaurant.latitude, restaurant.longitude);
+    return { restaurant, distanceKm: away, status: away > restaurant.deliveryRadiusKm ? 'too_far' : 'delivers' };
+  });
+  const rank = (c) => (c.status === 'delivers' ? 0 : 1);
+  return cards.sort((a, b) => rank(a) - rank(b)
+    || (rank(a) === 0 ? a.distanceKm - b.distanceKm : 0)
+    || a.restaurant.name.localeCompare(b.restaurant.name));
+}
+
+// cardStatusText is what a card says about delivering, in words.
+export function cardStatusText(card, placeName) {
+  switch (card.status) {
+    case 'delivers': return `Delivers to ${placeName || 'you'}`;
+    case 'too_far': return `Too far to deliver to ${placeName || 'you'}`;
+    case 'not_placed': return 'Not taking delivery orders yet';
+    default: return 'Open';
+  }
+}
+
+// filterMenu keeps the items that match what is typed (name or description, any case, every word)
+// and, when asked, only vegetarian ones. The menu on a restaurant page is filtered here, on the page;
+// nothing is sent to the server.
+export function filterMenu(items, { text = '', vegOnly = false } = {}) {
+  const words = String(text).toLowerCase().split(/\s+/).filter(Boolean);
+  return (items || []).filter((m) => {
+    if (vegOnly && !m.veg) return false;
+    const hay = `${m.name} ${m.description ?? ''}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+}
+
 // locationProblem says, in words for a customer, why the browser gave no position. The codes are
 // those of GeolocationPositionError: 1 the person said no (or the site is not allowed to ask), 2 no
 // position could be found, 3 it took too long.
