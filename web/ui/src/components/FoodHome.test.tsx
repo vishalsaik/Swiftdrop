@@ -252,23 +252,24 @@ describe('the steppers', () => {
     expect(screen.getByLabelText('Smash burger in cart').textContent).toBe('0');
   });
 
-  it('warn that another restaurant starts a new cart, and then start one', async () => {
+  it('warn that another restaurant starts a new cart, and start one once the customer agrees', async () => {
     const user = userEvent.setup();
     serve();
     await openKitchen(user);
     await user.click(screen.getByRole('button', { name: 'More Smash burger' }));
     await user.click(screen.getByRole('button', { name: 'Restaurants' }));
     await user.click(await screen.findByRole('button', { name: /^Bandra Tandoor/ }));
-    expect(await screen.findByRole('note')).toHaveProperty('textContent', 'Your cart has food from Corner Kitchen. Adding something here starts a new cart.');
+    expect(await screen.findByRole('note')).toHaveProperty('textContent', 'Your cart has food from Corner Kitchen. Adding something here asks before it starts a new cart.');
     expect(screen.queryByRole('button', { name: /View cart/ })).toBeNull();
     await user.click(await screen.findByRole('button', { name: 'More Paneer tikka' }));
+    await user.click(screen.getByRole('button', { name: 'Start a new cart' }));
     expect(screen.queryByRole('note')).toBeNull();
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, 1 item');
 
     await user.click(cartButton());
-    const sheet = within(await screen.findByRole('dialog', { name: 'Cart' }));
-    expect(sheet.getByText('Bandra Tandoor')).toBeTruthy();
-    expect(sheet.queryByText(/Smash burger/)).toBeNull();
+    const cart = within(await screen.findByRole('region', { name: 'Your cart' }));
+    expect(cart.getByText('Bandra Tandoor')).toBeTruthy();
+    expect(cart.queryByText(/Smash burger/)).toBeNull();
   });
 
   it('Add in the search results opens the restaurant with one of the item in the cart, once', async () => {
@@ -293,7 +294,7 @@ describe('the steppers', () => {
     await user.type(await screen.findByLabelText('Search food'), 'paneer');
     await user.click(await screen.findByRole('button', { name: 'Add Paneer tikka from Bandra Tandoor' }));
     await screen.findByRole('list', { name: 'Menu' });
-    expect(screen.getByRole('note').textContent).toContain('Corner Kitchen');
+    expect((await screen.findByRole('alertdialog')).textContent).toContain('Corner Kitchen');
     expect(screen.getByLabelText('Paneer tikka in cart').textContent).toBe('0');
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, 1 item');
   });
@@ -310,61 +311,8 @@ describe('the steppers', () => {
   });
 });
 
-describe('the cart until the cart page exists', () => {
-  it('lists the lines and the total, and Check out places the order from the cart and empties it', async () => {
-    const user = userEvent.setup();
-    const server = serve();
-    await openKitchen(user);
-    await user.click(screen.getByRole('button', { name: 'More Smash burger' }));
-    await user.click(screen.getByRole('button', { name: 'More Smash burger' }));
-    await user.click(screen.getByRole('button', { name: 'More Fries' }));
-    await user.click(screen.getByRole('button', { name: /View cart/ }));
-
-    const sheet = within(await screen.findByRole('dialog', { name: 'Cart' }));
-    expect(sheet.getByText('Corner Kitchen')).toBeTruthy();
-    const lines = within(sheet.getByRole('list', { name: 'In your cart' })).getAllByRole('listitem').map((l) => l.textContent);
-    expect(lines).toEqual(['2 × Smash burger$19.00', '1 × Fries$4.00']);
-    expect(sheet.getByText('$23.00')).toBeTruthy();
-    await user.click(sheet.getByRole('button', { name: 'Check out' }));
-
-    const order = within(await screen.findByRole('dialog', { name: 'New order' }));
-    await waitFor(() => expect(order.getByLabelText('Smash burger quantity').textContent).toBe('2'));
-    expect(order.getByLabelText('Fries quantity').textContent).toBe('1');
-    expect(order.getByLabelText('Garden salad quantity').textContent).toBe('0');
-    await user.click(order.getByRole('button', { name: 'Deliver to Home' }));
-    await user.click(order.getByRole('button', { name: 'Place order' }));
-
-    await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
-    const body = server.callsTo('POST', '/orders')[0].body as { restaurantId: string; items: unknown[]; deliveryAddressId: string };
-    expect(body.restaurantId).toBe('r1');
-    expect(body.deliveryAddressId).toBe('a-home');
-    expect(body.items).toEqual([{ menuItemId: 'burger', quantity: 2 }, { menuItemId: 'fries', quantity: 1 }]);
-    expect(JSON.stringify(body)).not.toMatch(/price/i);
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
-    expect(cartButton().getAttribute('aria-label')).toBe('Cart, empty');
-  });
-
-  it('carries the chosen address into the order, and leaves out what is no longer on the menu', async () => {
-    const user = userEvent.setup();
-    let items = [burger, fries, salad];
-    serve({ 'GET /restaurants/r1/menu': () => ({ body: { restaurant: kitchen, items } }) });
-    render(<App />);
-    await user.click(await screen.findByRole('button', { name: 'Deliver to Home' }));
-    await user.click(await screen.findByRole('button', { name: /^Corner Kitchen/ }));
-    await user.click(await screen.findByRole('button', { name: 'More Smash burger' }));
-    await user.click(screen.getByRole('button', { name: 'More Fries' }));
-    items = [burger, salad]; // the fries sell out meanwhile
-    await user.click(screen.getByRole('button', { name: /View cart/ }));
-    await user.click(within(await screen.findByRole('dialog', { name: 'Cart' })).getByRole('button', { name: 'Check out' }));
-
-    const order = within(await screen.findByRole('dialog', { name: 'New order' }));
-    await waitFor(() => expect(order.getByLabelText('Smash burger quantity').textContent).toBe('1'));
-    expect(order.queryByLabelText('Fries quantity')).toBeNull();
-    expect(order.getByRole('button', { name: 'Change' })).toBeTruthy();
-    expect(order.getByText('Home')).toBeTruthy();
-  });
-
-  it('Start an order with an empty cart opens an empty order sheet', async () => {
+describe('Start an order', () => {
+  it('with the cart page, still opens an empty order sheet from the Food home', async () => {
     const user = userEvent.setup();
     serve();
     render(<App />);
@@ -378,12 +326,12 @@ describe('the cart until the cart page exists', () => {
 });
 
 describe('useCart', () => {
-  const wrapper = ({ children }: { children: ReactNode }) => <CartProvider>{children}</CartProvider>;
+  const wrapper = ({ children }: { children: ReactNode }) => <CartProvider userId={null}>{children}</CartProvider>;
   const item = (over: Partial<CartItem> = {}): CartItem => ({ id: 'burger', restaurantId: 'r1', name: 'Smash burger', priceCents: 950, ...over });
 
   it('sets a quantity, adds a line, and removes it at 0', () => {
     const { result } = renderHook(() => useCart(), { wrapper });
-    act(() => result.current.setQuantity(item(), 2, 'Corner Kitchen'));
+    act(() => result.current.setQuantity(item(), 2, { restaurantName: 'Corner Kitchen' }));
     act(() => result.current.setQuantity(item({ id: 'fries', name: 'Fries', priceCents: 400 }), 1));
     expect(result.current.restaurantId).toBe('r1');
     expect(result.current.restaurantName).toBe('Corner Kitchen');
@@ -415,8 +363,8 @@ describe('useCart', () => {
 
   it('holds one restaurant at a time: another restaurant\'s item starts a new cart', () => {
     const { result } = renderHook(() => useCart(), { wrapper });
-    act(() => result.current.setQuantity(item(), 2, 'Corner Kitchen'));
-    act(() => result.current.setQuantity(item({ id: 'paneer', restaurantId: 'r2', name: 'Paneer tikka' }), 1, 'Bandra Tandoor'));
+    act(() => result.current.setQuantity(item(), 2, { restaurantName: 'Corner Kitchen' }));
+    act(() => result.current.setQuantity(item({ id: 'paneer', restaurantId: 'r2', name: 'Paneer tikka' }), 1, { restaurantName: 'Bandra Tandoor', replace: true }));
     expect(result.current.restaurantId).toBe('r2');
     expect(result.current.restaurantName).toBe('Bandra Tandoor');
     expect(result.current.lines.map((l) => l.menuItemId)).toEqual(['paneer']);
@@ -424,8 +372,8 @@ describe('useCart', () => {
 
   it('removing nothing of another restaurant keeps the cart as it is', () => {
     const { result } = renderHook(() => useCart(), { wrapper });
-    act(() => result.current.setQuantity(item(), 2, 'Corner Kitchen'));
-    act(() => result.current.setQuantity(item({ id: 'paneer', restaurantId: 'r2' }), 0, 'Bandra Tandoor'));
+    act(() => result.current.setQuantity(item(), 2, { restaurantName: 'Corner Kitchen' }));
+    act(() => result.current.setQuantity(item({ id: 'paneer', restaurantId: 'r2' }), 0, { restaurantName: 'Bandra Tandoor', replace: true }));
     expect(result.current.restaurantId).toBe('r1');
     expect(result.current.restaurantName).toBe('Corner Kitchen');
     expect(result.current.count).toBe(2);
@@ -433,7 +381,7 @@ describe('useCart', () => {
 
   it('keeps the restaurant name it has when a later change does not give one', () => {
     const { result } = renderHook(() => useCart(), { wrapper });
-    act(() => result.current.setQuantity(item(), 1, 'Corner Kitchen'));
+    act(() => result.current.setQuantity(item(), 1, { restaurantName: 'Corner Kitchen' }));
     act(() => result.current.setQuantity(item(), 2));
     expect(result.current.restaurantName).toBe('Corner Kitchen');
   });
