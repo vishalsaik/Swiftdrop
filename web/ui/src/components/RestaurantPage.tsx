@@ -28,6 +28,8 @@ export function RestaurantPage({ restaurantId, near, addItemId, onBack, onViewCa
   const [text, setText] = useState('');
   const [vegOnly, setVegOnly] = useState(false);
   const added = useRef(false);
+  // an item the customer wants that would empty a cart of another restaurant: they are asked first
+  const [pending, setPending] = useState<MenuItem | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -42,14 +44,23 @@ export function RestaurantPage({ restaurantId, near, addItemId, onBack, onViewCa
   }, [restaurantId]);
 
   // one of the item chosen in the search results, once (a re-render must not add another), and never
-  // by replacing a cart of another restaurant unseen: then the page warns and the customer presses +
+  // by replacing a cart of another restaurant unseen: then the customer is asked first
   useEffect(() => {
     if (added.current || !addItemId || !items || !restaurant) return;
     added.current = true;
-    if (cart.count > 0 && cart.restaurantId !== restaurant.id) return;
     const item = items.find((m) => m.id === addItemId);
-    if (item) cart.setQuantity(item, cart.quantityOf(item.id) + 1, restaurant.name);
+    if (!item) return;
+    if (!cart.setQuantity(item, cart.quantityOf(item.id) + 1, { restaurantName: restaurant.name }) && cart.wouldReplace(item.restaurantId)) setPending(item);
   }, [addItemId, items, restaurant, cart]);
+
+  // a stepper: an item of this restaurant while the cart holds another's asks before emptying it
+  const change = (m: MenuItem, n: number) => {
+    if (!cart.setQuantity(m, n, { restaurantName: restaurant?.name }) && cart.wouldReplace(m.restaurantId) && n > 0) setPending(m);
+  };
+  const startNewCart = () => {
+    if (pending) cart.setQuantity(pending, 1, { restaurantName: restaurant?.name, replace: true });
+    setPending(null);
+  };
 
   const shown = filterMenu(items, { text, vegOnly });
   const card = restaurant ? restaurantCards([restaurant], near)[0] : undefined;
@@ -83,9 +94,21 @@ export function RestaurantPage({ restaurantId, near, addItemId, onBack, onViewCa
           </div>
 
           {problem && <p className="form-error" role="alert">{problem}</p>}
-          {otherCart && (
+          {pending ? (
+            <div className="confirm-box" role="alertdialog" aria-labelledby="switch-title" aria-describedby="switch-why">
+              <h3 id="switch-title">Start a new cart?</h3>
+              <p id="switch-why">
+                Your cart has {cart.count} {cart.count === 1 ? 'item' : 'items'} from {cart.restaurantName || 'another restaurant'}.
+                An order comes from one restaurant, so adding {pending.name} empties it.
+              </p>
+              <div className="confirm-actions">
+                <button type="button" className="btn tinted" onClick={() => setPending(null)} autoFocus>Keep my cart</button>
+                <button type="button" className="btn primary" onClick={startNewCart}>Start a new cart</button>
+              </div>
+            </div>
+          ) : otherCart && (
             <p className="hint cart-note" role="note">
-              Your cart has food from {cart.restaurantName || 'another restaurant'}. Adding something here starts a new cart.
+              Your cart has food from {cart.restaurantName || 'another restaurant'}. Adding something here asks before it starts a new cart.
             </p>
           )}
 
@@ -110,7 +133,7 @@ export function RestaurantPage({ restaurantId, near, addItemId, onBack, onViewCa
             <ul className="form-group menu-pick rest-menu" aria-label="Menu">
               {shown.map((m) => {
                 const q = cart.quantityOf(m.id);
-                const set = (n: number) => cart.setQuantity(m, n, restaurant?.name);
+                const set = (n: number) => change(m, n);
                 return (
                   <li key={m.id} className="pick-row">
                     <span className="row-main">
@@ -121,7 +144,7 @@ export function RestaurantPage({ restaurantId, near, addItemId, onBack, onViewCa
                     <span className="stepper" role="group" aria-label={`Quantity of ${m.name}`}>
                       <button type="button" className="icon-btn" aria-label={`Fewer ${m.name}`} disabled={q === 0} onClick={() => set(q - 1)}>−</button>
                       <output aria-label={`${m.name} in cart`}>{q}</output>
-                      <button type="button" className="icon-btn" aria-label={`More ${m.name}`} disabled={q >= MAX_LINE_QUANTITY} onClick={() => set(q + 1)}><Icon name="plus" size={16} /></button>
+                      <button type="button" className="icon-btn" aria-label={`More ${m.name}`} disabled={q >= MAX_LINE_QUANTITY || cart.isFull(m.id)} onClick={() => set(q + 1)}><Icon name="plus" size={16} /></button>
                     </span>
                   </li>
                 );

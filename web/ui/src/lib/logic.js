@@ -765,3 +765,77 @@ export function validateNewAccount(form) {
   if (role !== 'staff' && role !== 'customer') errors.role = 'Choose staff or customer';
   return { ok: Object.keys(errors).length === 0, errors, payload: { email, name, role } };
 }
+
+// ---------------------------------------------------------------------------
+// the customer's cart and checkout
+// ---------------------------------------------------------------------------
+
+/** Where a signed-in customer's cart is kept in the browser: one per account. */
+export function cartKey(userId) {
+  return `swiftdrop.cart.${userId}`;
+}
+
+const EMPTY_CART = Object.freeze({ restaurantId: null, restaurantName: '', lines: Object.freeze([]) });
+
+// readCart turns what was kept in the browser back into a cart, trusting none of it: the text may be
+// from an older build, edited by hand or cut short. A line needs an item id, a name, a whole price of 0
+// or more and a whole count; counts are kept between 1 and 50, a repeated item is kept once, and at
+// most 30 lines are kept (the server's limits). Anything that cannot be read is an empty cart.
+export function readCart(text) {
+  let raw;
+  try { raw = JSON.parse(String(text ?? '')); } catch { return EMPTY_CART; }
+  if (!raw || typeof raw !== 'object' || typeof raw.restaurantId !== 'string' || !raw.restaurantId || !Array.isArray(raw.lines)) {
+    return EMPTY_CART;
+  }
+  const seen = new Set();
+  const lines = [];
+  for (const l of raw.lines) {
+    if (!l || typeof l !== 'object') continue;
+    const { menuItemId, name, unitPriceCents, quantity } = l;
+    if (typeof menuItemId !== 'string' || !menuItemId || seen.has(menuItemId)) continue;
+    if (typeof name !== 'string' || !Number.isSafeInteger(unitPriceCents) || unitPriceCents < 0) continue;
+    if (!Number.isInteger(quantity) || quantity < 1) continue;
+    seen.add(menuItemId);
+    lines.push({ menuItemId, name, unitPriceCents, quantity: Math.min(MAX_LINE_QUANTITY, quantity) });
+    if (lines.length === MAX_ORDER_LINES) break;
+  }
+  if (lines.length === 0) return EMPTY_CART;
+  return { restaurantId: raw.restaurantId, restaurantName: typeof raw.restaurantName === 'string' ? raw.restaurantName : '', lines };
+}
+
+// checkoutBody is the request that places a customer's cart: the restaurant, how they pay, where it
+// goes and the menu items with their counts. It never holds a price or a name (the server takes those
+// from the menu) or a customer id (the server uses the signed-in one). `problem` says what is missing.
+export function checkoutBody({ id, cart, paymentType, destination }) {
+  const lines = (cart && cart.lines) || [];
+  if (!cart || !cart.restaurantId || lines.length === 0) return { body: null, problem: 'Your cart is empty.' };
+  if (!['card', 'cash', 'wallet'].includes(paymentType)) return { body: null, problem: 'Choose how to pay.' };
+  if (!destination) return { body: null, problem: 'Choose where to deliver.' };
+  const to = 'saved' in destination
+    ? { deliveryAddressId: destination.saved.id }
+    : { deliveryAddress: addressPayloadOf(destination.address) };
+  return {
+    problem: '',
+    body: {
+      id, restaurantId: cart.restaurantId, paymentType, ...to,
+      items: lines.map((l) => ({ menuItemId: l.menuItemId, quantity: l.quantity })),
+    },
+  };
+}
+
+// only the fields the server reads for an address sent with an order (unknown fields are refused)
+function addressPayloadOf(a) {
+  const out = { line1: a.line1, latitude: a.latitude, longitude: a.longitude };
+  for (const k of ['label', 'landmark', 'city', 'postalCode']) if (a[k]) out[k] = a[k];
+  return out;
+}
+
+// checkoutProblem is what the cart page says when Place order fails: the server's own words for a
+// refusal (the restaurant closed, an item sold out, the address too far), every named field of an
+// address it would not take, and something honest otherwise.
+export function checkoutProblem(status, body) {
+  const fields = Object.values(fieldErrors(body));
+  if (status === 422 && fields.length) return fields.join('. ');
+  if (status === 0) return "Can't reach the server. Your cart is kept: press Place order again when you are back online.";
+  return errorMessage(status, body);
+}
