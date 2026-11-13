@@ -1,5 +1,5 @@
 // Types for logic.js, which stays plain JavaScript so `node --test` can run it with no tooling.
-import type { AccountEvent, Alert, LedgerEvent, MenuItem, Order, Role, User } from './types';
+import type { AccountEvent, Alert, LedgerEvent, MenuItem, Order, Restaurant, Role, User } from './types';
 
 export interface Column { key: string; title: string; states: string[] }
 export const COLUMNS: Column[];
@@ -80,6 +80,15 @@ export function roundCoord(x: number | string): number;
 export function searchQueryString(q?: { q?: string; location?: { lat: number; lng: number } | null; veg?: boolean; maxPriceCents?: number }): string;
 export function formatDistance(km: number | null | undefined): string;
 export function locationProblem(code: number): string;
+export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number;
+export interface RestaurantCard {
+  restaurant: Restaurant;
+  status: 'open' | 'delivers' | 'too_far' | 'not_placed';
+  distanceKm?: number;
+}
+export function restaurantCards(restaurants: Restaurant[] | null | undefined, near?: { lat: number; lng: number } | null): RestaurantCard[];
+export function cardStatusText(card: RestaurantCard, placeName?: string): string;
+export function filterMenu(items: MenuItem[] | null | undefined, filter?: { text?: string; vegOnly?: boolean }): MenuItem[];
 export interface PlacePayload { cuisine: string; latitude?: number; longitude?: number; deliveryRadiusKm?: number }
 export function validatePlaceForm(form: { cuisine?: string; latitude?: string; longitude?: string; radiusKm?: string }): {
   ok: boolean; errors: Record<string, string>; payload: PlacePayload | null;

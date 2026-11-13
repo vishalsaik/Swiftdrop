@@ -24,6 +24,8 @@ interface Props {
   placeForOthers: boolean;
   onClose(): void;
   onPlaced(id: string): Promise<void>;
+  /** what the order starts with: a customer's cart (its restaurant and quantities) and where it is going */
+  start?: { restaurantId: string; quantities: Record<string, number>; destination: Destination | null };
 }
 
 export function NewOrderSheet(props: Props) {
@@ -35,23 +37,25 @@ export function NewOrderSheet(props: Props) {
   );
 }
 
-function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
+function OrderForm({ user, placeForOthers, onClose, onPlaced, start }: Props) {
   const toast = useToast();
   const [id, setId] = useState(() => newOrderId());
   const [paymentType, setPaymentType] = useState<PaymentType>('card');
   const [customerId, setCustomerId] = useState(placeForOthers ? 'walk-in' : user.id);
   const [customers, setCustomers] = useState<User[]>([]);
   const [restaurants, setRestaurants] = useState<Restaurant[] | null>(null);
-  const [restaurantId, setRestaurantId] = useState('');
+  const [restaurantId, setRestaurantId] = useState(start?.restaurantId ?? '');
   const [menu, setMenu] = useState<MenuItem[] | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [custom, setCustom] = useState<Row[]>([]);
   const [errors, setErrors] = useState<OrderFormErrors>({});
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [destination, setDestination] = useState<Destination | null>(null);
+  const [destination, setDestination] = useState<Destination | null>(start?.destination ?? null);
   // an item chosen in the search results, to put in the basket once its restaurant's menu has loaded
   const wanted = useRef<string | null>(null);
+  // the cart the order starts from, filled in once its restaurant's menu has loaded (only what is still on it)
+  const fromCart = useRef(start ?? null);
 
   // the restaurants that are open
   useEffect(() => {
@@ -87,7 +91,12 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
       if (!res.ok) { setLoadError(errorMessage(res.status, res.data)); setMenu([]); return; }
       setLoadError('');
       setMenu(res.data?.items ?? []);
-      if (wanted.current) { // chosen in the search results: one of it, to start
+      const cartStart = fromCart.current;
+      fromCart.current = null;
+      if (cartStart && cartStart.restaurantId === restaurantId) {
+        const onMenu = new Set((res.data?.items ?? []).map((m) => m.id));
+        setQuantities(Object.fromEntries(Object.entries(cartStart.quantities).filter(([itemId, q]) => onMenu.has(itemId) && q > 0)));
+      } else if (wanted.current) { // chosen in the search results: one of it, to start
         const itemId = wanted.current;
         wanted.current = null;
         setQuantities({ [itemId]: 1 });

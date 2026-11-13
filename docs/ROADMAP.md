@@ -110,7 +110,7 @@ Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
   Nothing from the dispatch dashboard (stage columns, stats tiles, alerts, People, Menu admin)
   appears for a customer. Reuse `AccountSheet`, the theme and the toasts. Tests: a customer sees the
   three tabs and none of the dispatch things; staff still see the dashboard; the account sheet works.
-- [ ] **Food home and restaurant page.** Food tab: `DeliverTo` on top, `NearbySearch` below, and
+- [x] **Food home and restaurant page.** Food tab: `DeliverTo` on top, `NearbySearch` below, and
   restaurant cards (name, cuisine, distance when there is an address, open/closed) from
   `GET /restaurants` and `GET /search`. Tapping a card opens a **restaurant page** with the whole menu
   (`GET /restaurants/{id}/menu`): items with price, description, a Veg pill, a vegetarian-only
@@ -262,3 +262,53 @@ their results, what is left.)
 - **Design notes:** a role-based shell in one bundle (decided in advance); the cart behind one hook so only that file changes
   when it gets `localStorage`; `AccountBody` and `OrderRow` exported for reuse rather than copied. Rejected: a separate
   route or bundle for customers (more to build and to keep in step, and the server checks the role anyway).
+
+### 2026-11-12, `agent/2026-11-12-food-home`: Food home and restaurant page
+
+- **Built:** `FoodHome` (DeliverTo, NearbySearch, a card per open restaurant from `GET /restaurants`), `RestaurantPage`
+  (whole menu from `GET /restaurants/{id}/menu`, Veg pill, vegetarian filter and search box filtering on the page, steppers),
+  and `useCart` with `setQuantity`/`quantityOf`/`totalCents`, still in memory (10500ed). Pure rules in `logic.js`:
+  `distanceKm` (the server's haversine), `restaurantCards`, `cardStatusText`, `filterMenu`.
+- **Design choices:** a card's distance and "delivers here" are computed in the browser from the restaurant's place and radius
+  with the server's formula and rule (`away > radius` is too far, the radius itself delivers, unplaced takes no delivery
+  orders), rather than from `GET /search?lat&lng`: search only returns restaurants with matching available items (30 at
+  most), so it cannot tell "too far" from "nothing on the menu". Display only; the server checks again on Place order.
+  "Closed" cannot reach a customer's list (the server hides closed restaurants), so a restaurant page that gets a 404 says it
+  is not taking orders. The restaurant page is a view inside the Food tab (state, not a route), as the shell decision says.
+  Another restaurant's item starts a new cart after a warning on the page (the confirm is the next item's); Add in the search
+  results never replaces another restaurant's cart unseen. **A bridge until the cart page exists:** the cart sheet lists the
+  lines and a display total, and **Check out** opens the existing order sheet filled from the cart (restaurant, what is still
+  on the menu, the chosen address; new optional `start` prop on `NewOrderSheet`); a placed order empties the cart. "Start an
+  order" stays on the Food home (the last customer item decides whether the order sheet stays for customers); while the order
+  sheet is open the Food home's own address and search are not drawn underneath, so there is one of each. Rejected: a modal
+  restaurant sheet (the menu is long and a page reads better on a phone), and filtering the menu on the server (it is already
+  loaded whole).
+- **Bugs found and fixed on the way:** going from the cart sheet straight to the order sheet, the cart `<dialog>`'s late
+  `close` event set the sheet to none and the order sheet shut as it opened (65acece: each sheet now closes only itself);
+  search Add replacing another restaurant's cart before the warning could be read (3b75d67).
+- **Tests:** 8 new `node --test` rules tests (`src/lib/food.test.mjs`), 27 new component tests (`FoodHome.test.tsx`: cards
+  with and without an address, loading, empty, failing; the page, distance, filters asking the server nothing, a closed
+  restaurant, a failing menu, going back; steppers 0 to 50 and the count; switching restaurants; search Add; Check out's body
+  holding only menu ids and counts, the address, sold-out lines left out, the cart emptied; `useCart` edges).
+  `npm test`: 90 node tests and 180 vitest tests passing; one full run had a 5 s timeout in the untouched staff
+  `Effects.test.tsx` (orb beside a confirming payment, 5.9 s) while Docker was busy; it passed alone and in two more full runs.
+  `tsc --noEmit` clean.
+- **Mutation check:** 25 hand mutants of `restaurantCards`, `distanceKm`, `filterMenu`, `cardStatusText` and `useCart`, in a
+  throwaway worktree: 24 killed. The survivor (removing `Math.min(1, a)` in the haversine) is equivalent in JavaScript: the
+  sum overshoots 1 by one rounding step and `Math.sqrt` rounds it back; the cap stays to match the server, and a test
+  documents the antipodes case (fef3c13). Side effect: removing that worktree with `--force` followed its `node_modules`
+  junction and emptied `web/ui/node_modules`; restored with `npm ci` from the lockfile (git-ignored, nothing tracked changed).
+- **Go:** no Go changed. `go vet ./...` clean; `go test -race -count=1 ./...` from PowerShell against `swiftdrop_test` (port
+  5434, schema up to date via `cmd/migrate`): every package ok.
+- **web/static:** rebuilt on Linux (`node:24-alpine`, CRs stripped, `npm ci && npm run build`) from the committed sources twice
+  (826343f, fd075a2); after each, a second fresh Linux build of HEAD was `diff -r` identical to the committed `web/static`.
+- **Live check** (throwaway compose project `sdagent`, demo seed, fake gateway, demo geocoder): signed up a throwaway customer;
+  the Food home showed three cards, all Open; searching "Indiranagar" and choosing 12 100 Feet Road re-sorted them to Noodle
+  Bar 50 m and Corner Kitchen 700 m (delivers) and Harbour Grill 849 km (too far); Noodle Bar's page showed both items with
+  prices, description and the Veg pill; the vegetarian filter left Spring rolls; steppers made "View cart · 3 items · $34.30";
+  the cart sheet listed 2 × Pad thai and 1 × Spring rolls; Check out opened the order sheet with that address and those
+  quantities; Place order landed on Orders with SD-VMFFV at $34.30 and an empty cart. At 375 px: no sideways scroll, one
+  column of cards, the cart bar above the bottom tab bar. Checked through page text and measured layout; screenshots timed
+  out (the app window was likely behind another), so nothing was looked at by eye. Stack taken down (`docker compose -p
+  sdagent down`, volumes kept).
+- **Left for later:** the cart in `localStorage` with a confirm on switching, and the cart page (next item).
