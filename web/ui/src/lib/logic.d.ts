@@ -111,3 +111,18 @@ export function accountBadges(user: User, youId?: string): { text: string; tone:
 export function validateNewAccount(form: { email?: string; name?: string; role?: string }): {
   ok: boolean; errors: Record<string, string>; payload: { email: string; name: string; role: string };
 };
+
+export interface StoredCartLine { menuItemId: string; name: string; unitPriceCents: number; quantity: number }
+export interface StoredCart { restaurantId: string | null; restaurantName: string; lines: readonly StoredCartLine[] }
+export function cartKey(userId: string): string;
+export function readCart(text: string | null | undefined): StoredCart;
+export type CheckoutDestination = { saved: { id: string } } | { address: AddressPayload };
+export interface CheckoutBody {
+  id: string; restaurantId: string; paymentType: string;
+  deliveryAddressId?: string; deliveryAddress?: AddressPayload;
+  items: { menuItemId: string; quantity: number }[];
+}
+export function checkoutBody(input: {
+  id: string; cart: { restaurantId: string | null; lines: readonly StoredCartLine[] } | null; paymentType: string; destination: CheckoutDestination | null;
+}): { body: CheckoutBody | null; problem: string };
+export function checkoutProblem(status: number, body: unknown): string;

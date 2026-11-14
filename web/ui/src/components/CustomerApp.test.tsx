@@ -153,20 +153,22 @@ describe('the cart button', () => {
     render(<App />);
     await user.click(await screen.findByRole('button', { name: 'Orders' }));
     await user.click(screen.getByRole('button', { name: 'Cart, empty' }));
-    const sheet = within(await screen.findByRole('dialog', { name: 'Cart' }));
-    expect(sheet.getByText('Your cart is empty')).toBeTruthy();
-    await user.click(sheet.getByRole('button', { name: 'Find food' }));
-    expect(screen.queryByRole('dialog', { name: 'Cart' })).toBeNull();
+    const page = within(await screen.findByRole('region', { name: 'Your cart' }));
+    expect(page.getByText('Your cart is empty')).toBeTruthy();
+    await user.click(page.getByRole('button', { name: 'Find food' }));
+    expect(screen.queryByRole('region', { name: 'Your cart' })).toBeNull();
     expect(tabs().getByRole('button', { name: 'Food' }).getAttribute('aria-current')).toBe('page');
   });
 
-  it('closes with Done', async () => {
+  it('opens a page, not a sheet, and Back closes it', async () => {
     const user = userEvent.setup();
     serve();
     render(<App />);
     await user.click(await screen.findByRole('button', { name: 'Cart, empty' }));
-    await user.click(within(await screen.findByRole('dialog', { name: 'Cart' })).getByRole('button', { name: 'Done' }));
     expect(screen.queryByRole('dialog', { name: 'Cart' })).toBeNull();
+    await user.click(within(await screen.findByRole('region', { name: 'Your cart' })).getByRole('button', { name: 'Back' }));
+    expect(screen.queryByRole('region', { name: 'Your cart' })).toBeNull();
+    expect(screen.getByText('What would you like to eat?')).toBeTruthy();
   });
 });
 
@@ -175,9 +177,10 @@ describe('useCart', () => {
     { menuItemId: 'burger', name: 'Smash burger', unitPriceCents: 950, quantity: 2 },
     { menuItemId: 'fries', name: 'Fries', unitPriceCents: 400, quantity: 1 },
   ];
-  const wrapper = ({ children }: { children: ReactNode }) => <CartProvider initial={lines}>{children}</CartProvider>;
+  const wrapper = ({ children }: { children: ReactNode }) => <CartProvider userId="u-cust">{children}</CartProvider>;
 
   it('counts the things in the cart, not the lines, and empties', () => {
+    localStorage.setItem('swiftdrop.cart.u-cust', JSON.stringify({ restaurantId: 'r1', restaurantName: 'Corner Kitchen', lines }));
     const { result } = renderHook(() => useCart(), { wrapper });
     expect(result.current.count).toBe(3);
     expect(result.current.lines).toHaveLength(2);
@@ -188,7 +191,7 @@ describe('useCart', () => {
   });
 
   it('starts empty', () => {
-    const { result } = renderHook(() => useCart(), { wrapper: ({ children }) => <CartProvider>{children}</CartProvider> });
+    const { result } = renderHook(() => useCart(), { wrapper: ({ children }) => <CartProvider userId="u-cust">{children}</CartProvider> });
     expect(result.current.count).toBe(0);
   });
 

@@ -373,7 +373,20 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
 .rest-menu .row-main { gap: 2px; }
 .cart-note { margin: 0; }
 .cart-bar { position: sticky; bottom: 16px; z-index: 5; }
-.cart-lines .kv { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; }
+.confirm-box { background: var(--card); border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow-sm); display: grid; gap: 8px; }
+.confirm-box h3, .confirm-box p { margin: 0; }
+.confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.cart-page { display: grid; gap: 18px; max-width: 720px; }
+.cart-page .back { justify-self: start; display: inline-flex; align-items: center; gap: 4px; }
+.cart-page .back svg { transform: rotate(180deg); }
+.cart-from { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.cart-lines .row-main { gap: 2px; }
+.danger-text { color: var(--red-text); font-size: 15px; }
+.pay-pick { border: 0; margin: 0; padding: 0; display: grid; gap: 0; background: var(--card); border-radius: 12px; overflow: hidden; }
+.pay-pick legend { padding: 0 0 8px; float: left; width: 100%; }
+.pay-option { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
+.pay-option + .pay-option { border-top: 0.5px solid var(--sep); }
+.pay-option input { width: 20px; height: 20px; accent-color: var(--blue); }
 
 /* people */
 .people-tools { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr) auto; gap: 12px; align-items: center; margin-bottom: 4px; }

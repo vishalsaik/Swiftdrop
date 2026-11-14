@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useOrders } from '../hooks/data';
 import { CartProvider, useCart } from '../hooks/cart';
-import { greeting, money } from '../lib/logic';
+import { greeting } from '../lib/logic';
 import type { IconName } from '../lib/present';
 import type { User } from '../lib/types';
 import { useSession } from '../session';
 import type { Theme } from '../theme';
 import { AccountBody, AccountSheet } from './AccountSheet';
+import { CartPage } from './CartPage';
 import { Icon } from './Icon';
 import type { Destination } from './DeliverTo';
 import { FoodHome, nearOf } from './FoodHome';
@@ -14,7 +15,7 @@ import { NewOrderSheet } from './NewOrderSheet';
 import { RestaurantPage } from './RestaurantPage';
 import { OrderDetail } from './OrderDetail';
 import { OrderRow } from './OrderList';
-import { Avatar, Sheet, Waiting } from './ui';
+import { Avatar, Waiting } from './ui';
 
 // What a signed-in customer sees: their food, their orders and their account. Staff keep the
 // dispatch dashboard (Shell); nothing from it (stage columns, totals, alerts, People, Menu admin)
@@ -29,8 +30,9 @@ const TABS: { key: CustomerTab; label: string; icon: IconName }[] = [
 ];
 
 export function CustomerApp(props: { theme: Theme; onTheme(t: Theme): void }) {
+  const { user } = useSession() as { user: User };
   return (
-    <CartProvider>
+    <CartProvider userId={user.id}>
       <CustomerView {...props} />
     </CartProvider>
   );
@@ -42,7 +44,9 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
   const { orders, loaded, online, offlineMessage, refresh } = useOrders(true);
 
   const [tab, setTab] = useState<CustomerTab>('food');
-  const [sheet, setSheet] = useState<'account' | 'cart' | 'order' | null>(null);
+  const [sheet, setSheet] = useState<'account' | 'order' | null>(null);
+  // the cart page, drawn over whichever tab is open; leaving it returns to that tab as it was
+  const [cartOpen, setCartOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // where the food goes, kept while the customer moves between the Food home and a restaurant page
   const [destination, setDestination] = useState<Destination | null>(null);
@@ -66,9 +70,9 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
 
   const openOrder = useCallback((id: string) => { setTab('orders'); setSelectedId(id); }, []);
   const first = user.name.trim().split(/\s+/)[0] || 'there';
-  // A <dialog> says it closed a moment after it is told to, so going straight from one sheet to another
-  // (the cart's Check out) must not let the first one's close shut the second.
-  const closeSheet = (which: 'account' | 'cart' | 'order') => () => setSheet((s) => (s === which ? null : s));
+  // A <dialog> says it closed a moment after it is told to, so a late close must only shut its own sheet.
+  const closeSheet = (which: 'account' | 'order') => () => setSheet((s) => (s === which ? null : s));
+  const openShop = (id: string, addItemId?: string) => setShop((s) => ({ id, addItemId, visit: (s?.visit ?? 0) + 1 }));
 
   return (
     <div className="capp">
@@ -86,14 +90,14 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         <nav className="ctabs" aria-label="Sections">
           {TABS.map((t) => (
             <button key={t.key} type="button" className={`ctab ${tab === t.key ? 'active' : ''}`} aria-current={tab === t.key ? 'page' : undefined}
-              onClick={() => { if (t.key === 'food' && tab === 'food') setShop(null); setTab(t.key); }}>
+              onClick={() => { if (t.key === 'food' && tab === 'food' && !cartOpen) setShop(null); setCartOpen(false); setTab(t.key); }}>
               <Icon name={t.icon} size={22} />
               <span>{t.label}</span>
             </button>
           ))}
         </nav>
         <div className="capp-tools">
-          <button type="button" className="icon-btn cart-btn" aria-haspopup="dialog" onClick={() => setSheet('cart')}
+          <button type="button" className="icon-btn cart-btn" aria-current={cartOpen ? 'page' : undefined} onClick={() => setCartOpen(true)}
             aria-label={cart.count === 0 ? 'Cart, empty' : `Cart, ${cart.count} ${cart.count === 1 ? 'item' : 'items'}`}>
             <Icon name="bag" size={22} />
             {cart.count > 0 && <span className="badge" aria-hidden="true">{cart.count}</span>}
@@ -107,7 +111,14 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <main className="capp-main" id="content" tabIndex={-1}>
         {online === false && <div className="banner" role="alert">{offlineMessage}</div>}
 
-        {tab === 'food' && !shop && (
+        {cartOpen && (
+          <CartPage destination={destination} onDestination={setDestination} onBack={() => setCartOpen(false)}
+            onShop={(id) => { setCartOpen(false); setTab('food'); openShop(id); }}
+            onFindFood={() => { setCartOpen(false); setTab('food'); setShop(null); }}
+            onPlaced={async (id) => { setCartOpen(false); setShop(null); await refresh(); openOrder(id); }} />
+        )}
+
+        {!cartOpen && tab === 'food' && !shop && (
           <section aria-labelledby="food-title">
             <div className="page-head">
               <div>
@@ -118,17 +129,16 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
             </div>
             {/* the order sheet has its own address and search; one of each at a time */}
             {sheet !== 'order' && (
-              <FoodHome destination={destination} onDestination={setDestination}
-                onOpen={(id, itemId) => setShop((s) => ({ id, addItemId: itemId, visit: (s?.visit ?? 0) + 1 }))} />
+              <FoodHome destination={destination} onDestination={setDestination} onOpen={openShop} />
             )}
           </section>
         )}
-        {tab === 'food' && shop && sheet !== 'order' && (
+        {!cartOpen && tab === 'food' && shop && sheet !== 'order' && (
           <RestaurantPage key={shop.visit} restaurantId={shop.id} addItemId={shop.addItemId} near={nearOf(destination)}
-            onBack={() => setShop(null)} onViewCart={() => setSheet('cart')} />
+            onBack={() => setShop(null)} onViewCart={() => setCartOpen(true)} />
         )}
 
-        {tab === 'orders' && (
+        {!cartOpen && tab === 'orders' && (
           <section aria-labelledby="orders-title">
             <div className="page-head">
               <div>
@@ -153,7 +163,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
           </section>
         )}
 
-        {tab === 'account' && (
+        {!cartOpen && tab === 'account' && (
           <section aria-labelledby="account-title" className="capp-account">
             <div className="page-head"><div><h1 id="account-title">Account</h1></div></div>
             <AccountBody open user={user} theme={theme} onTheme={onTheme} onClose={() => {}} />
@@ -166,41 +176,8 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         {selected && <OrderDetail order={selected} role={user.role} canSeeHistory={false} onClose={() => setSelectedId(null)} onChanged={refresh} />}
       </aside>
 
-      <Sheet open={sheet === 'cart'} onClose={closeSheet('cart')} title="Cart" className="form-sheet"
-        trailing={<button type="button" className="text-btn strong" onClick={() => setSheet(null)}>Done</button>}>
-        <div className="sheet-form">
-          {cart.count === 0 ? (
-            <div className="empty">
-              <Icon name="bag" size={44} />
-              <h3>Your cart is empty</h3>
-              <p>Add food from a restaurant and it waits here.</p>
-              <button className="btn tinted" type="button" onClick={() => { setSheet(null); setTab('food'); }}>Find food</button>
-            </div>
-          ) : (
-            <>
-              {cart.restaurantName && <h3 className="group-title">{cart.restaurantName}</h3>}
-              <ul className="list cart-lines" aria-label="In your cart">
-                {cart.lines.map((l) => (
-                  <li key={l.menuItemId} className="kv">
-                    <span>{l.quantity} × {l.name}</span><span className="price-tag">{money(l.unitPriceCents * l.quantity)}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="order-total"><span>Total</span><strong>{money(cart.totalCents)}</strong></div>
-              <p className="hint">From the menu prices you saw. The restaurant's price when you order is the one that counts.</p>
-              <button className="btn primary wide" type="button" onClick={() => setSheet('order')}>Check out</button>
-            </>
-          )}
-        </div>
-      </Sheet>
-
       <NewOrderSheet open={sheet === 'order'} user={user} placeForOthers={false} onClose={closeSheet('order')}
-        start={cart.restaurantId ? {
-          restaurantId: cart.restaurantId,
-          quantities: Object.fromEntries(cart.lines.map((l) => [l.menuItemId, l.quantity])),
-          destination,
-        } : undefined}
-        onPlaced={async (id) => { cart.clear(); setShop(null); await refresh(); openOrder(id); }} />
+        onPlaced={async (id) => { setShop(null); await refresh(); openOrder(id); }} />
       <AccountSheet open={sheet === 'account'} user={user} theme={theme} onTheme={onTheme} onClose={closeSheet('account')} />
     </div>
   );
