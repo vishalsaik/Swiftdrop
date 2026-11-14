@@ -567,6 +567,18 @@ describe('useCart', () => {
     expect(result.current.lines.map((l) => l.menuItemId)).toEqual(['paneer']);
   });
 
+  it('setting another restaurant\'s item to 0 changes nothing, not even with the customer\'s say-so', () => {
+    const { result } = renderHook(() => useCart(), { wrapper: memory });
+    act(() => { result.current.setQuantity(item(), 2, { restaurantName: 'Corner Kitchen' }); });
+    let changed = true;
+    act(() => { changed = result.current.setQuantity(item({ id: 'paneer', restaurantId: 'r2' }), 0); });
+    expect(changed).toBe(false);
+    act(() => { changed = result.current.setQuantity(item({ id: 'paneer', restaurantId: 'r2' }), 0, { replace: true }); });
+    expect(changed).toBe(false);
+    expect(result.current.restaurantId).toBe('r1');
+    expect(result.current.quantityOf('burger')).toBe(2);
+  });
+
   it('an empty cart takes any restaurant without asking', () => {
     const { result } = renderHook(() => useCart(), { wrapper: memory });
     expect(result.current.wouldReplace('r2')).toBe(false);
