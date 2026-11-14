@@ -118,7 +118,7 @@ Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
   cart (the cart is the next item; until then keep a minimal in-memory cart object behind one hook,
   `useCart`, so the next item only changes its storage). Tests for the cards, the page, the filters and
   the steppers.
-- [ ] **Cart and checkout.** `useCart` persists to `localStorage` per user id (safe when storage
+- [x] **Cart and checkout.** `useCart` persists to `localStorage` per user id (safe when storage
   throws), one restaurant at a time with a confirm before switching, quantities 1 to 50, a running
   total from the menu prices it holds (display only), and a **cart page**: the lines with steppers and
   remove, the restaurant, the **delivery address** (`DeliverTo`), how to pay (card, wallet, cash), the
@@ -312,3 +312,43 @@ their results, what is left.)
   out (the app window was likely behind another), so nothing was looked at by eye. Stack taken down (`docker compose -p
   sdagent down`, volumes kept).
 - **Left for later:** the cart in `localStorage` with a confirm on switching, and the cart page (next item).
+
+### 2026-11-13, `agent/2026-11-13-cart-checkout`: Cart and checkout
+
+- **Built (agent):** `useCart` in `localStorage` per account (`swiftdrop.cart.<userId>`, every read and write wrapped in
+  try/catch, a `kept` flag, the `storage` event keeping tabs in step, `setQuantity` answering false instead of changing a cart
+  the customer has not agreed to lose); `CartPage` (lines with steppers and Remove, `DeliverTo`, how to pay, total, Place order);
+  `cartKey`, `readCart` (trusts nothing it reads back, applies the server's limits), `checkoutBody` (menu ids and counts only,
+  never a price or name) and `checkoutProblem` in `logic.js`; the restaurant page's "Start a new cart?" confirm; the cart
+  button opening the page. Place order keeps one order number per cart contents, so a second press or a retry after a dropped
+  connection is the same order: a 409 asks `GET /orders/{id}` whether it is the customer's own (then it is done) or a number
+  someone else took (then a fresh one is made).
+- **Run cut short:** the agent's last Bash call returned exit 107 and the session went idle with `web/static` half rebuilt (two
+  old files staged for deletion, the new ones not added) and no docs, tick or Log. Finished in review: `web/static`
+  (c5f1594), these docs, the tick and this entry.
+- **Review:** `tsc --noEmit` clean; `npm test` 99 node tests and 218 vitest tests pass. In one full run, under load from Docker
+  and two kind clusters (files took 90 to 110 s instead of about 10), three tests hit their timeouts: the cart "survives a
+  reload" test, the FoodHome stepper-to-50 test and the staff orb test in `Effects.test.tsx`; all three pass alone and in a
+  re-run once the stack was down. The tests that time out are timing-sensitive, not wrong; raising `asyncUtilTimeout` in
+  `src/test/setup.ts` would be the fix and has not been done.
+- **Mutation check:** 13 hand mutants of `readCart`, `checkoutBody`, `checkoutProblem` and `useCart` (a count past 50, a
+  negative price, a repeated item, no 30-line limit, a price sent with the order, no address needed, only the first 422 field
+  shown, a cart emptied by another restaurant without `replace`, the 30-line limit off by one, another tab ignored, a new order
+  number on each press, a taken number not checked): 12 killed at first. The survivor was setting another restaurant's item to 0
+  emptying the cart unseen; a test now covers it with and without `replace` (0925515) and it is killed.
+- **web/static:** rebuilt on Linux (`node:24-alpine`, CRs stripped, `npm ci && npm run build`) from the branch's committed
+  sources (c5f1594: `index-Bbrz_A4N.js`, `index-CYZ4-Pr2.css`); a second fresh Linux build of HEAD matched the committed
+  `web/static` file for file (3 files, 0 differences).
+- **Go:** no Go changed.
+- **Live check** (throwaway compose project `sdcart`, demo seed, demo geocoder, built-in browser): signed up a throwaway
+  customer; built a Noodle Bar cart of 2 Pad thai and 1 Spring rolls ($34.30) and reloaded: the cart was still there; adding
+  Fries from Corner Kitchen asked "Start a new cart?" and "Keep my cart" kept it; Place order with no address said "Choose
+  where to deliver."; after choosing and saving 12 100 Feet Road, Place order pressed twice at once sent the same order number
+  twice (201, then 409, then `GET /orders/SD-WCML8`) and left exactly one order, priced by the server at $34.30 with the
+  address, the cart emptied and the order open in Orders. At 375 px: no sideways scroll; the empty cart and a cart with lines
+  both fit. Stack taken down (`docker compose -p sdcart down -v`).
+- **Found, not fixed:** the "Choose where to deliver." line stays on screen after an address is picked (until the next Place
+  order); the address chosen on the Food home is not chosen again on the cart page, so the customer picks it once more (a
+  saved address is one tap). Both are in `KNOWN_ISSUES.md`. Wallet and card orders are placed as before and paid from the
+  order drawer ("Pay now"); the cart page does not take payment itself.
+- **Left for later:** the order tracker (the Orders tab and order page polish) and the customer journey test and docs.
