@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { DONE, PayForm, useOrderActions } from '../hooks/orderActions';
 import {
-  actionsFor, addressLine, describeEvent, errorMessage, fieldErrors, money, noticeFor, STATE_LABELS, timeAgo, timeline, totalCents,
+  addressLine, describeEvent, errorMessage, fieldErrors, money, noticeFor, STATE_LABELS, timeAgo, timeline, totalCents,
   type OrderAction,
 } from '../lib/logic';
 import { signature } from '../lib/present';
@@ -10,12 +11,6 @@ import { useToast } from '../toasts';
 import { PaymentOrb, WaitBeam } from './Effects';
 import { Icon } from './Icon';
 import { Pill } from './ui';
-
-const ENDPOINT: Record<string, string> = { accept: 'accept', ready: 'ready', pickup: 'pickup', deliver: 'deliver', cancel: 'cancel' };
-const DONE: Record<string, string> = {
-  pay: 'Payment taken', accept: 'Order accepted', ready: 'Marked ready', pickup: 'Picked up', deliver: 'Delivered', cancel: 'Order cancelled',
-  record_refund: 'Refund recorded',
-};
 
 interface Props {
   order: Order;
@@ -27,23 +22,18 @@ interface Props {
 
 export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: Props) {
   const toast = useToast();
-  const [confirming, setConfirming] = useState<string | null>(null);
-  const [payOpen, setPayOpen] = useState(false);
-  const [method, setMethod] = useState('pm_card_visa');
-  const [busy, setBusy] = useState(false);
+  const { actions, run: runAction, busy, setBusy, payOpen, method, setMethod, hints: hintsFor, label } = useOrderActions(order, role, onChanged);
   const [refundOpen, setRefundOpen] = useState(false);
   const [reference, setReference] = useState('');
   const [refundNote, setRefundNote] = useState('');
   const [refundProblems, setRefundProblems] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<LedgerEvent[] | null>(null);
-  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // A different order starts with nothing half-done.
   useEffect(() => {
-    setConfirming(null); setPayOpen(false); setHistory(null);
+    setHistory(null);
     setRefundOpen(false); setReference(''); setRefundNote(''); setRefundProblems({});
   }, [order.id]);
-  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   // The history is read again when what the order shows changes, not on every poll.
   const sig = `${signature(order)}|${order.payment?.refundStatus ?? ''}`;
@@ -58,7 +48,6 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
 
   const notice = noticeFor(order);
   const pay = order.payment;
-  const actions = actionsFor(order, role);
   const refund = pay?.refundStatus && pay.refundStatus !== 'none'
     ? ({ refunding: 'in progress', refunded: 'sent back', failed: 'could not be sent' } as Record<string, string>)[pay.refundStatus] ?? pay.refundStatus
     : null;
@@ -82,33 +71,10 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
 
   async function run(action: OrderAction) {
     if (action.key === 'record_refund') { await recordRefund(); return; }
-    if (action.key === 'pay' && !payOpen && order.paymentType !== 'cash') { setPayOpen(true); return; } // the first click opens the form
-    if (action.danger && confirming !== action.key) {
-      setConfirming(action.key); // two taps to cancel, with no browser dialog
-      if (confirmTimer.current) clearTimeout(confirmTimer.current);
-      confirmTimer.current = setTimeout(() => setConfirming((c) => (c === action.key ? null : c)), 4000);
-      return;
-    }
-    setBusy(true);
-    setConfirming(null);
-    const id = encodeURIComponent(order.id);
-    const result = action.key === 'pay'
-      ? await api<{ canRetry?: boolean; attemptsLeft?: number }>('POST', `/orders/${id}/pay`, order.paymentType === 'cash' || !method.trim() ? undefined : { paymentMethodId: method.trim() })
-      : await api<{ canRetry?: boolean; attemptsLeft?: number }>('POST', `/orders/${id}/${ENDPOINT[action.key]}`);
-    setBusy(false);
-    setPayOpen(false);
-    if (result.ok) {
-      toast(`${order.id}: ${DONE[action.key]}`, 'ok');
-    } else {
-      const d = result.data;
-      const more = result.status === 402 && d?.canRetry
-        ? ` Try another method (${d.attemptsLeft} ${d.attemptsLeft === 1 ? 'attempt' : 'attempts'} left).` : '';
-      toast(`${order.id}: ${errorMessage(result.status, d)}${more}`, 'bad');
-    }
-    await onChanged();
+    await runAction(action);
   }
 
-  const hints = actions.filter((a) => (a.why && !a.enabled) || (a.note && (confirming === a.key || a.key === 'pay' || a.key === 'record_refund'))).map((a) => a.why || a.note);
+  const hints = hintsFor((a) => a.key === 'record_refund');
 
   const details: [string, string][] = [
     ['Pays by', order.paymentType],
@@ -203,16 +169,7 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
         {actions.length === 0 && (
           <p className="why">{role === 'staff' ? 'This order is finished. There is nothing left to do.' : 'Nothing for you to do on this order right now.'}</p>
         )}
-        {payOpen && order.paymentType === 'cash' && <p className="why">Cash on delivery: nothing is charged now. The order is marked paid.</p>}
-        {payOpen && order.paymentType !== 'cash' && (
-          <div className="payform">
-            <label className="field stacked">
-              <span>Payment method id</span>
-              <input id="method" value={method} spellCheck={false} autoComplete="off" autoFocus onChange={(e) => setMethod(e.target.value)} />
-            </label>
-            <small>Stripe needs a test token such as pm_card_visa (a decline is pm_card_visa_chargeDeclined). The built-in fake gateway ignores it.</small>
-          </div>
-        )}
+        {payOpen && <PayForm order={order} method={method} onMethod={setMethod} />}
         {refundOpen && (
           <div className="payform">
             <label className="field stacked">
@@ -234,7 +191,7 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
             {actions.map((a) => (
               <button key={a.key} type="button" disabled={!a.enabled || busy}
                 className={`btn ${a.danger ? 'danger' : a.primary ? 'primary' : 'tinted'}`} onClick={() => void run(a)}>
-                {confirming === a.key ? `Confirm: ${a.label.toLowerCase()}` : a.label}
+                {label(a)}
               </button>
             ))}
           </div>

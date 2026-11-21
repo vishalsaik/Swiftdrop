@@ -241,6 +241,92 @@ export function noticeFor(order) {
   }
 }
 
+// The customer's own words for where an order is, one line for the order list and the order
+// page. The money words come from the server's paymentIssue, as in noticeFor.
+export function customerStatus(order) {
+  const issue = order.paymentIssue;
+  const cash = order.paymentType === 'cash';
+  switch (order.state) {
+    case 'created':
+      if (issue === 'declined') return 'Payment declined. You can try again';
+      if (issue === 'abandoned') return "Payment didn't go through. You can try again";
+      return cash ? 'Waiting for you to confirm cash on delivery' : 'Waiting for your payment';
+    case 'payment_pending':
+      return 'Confirming your payment';
+    case 'paid':
+      return `${cash ? 'Confirmed' : 'Paid'}. Waiting for the restaurant to accept it`;
+    case 'preparing':
+      if (!order.foodReady) return 'Being prepared in the kitchen';
+      return order.assignedDriverId ? 'Ready. A driver is picking it up' : 'Ready. Waiting for a driver';
+    case 'picked_up':
+      return 'On its way to you';
+    case 'delivered':
+      return 'Delivered';
+    case 'cancelled':
+      if (issue === 'refund_pending') return 'Cancelled. Your refund is on its way';
+      if (issue === 'refunded') return 'Cancelled and refunded';
+      if (issue === 'refund_failed') return 'Cancelled. Support will return your money';
+      if (issue === 'confirming') return 'Cancelled. Confirming your payment';
+      if (issue === 'declined') return 'Cancelled: the payment was declined';
+      if (issue === 'abandoned') return "Cancelled: the payment didn't go through";
+      return 'Cancelled';
+    default:
+      return STATE_LABELS[order.state] || String(order.state || '');
+  }
+}
+
+// paymentSentence says, as one sentence, what has happened to the customer's money on this order.
+// It reads the server's paymentIssue for every refund and failure, so the screen never decides
+// for itself whether money is owed.
+export function paymentSentence(order) {
+  const pay = order.payment;
+  const total = money(pay ? pay.amountCents : totalCents(order));
+  const way = payWord(order);
+  if (order.paymentType === 'cash') {
+    if (order.state === 'cancelled') return 'Cash on delivery. Nothing was charged.';
+    if (order.state === 'delivered') return `Paid ${total} in cash on delivery.`;
+    if (pay && pay.status === 'authorized') return `Cash on delivery: you pay ${total} when it arrives.`;
+    return `Cash on delivery: ${total}. Press Pay now to confirm the order; nothing is charged now.`;
+  }
+  const issue = order.paymentIssue;
+  if (issue === 'confirming') {
+    return pay && pay.status === 'needs_review'
+      ? `A person is checking your payment of ${total}. You are never charged twice.`
+      : `We're confirming your payment of ${total}.`;
+  }
+  if (issue === 'refund_pending') return `You paid ${total} with your ${way}. It is on its way back to your ${way}.`;
+  if (issue === 'refunded') return `You paid ${total} with your ${way}. It was refunded to your ${way}.`;
+  if (issue === 'refund_failed') return `You paid ${total} with your ${way}. It could not be refunded automatically; support will return it.`;
+  if ((issue === 'declined' || issue === 'abandoned') && pay) {
+    const what = issue === 'declined' ? 'was declined' : 'got no answer';
+    const head = `Your last payment ${what} (attempt ${pay.attempt} of ${pay.maxAttempts}). You were not charged.`;
+    if (order.state !== 'created') return head;
+    const left = Math.max(0, pay.maxAttempts - pay.attempt);
+    return `${head} You can try ${left} more ${left === 1 ? 'time' : 'times'}.`;
+  }
+  if (pay && pay.status === 'authorized') return `Paid ${total} with your ${way}.`;
+  if (order.state === 'cancelled') return 'Nothing was charged.';
+  return `Not paid yet. ${total} with your ${way}.`;
+}
+
+const CUSTOMER_STEP_LABELS = {
+  created: 'Order placed', paid: 'Paid', preparing: 'Being prepared', picked_up: 'On the way', delivered: 'Delivered', cancelled: 'Cancelled',
+};
+
+// customerTimeline is timeline(order) in the customer's words: the same steps and statuses, with a
+// cash order "confirmed" rather than "paid", and a note on the kitchen step once the food is ready.
+export function customerTimeline(order) {
+  return timeline(order).map((step) => {
+    let label = CUSTOMER_STEP_LABELS[step.key] || step.label;
+    if (step.key === 'paid' && order.paymentType === 'cash') label = 'Confirmed';
+    const out = { ...step, label };
+    if (step.key === 'preparing' && step.status === 'current' && order.foodReady) {
+      out.note = order.assignedDriverId ? 'ready, a driver is on the way' : 'ready, waiting for a driver';
+    }
+    return out;
+  });
+}
+
 const EVENT_LABELS = {
   claimed: 'Payment started',
   taken_over: 'Taken over by a retry or the payment checker',

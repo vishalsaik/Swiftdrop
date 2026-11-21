@@ -80,7 +80,7 @@ describe('what a customer sees', () => {
     expect(screen.getByRole('button', { name: /order dated/i })).toBeTruthy();
   });
 
-  it('opens an order, and closes it with Escape or the scrim', async () => {
+  it('opens an order as a page, and goes back with Escape, the back button or the Orders tab', async () => {
     const user = userEvent.setup();
     // the server would answer with a history, so its absence is the view's choice, not an empty answer
     const server = serve(customer, [order({ id: 'o1', state: 'paid', payment: { status: 'authorized', amountCents: 1900, attempt: 1, maxAttempts: 3 } })], {
@@ -89,17 +89,29 @@ describe('what a customer sees', () => {
     render(<App />);
     await user.click(await screen.findByRole('button', { name: 'Orders' }));
     await user.click(await screen.findByRole('button', { name: /order o1/i }));
-    const panel = screen.getByLabelText('Order details');
-    expect(panel.getAttribute('aria-hidden')).toBe('false');
+    const panel = screen.getByRole('region', { name: 'Order details' });
+    expect(within(panel).getByRole('heading', { name: 'o1' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Your orders' })).toBeNull(); // a page, not a drawer over the list
     expect(within(panel).queryByText('Payment history')).toBeNull();
     expect(server.callsTo('GET', '/orders/o1/payment-history')).toHaveLength(0);
 
     fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(screen.getByLabelText('Order details', { selector: 'aside' }).getAttribute('aria-hidden')).toBe('true'));
+    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Order details' })).toBeNull();
 
     await user.click(screen.getByRole('button', { name: /order o1/i }));
-    fireEvent.click(document.querySelector('.scrim') as Element);
-    await waitFor(() => expect(screen.getByLabelText('Order details', { selector: 'aside' }).getAttribute('aria-hidden')).toBe('true'));
+    await user.click(within(screen.getByRole('region', { name: 'Order details' })).getByRole('button', { name: 'Your orders' }));
+    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /order o1/i }));
+    await user.click(tabs().getByRole('button', { name: 'Orders' }));
+    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+
+    // another tab and back keeps the order open
+    await user.click(screen.getByRole('button', { name: /order o1/i }));
+    await user.click(tabs().getByRole('button', { name: 'Account' }));
+    await user.click(tabs().getByRole('button', { name: 'Orders' }));
+    expect(screen.getByRole('region', { name: 'Order details' })).toBeTruthy();
   });
 
   it('says so while the orders are loading, and when the server cannot be reached', async () => {
@@ -139,10 +151,8 @@ describe('placing an order from the Food tab', () => {
 
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     const id = (server.callsTo('POST', '/orders')[0].body as { id: string }).id;
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
-    const panel = screen.getByLabelText('Order details', { selector: 'aside' });
-    await waitFor(() => expect(panel.getAttribute('aria-hidden')).toBe('false'));
-    expect(within(panel).getByText(id)).toBeTruthy();
+    const panel = await screen.findByRole('region', { name: 'Order details' });
+    expect(within(panel).getByRole('heading', { name: id })).toBeTruthy();
   });
 });
 
@@ -270,13 +280,14 @@ describe('switching accounts', () => {
     // casey is on the Orders tab with an order open
     await user.click(tabs().getByRole('button', { name: 'Orders' }));
     await user.click(await screen.findByRole('button', { name: /order o1/i }));
-    expect(within(await screen.findByLabelText('Order details')).getByText('o1')).toBeTruthy();
+    expect(within(await screen.findByRole('region', { name: 'Order details' })).getByText('o1')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'switch account' }));
 
     expect(await screen.findByRole('heading', { name: /, bea$/i })).toBeTruthy();
     expect(tabs().getByRole('button', { name: 'Food' }).getAttribute('aria-current')).toBe('page');
-    expect(screen.getByLabelText('Order details').getAttribute('aria-hidden')).toBe('true');
-    expect(within(screen.getByLabelText('Order details')).queryByText('o1')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Order details' })).toBeNull();
+    await user.click(tabs().getByRole('button', { name: 'Orders' }));
+    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy(); // the list, not casey's open order
   });
 });

@@ -74,8 +74,8 @@ describe('ordering from the menu', () => {
     expect(sent.customerId).toBe('u-cust');
     expect(JSON.stringify(sent)).not.toMatch(/unitPriceCents|sku/);
     expect(await screen.findByText(`Order ${sent.id} placed`)).toBeTruthy();
-    // the customer is taken to their orders (CustomerApp.test opens the new one)
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    // the customer is taken to the new order's page on Orders
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
   });
 
   it('asks for something before an empty order goes anywhere', async () => {
