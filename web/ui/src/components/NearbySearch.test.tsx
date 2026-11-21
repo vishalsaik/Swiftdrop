@@ -5,10 +5,13 @@ import { App } from '../App';
 import { setSession } from '../api';
 import type { MenuItem, Restaurant, SearchHit } from '../lib/types';
 import { home, placeOrder } from '../test/deliver';
-import { customer, mockServer, order, session, type Call, type Handler } from '../test/server';
+import { mockServer, order, session, staff, type Call, type Handler } from '../test/server';
 
 beforeEach(() => { localStorage.clear(); document.documentElement.dataset.theme = 'light'; });
 afterEach(() => { setSession(null); vi.unstubAllGlobals(); Reflect.deleteProperty(navigator, 'geolocation'); });
+
+// The search box as staff's order sheet uses it (Add fills the sheet's basket). A customer's search sits on
+// the Food home and fills their cart; FoodHome.test.tsx covers that.
 
 const kitchen: Restaurant = { id: 'r1', name: 'Corner Kitchen', active: true, cuisine: 'American', latitude: 12.9719, longitude: 77.6412, deliveryRadiusKm: 6 };
 const noodles: Restaurant = { id: 'r2', name: 'Noodle Bar', active: true, cuisine: 'Thai' };
@@ -32,8 +35,10 @@ const searches = (server: { calls: Call[] }) => server.calls.filter((c) => c.pat
 
 function shop(search: Handler = () => ({ body: { results: [], located: false } }), extra: Record<string, Handler> = {}) {
   return mockServer({
-    'GET /auth/me': () => ({ body: session(customer) }),
+    'GET /auth/me': () => ({ body: session(staff) }),
     'GET /orders': () => ({ body: { orders: [] } }),
+    'GET /alerts': () => ({ body: { alerts: [] } }),
+    'GET /users': () => ({ body: { accounts: [] } }),
     'GET /addresses': () => ({ body: { addresses: [home] } }),
     'GET /restaurants': () => ({ body: { restaurants: [kitchen, noodles] } }),
     'GET /restaurants/r1/menu': () => ({ body: { restaurant: kitchen, items: [burger, fries] } }),
@@ -47,7 +52,7 @@ function shop(search: Handler = () => ({ body: { results: [], located: false } }
 
 async function openSheet(user: ReturnType<typeof userEvent.setup>) {
   render(<App />);
-  await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
+  await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
   await screen.findByLabelText('Search food');
 }
 

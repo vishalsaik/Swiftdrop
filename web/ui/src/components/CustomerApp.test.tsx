@@ -145,8 +145,11 @@ describe('placing an order from the Food tab', () => {
       },
     });
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: 'Start an order' }));
+    // the old order sheet is staff's now: a customer orders from the restaurant page and the cart
+    expect(screen.queryByRole('button', { name: 'Start an order' })).toBeNull();
+    await user.click(await screen.findByRole('button', { name: /^Corner Kitchen/ }));
     await user.click(await screen.findByRole('button', { name: 'More Smash burger' }));
+    await user.click(screen.getByRole('button', { name: /^View cart/ }));
     await placeOrder(user);
 
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));

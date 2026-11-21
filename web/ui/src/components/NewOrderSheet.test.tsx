@@ -43,10 +43,10 @@ async function openSheet(user: ReturnType<typeof userEvent.setup>) {
 const more = (user: ReturnType<typeof userEvent.setup>, name: string, times = 1) =>
   (async () => { for (let i = 0; i < times; i++) await user.click(screen.getByRole('button', { name: `More ${name}` })); })();
 
-describe('ordering from the menu', () => {
+describe('ordering from the menu (the sheet is staff only; a customer orders from the cart page)', () => {
   it('shows the first open restaurant\'s menu and a total that follows the baskets', async () => {
     const user = userEvent.setup();
-    shop(customer);
+    shop(staff);
     await openSheet(user);
     expect(screen.getByText('Two patties')).toBeTruthy();
     expect(screen.getByText('$9.50')).toBeTruthy();
@@ -62,7 +62,7 @@ describe('ordering from the menu', () => {
 
   it('sends the menu item ids and counts and nothing about prices', async () => {
     const user = userEvent.setup();
-    const server = shop(customer);
+    const server = shop(staff);
     await openSheet(user);
     await more(user, 'Smash burger', 2);
     await more(user, 'Fries');
@@ -71,16 +71,14 @@ describe('ordering from the menu', () => {
     const sent = server.callsTo('POST', '/orders')[0].body as { id: string; customerId: string; restaurantId: string; items: unknown[] };
     expect(sent.items).toEqual([{ menuItemId: 'burger', quantity: 2 }, { menuItemId: 'fries', quantity: 1 }]);
     expect(sent.restaurantId).toBe('r1');
-    expect(sent.customerId).toBe('u-cust');
+    expect(sent.customerId).toBe('walk-in');
     expect(JSON.stringify(sent)).not.toMatch(/unitPriceCents|sku/);
     expect(await screen.findByText(`Order ${sent.id} placed`)).toBeTruthy();
-    // the customer is taken to the new order's page on Orders
-    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
   });
 
   it('asks for something before an empty order goes anywhere', async () => {
     const user = userEvent.setup();
-    const server = shop(customer);
+    const server = shop(staff);
     await openSheet(user);
     await placeOrder(user);
     expect(await screen.findByText('Add at least one item')).toBeTruthy();
@@ -89,7 +87,7 @@ describe('ordering from the menu', () => {
 
   it('a different restaurant means a different menu and a fresh basket', async () => {
     const user = userEvent.setup();
-    const server = shop(customer);
+    const server = shop(staff);
     await openSheet(user);
     await more(user, 'Smash burger');
     await user.selectOptions(screen.getByLabelText('Restaurant'), 'r2');
@@ -105,16 +103,16 @@ describe('ordering from the menu', () => {
 
   it('says so when no restaurant is open, and does not offer to place an order', async () => {
     const user = userEvent.setup();
-    shop(customer, { 'GET /restaurants': () => ({ body: { restaurants: [] } }) });
+    shop(staff, { 'GET /restaurants': () => ({ body: { restaurants: [] } }) });
     render(<App />);
     await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
-    expect(await screen.findByText(/No restaurant is open right now/)).toBeTruthy();
+    expect(await screen.findByText(/No restaurant is open/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Place order' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('says so when a menu is empty', async () => {
     const user = userEvent.setup();
-    shop(customer, { 'GET /restaurants/r1/menu': () => ({ body: { restaurant: kitchen, items: [] } }) });
+    shop(staff, { 'GET /restaurants/r1/menu': () => ({ body: { restaurant: kitchen, items: [] } }) });
     render(<App />);
     await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
     expect(await screen.findByText(/Nothing is available from this restaurant/)).toBeTruthy();
@@ -122,7 +120,7 @@ describe('ordering from the menu', () => {
 
   it('shows what went wrong loading, in the server\'s words', async () => {
     const user = userEvent.setup();
-    shop(customer, { 'GET /restaurants': () => ({ status: 500, body: { error: 'Failed to list restaurants due to an internal server error' } }) });
+    shop(staff, { 'GET /restaurants': () => ({ status: 500, body: { error: 'Failed to list restaurants due to an internal server error' } }) });
     render(<App />);
     await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
     expect((await screen.findAllByRole('alert')).some((a) => /internal server error/.test(a.textContent ?? ''))).toBe(true);
@@ -130,7 +128,7 @@ describe('ordering from the menu', () => {
 
   it('shows the server\'s words when the order is refused, such as an item that sold out meanwhile', async () => {
     const user = userEvent.setup();
-    shop(customer, { 'POST /orders': () => ({ status: 422, body: { error: 'items[0]: Fries is not available right now' } }) });
+    shop(staff, { 'POST /orders': () => ({ status: 422, body: { error: 'items[0]: Fries is not available right now' } }) });
     await openSheet(user);
     await more(user, 'Fries');
     await placeOrder(user);
@@ -139,25 +137,13 @@ describe('ordering from the menu', () => {
 
   it('shows field complaints from the server next to the form', async () => {
     const user = userEvent.setup();
-    shop(customer, { 'POST /orders': () => ({ status: 422, body: { error: 'bad', fields: { restaurantId: 'is not a restaurant' } } }) });
+    shop(staff, { 'POST /orders': () => ({ status: 422, body: { error: 'bad', fields: { restaurantId: 'is not a restaurant' } } }) });
     await openSheet(user);
     await more(user, 'Fries');
     await placeOrder(user);
     expect(await screen.findByText('Restaurant is not a restaurant')).toBeTruthy();
   });
 
-  it('gives a customer a new order number when theirs was taken', async () => {
-    const user = userEvent.setup();
-    const server = shop(customer, { 'POST /orders': () => ({ status: 409, body: { error: 'order already exists' } }) });
-    await openSheet(user);
-    await more(user, 'Fries');
-    await placeOrder(user);
-    expect(await screen.findByText(/order number was taken/)).toBeTruthy();
-    await placeOrder(user);
-    await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(2));
-    const [first, second] = server.callsTo('POST', '/orders').map((c) => (c.body as { id: string }).id);
-    expect(first).not.toBe(second);
-  });
 });
 
 describe('ordering as staff', () => {
@@ -258,7 +244,7 @@ describe('the sample orders', () => {
     expect(await screen.findByText('No orders yet')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /sample/i })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Find food' }));
-    expect(await screen.findByRole('button', { name: 'Start an order' })).toBeTruthy();
+    expect(await screen.findByRole('list', { name: 'Restaurants' })).toBeTruthy();
     expect(server.callsTo('POST', '/orders')).toHaveLength(0);
   });
 });
