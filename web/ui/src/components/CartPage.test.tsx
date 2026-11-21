@@ -148,7 +148,7 @@ describe('the cart is kept in the browser', () => {
     await user.click(page().getByRole('button', { name: 'Deliver to Home' }));
     await user.click(placeButton());
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, empty');
   });
 
@@ -393,10 +393,9 @@ describe('Place order', () => {
     await user.click(placeButton());
     await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
     const id = (server.callsTo('POST', '/orders')[0].body as { id: string }).id;
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
     expect(tabs().getByRole('button', { name: 'Orders' }).getAttribute('aria-current')).toBe('page');
-    const panel = screen.getByLabelText('Order details', { selector: 'aside' });
-    await waitFor(() => expect(panel.getAttribute('aria-hidden')).toBe('false'));
+    const panel = screen.getByRole('region', { name: 'Order details' });
     expect(within(panel).getByText(id)).toBeTruthy();
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, empty');
     expect(localStorage.getItem(KEY)).toBeNull();
@@ -450,7 +449,7 @@ describe('Place order', () => {
     expect((await page().findByRole('alert')).textContent).toBe('Failed to create order due to an internal server error');
     answer = 'fine';
     await user.click(placeButton());
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
     expect(sent).toHaveLength(3);
     expect(new Set(sent).size).toBe(1);
   });
@@ -467,7 +466,7 @@ describe('Place order', () => {
     }, placed);
     await ready(user);
     await user.click(placeButton());
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
     expect(server.callsTo('POST', '/orders')).toHaveLength(1);
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, empty');
   });
@@ -487,7 +486,7 @@ describe('Place order', () => {
     expect((await page().findByRole('alert')).textContent).toBe('That order number was taken. Press Place order again.');
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, 3 items');
     await user.click(placeButton());
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
     const ids = server.callsTo('POST', '/orders').map((c) => (c.body as { id: string }).id);
     expect(ids[0]).not.toBe(ids[1]);
   });
@@ -541,7 +540,7 @@ describe('Place order', () => {
     fireEvent.click(placeButton());
     expect(posts).toBe(1);
     act(() => release());
-    expect(await screen.findByRole('heading', { name: 'Your orders' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Order details' })).toBeTruthy();
   });
 });
 
