@@ -311,20 +311,6 @@ describe('the steppers', () => {
   });
 });
 
-describe('Start an order', () => {
-  it('with the cart page, still opens an empty order sheet from the Food home', async () => {
-    const user = userEvent.setup();
-    serve();
-    render(<App />);
-    await user.click(await screen.findByRole('button', { name: 'Start an order' }));
-    const order = within(await screen.findByRole('dialog', { name: 'New order' }));
-    // the first open restaurant, as before, with nothing chosen
-    await waitFor(() => expect(order.getByLabelText('Paneer tikka quantity').textContent).toBe('0'));
-    // the Food home's own address and search are not drawn underneath while the sheet is open
-    expect(screen.getAllByRole('region', { name: 'Find food' })).toHaveLength(1);
-  });
-});
-
 describe('useCart', () => {
   const wrapper = ({ children }: { children: ReactNode }) => <CartProvider userId={null}>{children}</CartProvider>;
   const item = (over: Partial<CartItem> = {}): CartItem => ({ id: 'burger', restaurantId: 'r1', name: 'Smash burger', priceCents: 950, ...over });

@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { setSession } from '../api';
+import { cartKey } from '../lib/logic';
 import type { Candidate, MenuItem, Restaurant, SavedAddress } from '../lib/types';
 import { deliverHome, deliverTyped, home } from '../test/deliver';
 import { customer, mockServer, order, session, staff, type Call, type Handler } from '../test/server';
@@ -31,9 +32,18 @@ function shop(user = customer, extra: Record<string, Handler> = {}) {
   });
 }
 
-async function openSheet(user: ReturnType<typeof userEvent.setup>) {
+/**
+ * Where an address is chosen: a customer on their cart page (with a burger already in the cart), staff
+ * on their order sheet. Both draw the same DeliverTo.
+ */
+async function openSheet(user: ReturnType<typeof userEvent.setup>, who: 'customer' | 'staff' = 'customer') {
+  const asCustomer = who === 'customer';
+  if (asCustomer) {
+    localStorage.setItem(cartKey(customer.id), JSON.stringify({ restaurantId: 'r1', restaurantName: 'Corner Kitchen', lines: [{ menuItemId: 'burger', name: 'Smash burger', unitPriceCents: 950, quantity: 1 }] }));
+  }
   render(<App />);
-  await user.click((await screen.findAllByRole('button', { name: /new order|start an order/i }))[0]);
+  if (asCustomer) await user.click(await screen.findByRole('button', { name: /^Cart, 1 item/ }));
+  else await user.click((await screen.findAllByRole('button', { name: /new order/i }))[0]);
   await screen.findByRole('region', { name: 'Deliver to' });
 }
 
@@ -64,9 +74,9 @@ describe('choosing a saved address', () => {
     expect(region.getByText('blue gate')).toBeTruthy();
     expect(screen.queryByRole('list', { name: 'Saved addresses' })).toBeNull(); // collapsed
 
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     await waitFor(() => expect(posts(s)).toHaveLength(1));
     const sent = posts(s)[0].body as Record<string, unknown>;
     expect(sent.deliveryAddressId).toBe('a-home');
@@ -81,9 +91,9 @@ describe('choosing a saved address', () => {
     await user.click(deliverRegion().getByRole('button', { name: 'Change' }));
     await user.click(await screen.findByRole('button', { name: 'Deliver to Work' }));
     expect(deliverRegion().getByText('Work')).toBeTruthy();
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     await waitFor(() => expect(posts(s)).toHaveLength(1));
     expect((posts(s)[0].body as { deliveryAddressId: string }).deliveryAddressId).toBe('a-work');
   });
@@ -92,10 +102,10 @@ describe('choosing a saved address', () => {
     const user = userEvent.setup();
     const s = shop();
     await openSheet(user);
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
-    expect(await screen.findByText('Choose where to deliver')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
+    expect(await screen.findByText('Choose where to deliver.')).toBeTruthy(); // the cart page's words
     expect(posts(s)).toHaveLength(0);
   });
 
@@ -165,9 +175,9 @@ describe('searching for an address', () => {
     await user.click(form.getByRole('button', { name: 'Deliver here' }));
     expect(deliverRegion().getByText('12 MG Road, Indiranagar, Bengaluru 560038')).toBeTruthy();
 
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     await waitFor(() => expect(posts(s)).toHaveLength(1));
     const sent = posts(s)[0].body as Record<string, unknown>;
     expect(sent.deliveryAddress).toEqual({
@@ -227,9 +237,9 @@ describe('delivering to where the person is', () => {
     expect(s.calls.find((c) => c.path.startsWith('/geocode/reverse'))!.path).toBe('/geocode/reverse?lat=12.971943&lng=77.641212');
     expect((form.getByLabelText('Street') as HTMLInputElement).value).toBe('12 MG Road, Indiranagar');
     await user.click(form.getByRole('button', { name: 'Deliver here' }));
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     await waitFor(() => expect(posts(s)).toHaveLength(1));
     const address = (posts(s)[0].body as { deliveryAddress: { latitude: number; longitude: number } }).deliveryAddress;
     expect([address.latitude, address.longitude]).toEqual([12.971943, 77.641212]); // where they are, not where the street is
@@ -300,14 +310,14 @@ describe('typing an address in', () => {
   it('is how staff say where a phone order goes, and staff are not offered saved addresses', async () => {
     const user = userEvent.setup();
     const s = shop(staff);
-    await openSheet(user);
+    await openSheet(user, 'staff');
     expect(s.calls.some((c) => c.path.startsWith('/addresses'))).toBe(false);
     expect(screen.queryByRole('list', { name: 'Saved addresses' })).toBeNull();
     await deliverTyped(user, '7 Phone Order Lane');
     expect(deliverRegion().getByText('7 Phone Order Lane')).toBeTruthy();
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     await waitFor(() => expect(posts(s)).toHaveLength(1));
     expect((posts(s)[0].body as { deliveryAddress: unknown }).deliveryAddress).toEqual({ line1: '7 Phone Order Lane', latitude: 12.9719, longitude: 77.6412 });
   });
@@ -315,7 +325,7 @@ describe('typing an address in', () => {
   it('shows staff no way to save an address', async () => {
     const user = userEvent.setup();
     shop(staff);
-    await openSheet(user);
+    await openSheet(user, 'staff');
     await user.click(screen.getByRole('button', { name: 'Type it in' }));
     expect(screen.queryByLabelText(/Save this address/)).toBeNull();
   });
@@ -351,9 +361,9 @@ describe('saving an address for next time', () => {
     await user.click(deliverRegion().getByRole('button', { name: 'Change' }));
     expect(await screen.findByRole('button', { name: 'Deliver to Gym' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Deliver to Gym' }));
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     await waitFor(() => expect(posts(s)).toHaveLength(1));
     expect((posts(s)[0].body as { deliveryAddressId: string }).deliveryAddressId).toBe('a-new');
   });
@@ -392,7 +402,7 @@ describe('the search and the order follow the address', () => {
     const user = userEvent.setup();
     const ask = geolocate({ lat: 1, lng: 1 });
     const s = shop();
-    await openSheet(user);
+    render(<App />); // a customer's food search is on the Food home, under its own Deliver to
     await deliverHome(user);
     expect(await screen.findByText('Near Home')).toBeTruthy();
     await waitFor(() => expect(s.calls.some((c) => c.path === '/search?lat=12.972&lng=77.641')).toBe(true));
@@ -405,9 +415,9 @@ describe('the search and the order follow the address', () => {
     shop(customer, { 'POST /orders': () => ({ status: 422, body: { error: 'Corner Kitchen delivers up to 6.0 km and that address is 7.4 km away' } }) });
     await openSheet(user);
     await deliverHome(user);
-    await screen.findByLabelText('Smash burger quantity');
+    await screen.findByRole('button', { name: 'More Smash burger' });
     await addToBasket(user);
-    await user.click(screen.getByRole('button', { name: 'Place order' }));
+    await user.click(screen.getByRole('button', { name: /^Place order/ }));
     expect(await screen.findByText('Corner Kitchen delivers up to 6.0 km and that address is 7.4 km away')).toBeTruthy();
   });
 });

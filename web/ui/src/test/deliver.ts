@@ -30,5 +30,5 @@ export async function deliverTyped(user: User, street = '1 Test Street') {
 export async function placeOrder(user: User) {
   if (screen.queryByRole('button', { name: 'Deliver to Home' })) await deliverHome(user);
   else if (screen.queryByRole('button', { name: 'Type it in' })) await deliverTyped(user);
-  await user.click(screen.getByRole('button', { name: 'Place order' }));
+  await user.click(screen.getByRole('button', { name: /^Place order/ }));
 }
