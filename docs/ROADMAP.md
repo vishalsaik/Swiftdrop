@@ -126,7 +126,7 @@ Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
   items: [{menuItemId, quantity}]}`. On success clear the cart and open the order in the tracker. Show
   the server's words for every 422 (closed restaurant, sold out, too far). Tests: persistence,
   switching restaurants, limits, the request body, every error path, a blocked `localStorage`.
-- [ ] **Order tracker.** Orders tab: the customer's orders (`GET /orders`, polled like the dashboard,
+- [x] **Order tracker.** Orders tab: the customer's orders (`GET /orders`, polled like the dashboard,
   newest first, with a friendly status line and total), and an **order page** with a vertical status
   timeline (`timeline(order)`), the plain-language message (`noticeFor(order)`), the items, the total,
   the **delivery address**, and the actions a customer may take (`actionsFor(order, 'customer')`:
@@ -352,3 +352,53 @@ their results, what is left.)
   saved address is one tap). Both are in `KNOWN_ISSUES.md`. Wallet and card orders are placed as before and paid from the
   order drawer ("Pay now"); the cart page does not take payment itself.
 - **Left for later:** the order tracker (the Orders tab and order page polish) and the customer journey test and docs.
+
+### 2026-11-21, `agent/2026-11-21-order-tracker`: Order tracker
+
+- **Built:** the Orders tab lists each order with a status line in the customer's words, its items, total and money stamp
+  (`CustomerOrderRow`), and an order opens as a **page** inside the tab (`OrderPage`): a vertical timeline with the current step
+  marked (`aria-current="step"` and hidden words for screen readers), the payment notice (`noticeFor`), the items and total, the
+  delivery address with label and landmark, one sentence about the money, and only Pay now and Cancel (two taps). Three pure rules
+  in `logic.js`: `customerStatus`, `paymentSentence`, `customerTimeline` (77f5d2e). Back, Escape or the Orders tab return to the
+  list; another tab and back keeps the order open.
+- **Design choices:** a page, not the staff drawer (the drawer reads like a dispatch tool and covers the list on a phone); state,
+  not a route, like the restaurant page. Every refund and failure sentence reads the server's `paymentIssue`, never works it out
+  from the state, so the page cannot claim money is owed when the server does not (the "screen never works out refunds" rule of
+  `noticeFor`). `customerTimeline` wraps `timeline` and only renames steps (cash says "Confirmed", ready food is noted on the
+  kitchen step) so staff and customers share one rule for what is done. The pay form and two-tap confirm moved from
+  `OrderDetail` into one hook, `useOrderActions` (with `PayForm`), used by both the staff drawer and the customer page, so the two
+  cannot drift; recording a refund by hand stays staff's own form in `OrderDetail`. The page reads the polled list (every 3 s) and
+  its status line is a polite live region, so it moves on by itself and is announced. Rejected: fetching `GET /orders/{id}` on the
+  page (the list already holds it and is polled; a second poll doubles the load), and a separate customer copy of the pay/cancel
+  code. Not done: the restaurant's name on the order (the order holds only its id) and a real card form (Pay now still asks for a
+  payment method id, as the drawer did); both in `KNOWN_ISSUES.md`.
+- **Tests:** 8 new `node --test` tests (`src/lib/tracker.test.mjs`) and 24 component tests (`OrderPage.test.tsx`: the list's status
+  lines; every state's timeline with the current step; refunded, refund failed, refund on its way and declined read as sentences;
+  the greyed-out retry while a person checks; card pay (two taps, method and CSRF sent), cash pay (one tap, no body), a 402 with
+  tries left, the two-tap cancel and its 4 s timeout, a refused cancel, the page moving on with a poll, an order the list no longer
+  has). Tests that described the drawer for customers (CustomerApp, CartPage, NewOrderSheet) now expect the page (f42c521).
+  `npx tsc --noEmit` clean; `npm test`: 107 node tests and 242 vitest tests passing.
+- **Mutation check:** 22 hand mutants of the three rules, `OrderPage`, `useOrderActions` and the tab handling in `CustomerApp`,
+  applied in the working copy on this branch and restored with `git checkout --` each time: 21 killed. The survivor described any
+  payment (even a declined or unsettled one the server says nothing about) as "Paid"; a test now covers it and it is killed
+  (507a8e1).
+- **Go:** no Go changed. From PowerShell against `swiftdrop_test` (port 5434, `cmd/migrate`: up to date): `go vet ./...` clean,
+  `go test -race -count=1 ./...` every package ok.
+- **web/static:** rebuilt on Linux (`node:24-alpine`, CRs stripped, `npm ci && npm run build`) from the committed sources (1e5891d:
+  `index-DeS7mOwP.js`, `index-ChnbBnRn.css`); a second fresh Linux build of HEAD was `diff -r` identical to the committed
+  `web/static`.
+- **Live check** (throwaway compose project `sdorders` on port 8093, demo seed, fake gateway, demo geocoder, built-in browser with
+  the pane hidden, so read through page text and the accessibility tree, no screenshots): signed up a throwaway customer, put 2 Pad
+  thai and 1 Spring rolls from Noodle Bar in the cart, chose 12 100 Feet Road with a landmark and placed the order: it opened on its
+  page, "Waiting for your payment", Order placed current, $34.30, the address and landmark, "Not paid yet. $34.30 with your card.".
+  Pay now (two taps) moved it to "Paid. Waiting for the restaurant to accept it". A throwaway staff account accepted and marked it
+  ready over the API, and the open page followed by itself: "Being prepared in the kitchen", then "Ready. A driver is picking it up"
+  with the note on the kitchen step. A first tap on Cancel and refund showed "Confirm: cancel and refund" and "You were charged. The
+  refund starts on its own.", and after about 5 s went back to "Cancel and refund" (the timeout working); two quick taps cancelled
+  it: "Cancelled. Your refund is on its way", the notice, the timeline stopping at Cancelled, "Nothing for you to do". About 20 s
+  later the refund job had run and the page said "Cancelled and refunded". Escape went back to the list (status line, items, $34.30,
+  Refunded stamp). At 375 px the page had no sideways scroll and nothing wider than the screen. Stack taken down (`docker compose -p
+  sdorders down`, volumes kept).
+- **Found, not mine:** a compose project `sdtrack` (created 2026-11-14, API on port 8091) whose database container is stopped, so
+  its API restarts in a loop every few seconds since Docker started. Left untouched.
+- **Left for later:** the customer journey test and docs (next item).
