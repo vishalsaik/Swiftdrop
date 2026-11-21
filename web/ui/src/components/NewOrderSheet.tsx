@@ -11,7 +11,8 @@ import { Icon } from './Icon';
 import { NearbySearch } from './NearbySearch';
 import { Sheet } from './ui';
 
-// A custom line is for staff only (a phone order, something off the menu): they name it and price it.
+// Staff's order sheet: a phone order for a customer or a walk-in, from the menu, with custom lines for
+// something off the menu (they name it and price it). A customer orders from their own cart page instead.
 interface Row { key: number; name: string; quantity: string; price: string }
 
 let rowKey = 1;
@@ -19,9 +20,6 @@ const newRow = (v: Partial<Row> = {}): Row => ({ key: rowKey++, name: '', quanti
 
 interface Props {
   open: boolean;
-  user: User;
-  /** staff may place an order for any customer, and add a custom line; a customer orders for themselves, from the menu */
-  placeForOthers: boolean;
   onClose(): void;
   onPlaced(id: string): Promise<void>;
 }
@@ -35,11 +33,11 @@ export function NewOrderSheet(props: Props) {
   );
 }
 
-function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
+function OrderForm({ onClose, onPlaced }: Props) {
   const toast = useToast();
   const [id, setId] = useState(() => newOrderId());
   const [paymentType, setPaymentType] = useState<PaymentType>('card');
-  const [customerId, setCustomerId] = useState(placeForOthers ? 'walk-in' : user.id);
+  const [customerId, setCustomerId] = useState('walk-in');
   const [customers, setCustomers] = useState<User[]>([]);
   const [restaurants, setRestaurants] = useState<Restaurant[] | null>(null);
   const [restaurantId, setRestaurantId] = useState('');
@@ -68,13 +66,12 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
 
   // staff pick the customer from the accounts there are (or a walk-in, who has none)
   useEffect(() => {
-    if (!placeForOthers) return;
     let current = true;
     void api<{ accounts: User[] | null }>('GET', '/users?role=customer&limit=200').then((res) => {
       if (current && res.ok) setCustomers(res.data?.accounts ?? []);
     });
     return () => { current = false; };
-  }, [placeForOthers]);
+  }, []);
 
   // the chosen restaurant's menu (only what is available); a new restaurant starts a new basket
   useEffect(() => {
@@ -135,8 +132,7 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
     setBusy(false);
     if (!res.ok) {
       const message = errorMessage(res.status, res.data);
-      if (res.status === 409 && placeForOthers) setErrors({ id: message });
-      else if (res.status === 409) { setId(newOrderId()); toast('That order number was taken. Press Place order again.', 'bad'); }
+      if (res.status === 409) setErrors({ id: message }); // staff typed or kept the number; they choose another
       else if (res.status === 422 && Object.keys(fieldErrors(res.data)).length) setErrors(fieldErrors(res.data));
       else toast(message, 'bad'); // the server's own words: the restaurant closed, an item sold out
       return;
@@ -158,15 +154,13 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
 
   return (
     <>
-    <div className="sheet-form deliver-wrap"><DeliverTo allowSaved={!placeForOthers} value={destination} onChange={setDestination} /></div>
+    <div className="sheet-form deliver-wrap"><DeliverTo allowSaved={false} value={destination} onChange={setDestination} /></div>
     <div className="sheet-form find-wrap"><NearbySearch onChoose={choose} near={near} /></div>
     <form onSubmit={submit} noValidate className="sheet-form">
       <div className="form-group">
-        {placeForOthers && (
-          <label className="field"><span>Order id</span>
-            <input value={id} autoComplete="off" spellCheck={false} onChange={(e) => setId(e.target.value)} aria-invalid={Boolean(err('id'))} />
-          </label>
-        )}
+        <label className="field"><span>Order id</span>
+          <input value={id} autoComplete="off" spellCheck={false} onChange={(e) => setId(e.target.value)} aria-invalid={Boolean(err('id'))} />
+        </label>
         <label className="field"><span>Pays by</span>
           <select value={paymentType} onChange={(e) => setPaymentType(e.target.value as PaymentType)}>
             <option value="card">Card</option>
@@ -174,14 +168,12 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
             <option value="cash">Cash on delivery</option>
           </select>
         </label>
-        {placeForOthers && (
-          <label className="field"><span>Customer</span>
-            <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} aria-invalid={Boolean(err('customerId'))}>
-              <option value="walk-in">Walk-in (no account)</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
-            </select>
-          </label>
-        )}
+        <label className="field"><span>Customer</span>
+          <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} aria-invalid={Boolean(err('customerId'))}>
+            <option value="walk-in">Walk-in (no account)</option>
+            {customers.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}
+          </select>
+        </label>
         <label className="field"><span>Restaurant</span>
           <select value={restaurantId} disabled={!restaurants?.length} onChange={(e) => setRestaurantId(e.target.value)} aria-invalid={Boolean(err('restaurantId'))}>
             {restaurants === null && <option value="">Loading</option>}
@@ -192,7 +184,7 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
       </div>
       {['id', 'customerId', 'restaurantId', 'paymentType'].map((k) => err(k) && <p key={k} className="form-error">{err(k)}</p>)}
       {loadError && <p className="form-error" role="alert">{loadError}</p>}
-      {noRestaurants && <p className="hint">{placeForOthers ? 'No restaurant is open. Open one in Menu.' : 'No restaurant is open right now. Try again later.'}</p>}
+      {noRestaurants && <p className="hint">No restaurant is open. Open one in Menu.</p>}
 
       <h3 className="group-title">Menu</h3>
       {menu === null && restaurantId && <p className="why">Loading the menu</p>}
@@ -220,28 +212,24 @@ function OrderForm({ user, placeForOthers, onClose, onPlaced }: Props) {
       )}
       {Object.keys(errors).filter((k) => k.startsWith('menu.')).map((k) => <p key={k} className="form-error">{err(k)}</p>)}
 
-      {placeForOthers && (
-        <>
-          <h3 className="group-title">Custom lines</h3>
-          {custom.length > 0 && (
-            <div className="form-group items">
-              {custom.map((r, i) => (
-                <div className="item-row" key={r.key}>
-                  <input placeholder="Item" aria-label="Item name" value={r.name} onChange={(e) => setRow(r.key, { name: e.target.value })} />
-                  <input className="qty" type="number" min="1" step="1" aria-label="Quantity" value={r.quantity} onChange={(e) => setRow(r.key, { quantity: e.target.value })} />
-                  <input className="price" inputMode="decimal" placeholder="0.00" aria-label="Price in dollars" value={r.price} onChange={(e) => setRow(r.key, { price: e.target.value })} />
-                  <button type="button" className="icon-btn" aria-label="Remove item" onClick={() => setCustom((rs) => rs.filter((x) => x.key !== r.key))}><Icon name="xmark" size={18} /></button>
-                  {rowErr(i) && <small className="form-error span">{rowErr(i)}</small>}
-                </div>
-              ))}
+      <h3 className="group-title">Custom lines</h3>
+      {custom.length > 0 && (
+        <div className="form-group items">
+          {custom.map((r, i) => (
+            <div className="item-row" key={r.key}>
+              <input placeholder="Item" aria-label="Item name" value={r.name} onChange={(e) => setRow(r.key, { name: e.target.value })} />
+              <input className="qty" type="number" min="1" step="1" aria-label="Quantity" value={r.quantity} onChange={(e) => setRow(r.key, { quantity: e.target.value })} />
+              <input className="price" inputMode="decimal" placeholder="0.00" aria-label="Price in dollars" value={r.price} onChange={(e) => setRow(r.key, { price: e.target.value })} />
+              <button type="button" className="icon-btn" aria-label="Remove item" onClick={() => setCustom((rs) => rs.filter((x) => x.key !== r.key))}><Icon name="xmark" size={18} /></button>
+              {rowErr(i) && <small className="form-error span">{rowErr(i)}</small>}
             </div>
-          )}
-          <div className="item-tools">
-            <button type="button" className="text-btn" onClick={() => setCustom((rs) => [...rs, newRow()])}>Add a custom line</button>
-          </div>
-          <p className="hint">For something that is not on the menu: you set its name and price.</p>
-        </>
+          ))}
+        </div>
       )}
+      <div className="item-tools">
+        <button type="button" className="text-btn" onClick={() => setCustom((rs) => [...rs, newRow()])}>Add a custom line</button>
+      </div>
+      <p className="hint">For something that is not on the menu: you set its name and price.</p>
       {err('items') && <p className="form-error">{err('items')}</p>}
       {err('deliveryAddress') && <p className="form-error">{err('deliveryAddress')}</p>}
 

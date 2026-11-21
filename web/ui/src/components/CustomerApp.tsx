@@ -11,7 +11,6 @@ import { CartPage } from './CartPage';
 import { Icon } from './Icon';
 import type { Destination } from './DeliverTo';
 import { FoodHome, nearOf } from './FoodHome';
-import { NewOrderSheet } from './NewOrderSheet';
 import { RestaurantPage } from './RestaurantPage';
 import { CustomerOrderRow, OrderPage } from './OrderPage';
 import { Avatar, Waiting } from './ui';
@@ -43,7 +42,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
   const { orders, loaded, online, offlineMessage, refresh } = useOrders(true);
 
   const [tab, setTab] = useState<CustomerTab>('food');
-  const [sheet, setSheet] = useState<'account' | 'order' | null>(null);
+  const [sheet, setSheet] = useState<'account' | null>(null);
   // the cart page, drawn over whichever tab is open; leaving it returns to that tab as it was
   const [cartOpen, setCartOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -70,7 +69,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
   const openOrder = useCallback((id: string) => { setTab('orders'); setSelectedId(id); }, []);
   const first = user.name.trim().split(/\s+/)[0] || 'there';
   // A <dialog> says it closed a moment after it is told to, so a late close must only shut its own sheet.
-  const closeSheet = (which: 'account' | 'order') => () => setSheet((s) => (s === which ? null : s));
+  const closeSheet = (which: 'account') => () => setSheet((s) => (s === which ? null : s));
   const openShop = (id: string, addItemId?: string) => setShop((s) => ({ id, addItemId, visit: (s?.visit ?? 0) + 1 }));
 
   return (
@@ -128,15 +127,11 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
                 <h1 id="food-title">{`${greeting()}, ${first}`}</h1>
                 <p className="sub">What would you like to eat?</p>
               </div>
-              <button className="btn tinted head-order" type="button" onClick={() => setSheet('order')}>Start an order</button>
             </div>
-            {/* the order sheet has its own address and search; one of each at a time */}
-            {sheet !== 'order' && (
-              <FoodHome destination={destination} onDestination={setDestination} onOpen={openShop} />
-            )}
+            <FoodHome destination={destination} onDestination={setDestination} onOpen={openShop} />
           </section>
         )}
-        {!cartOpen && tab === 'food' && shop && sheet !== 'order' && (
+        {!cartOpen && tab === 'food' && shop && (
           <RestaurantPage key={shop.visit} restaurantId={shop.id} addItemId={shop.addItemId} near={nearOf(destination)}
             onBack={() => setShop(null)} onViewCart={() => setCartOpen(true)} />
         )}
@@ -177,8 +172,6 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         )}
       </main>
 
-      <NewOrderSheet open={sheet === 'order'} user={user} placeForOthers={false} onClose={closeSheet('order')}
-        onPlaced={async (id) => { setShop(null); await refresh(); openOrder(id); }} />
       <AccountSheet open={sheet === 'account'} user={user} theme={theme} onTheme={onTheme} onClose={closeSheet('account')} />
     </div>
   );

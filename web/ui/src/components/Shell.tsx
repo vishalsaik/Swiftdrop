@@ -230,7 +230,7 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         ))}
       </div>
 
-      <NewOrderSheet open={sheet === 'new'} user={user} placeForOthers={caps.placeForOthers} onClose={() => setSheet(null)}
+      <NewOrderSheet open={sheet === 'new'} onClose={() => setSheet(null)}
         onPlaced={async (id) => { await refreshAll(); openOrder(id); }} />
       <AccountSheet open={sheet === 'account'} user={user} theme={theme} onTheme={onTheme} onClose={() => setSheet(null)} />
     </div>
