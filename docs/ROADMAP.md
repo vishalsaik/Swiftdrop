@@ -132,7 +132,7 @@ Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
   the **delivery address**, and the actions a customer may take (`actionsFor(order, 'customer')`:
   pay, cancel, with a two-tap confirm for cancel). Payment states (declined with attempts left,
   refund on the way, refunded) read as sentences. Tests for each state in the timeline and each action.
-- [ ] **Customer journey test and docs.** Extend `e2e/` (or add a component-level journey test if a
+- [x] **Customer journey test and docs.** Extend `e2e/` (or add a component-level journey test if a
   browser is impractical in CI) so a customer signs up, picks an address, finds food, fills a cart,
   orders, and reads the tracker. Update `README.md` (what the customer sees), `CHANGELOG.md`
   (Unreleased), `KNOWN_ISSUES.md` (what the customer view still lacks: no map, no driver, no
@@ -402,3 +402,57 @@ their results, what is left.)
 - **Found, not mine:** a compose project `sdtrack` (created 2026-11-14, API on port 8091) whose database container is stopped, so
   its API restarts in a loop every few seconds since Docker started. Left untouched.
 - **Left for later:** the customer journey test and docs (next item).
+
+### 2026-11-21, `agent/2026-11-21-customer-journey`: Customer journey test and docs
+
+- **Built:** `web/ui/src/CustomerJourney.test.tsx`, one test that runs the real app from the sign-in screen against a small stateful
+  fake of the API: sign up (the account lands on Food with Food, Orders and Account and nothing of the dashboard, and no `/alerts`
+  or `/users` request), search "Indiranagar", pick the address, add a landmark and save it as Home (`POST /addresses`), see Corner
+  Kitchen "m away" and Harbour Grill "too far", open Corner Kitchen, 2 burgers and 1 fries, View cart, Home already chosen, card,
+  Place order (the body is exactly `{id, restaurantId, paymentType, deliveryAddressId, items: [{menuItemId, quantity}]}`), the
+  tracker opens on the order with "Waiting for your payment", $23.00 and the landmark, the cart is empty, Pay now twice, "Paid.
+  Waiting for the restaurant to accept it", the fake kitchen accepts it and the open page reads "Being prepared in the kitchen" on
+  the next poll, and back on the list the row says so with its total (9288a19).
+- **Retired the customer's old order sheet** (4c6f5d4): the Food home's "Start an order" button and the `NewOrderSheet` it opened
+  were a second, older way to order with their own address picker and search; nothing else in the customer view needed them. The
+  sheet is now staff's phone-order form only: the `user` and `placeForOthers` props are gone, so it always shows the order id, the
+  customer picker and custom lines, and an id clash stays on the id field. Kept: `Shell`'s capability flags (the staff shell is
+  still written against them) and `DeliverTo`'s `allowSaved` prop (the sheet passes `false`, the Food home and cart page `true`).
+- **Design choices:** a component-level journey test rather than a browser in CI: the repo has no browser toolchain, adding
+  Playwright to CI is a large new dependency for one test, and the Go e2e test already walks the same journey over HTTP against the
+  real server and Postgres (and passed against this run's stack). The fake server is stateful where the journey depends on it (it
+  keeps the saved address, prices from its menu, refuses an order without a saved address id, moves the order on), so the test
+  proves the screens join up rather than that one screen draws. Rejected: extending `e2e/` (it already covers signup, addresses,
+  menus, order, pay and the whole lifecycle over HTTP; what was missing was the screens together).
+- **Tests moved, not lost:** `DeliverTo.test.tsx` reached the customer's `DeliverTo` through the order sheet; it now opens the cart
+  page with a kept one-line cart (customer) or the New order sheet (staff, via an explicit `openSheet(user, 'staff')`), and its
+  "food search near the address" case moved to the Food home. `NearbySearch.test.tsx` and `NewOrderSheet.test.tsx` run as staff
+  (it is their sheet now); the customer's search is covered by `FoodHome.test.tsx`. The customer-only 409 test of the sheet and
+  FoodHome's "Start an order" test were removed; `CustomerApp.test.tsx` now orders through the restaurant page and cart and checks
+  the button is gone. The `placeOrder` helper matches "Place order · $total".
+- **Checks:** `npx tsc --noEmit` clean; `npm test`: 107 node tests and 241 vitest tests passing (242 before, minus two removed, plus
+  the journey). From PowerShell against `swiftdrop_test` (port 5434, `cmd/migrate`: up to date): `go vet ./...` clean, `go test
+  -race -count=1 ./...` every package ok (no Go changed). Go e2e (`go test -count=1 -v ./e2e`) against this run's compose stack with
+  a throwaway staff account: PASS.
+- **Mutation check:** 8 mutants of the code the journey crosses, each applied in the working copy and restored with `git checkout
+  --`, journey test run alone: the cart kept after placing, the placed order not opened, the cart page not given the Food home's
+  address, polling every 60 s instead of 3, a customer given the staff shell, every card saying it delivers, a price sent with the
+  order, a saved address sent as words instead of its id. 8 of 8 killed; tree clean after.
+- **web/static:** rebuilt on Linux (`node:24-alpine`, CRs stripped, `npm ci && npm run build`) from the committed sources (0a40ad2:
+  `index-Bo4obIvm.js` replaces `index-DeS7mOwP.js`; the stylesheet `index-ChnbBnRn.css` is unchanged); a second fresh Linux build of
+  HEAD was `diff -r` identical to the committed `web/static`.
+- **Live check** (throwaway compose project `sdjourney` on port 8094, demo seed, fake gateway, demo geocoder, built-in browser with
+  the pane hidden, so read through page text and the accessibility tree, no screenshots): signed up a throwaway customer; the Food
+  home had no "Start an order" button; searched "Indiranagar", picked 12 100 Feet Road, added "blue gate" and saved it as Home; the
+  cards said Noodle Bar 50 m and Corner Kitchen 700 m deliver to Home, Harbour Grill 849 km is too far; Corner Kitchen's page, 2
+  Smash burger and 1 Fries, "View cart · 3 items · $23.00"; the cart page already had Home chosen; Place order opened SD-X8KTD on
+  its page ("Waiting for your payment", Order placed current, $23.00, Home with the landmark, "Not paid yet. $23.00 with your
+  card."); Pay now twice: "Paid. Waiting for the restaurant to accept it"; a throwaway staff account accepted it over the API and
+  the open page read "Being prepared in the kitchen" by itself; Escape showed the row "Order SD-X8KTD, Being prepared in the
+  kitchen". At 375 px the Food home had no sideways scroll and nothing wider than the screen. Stack taken down (`docker compose -p
+  sdjourney down`, volumes kept). Not looked at in the browser: staff's New order sheet after the prop removal (covered by the 16
+  staff tests in `NewOrderSheet.test.tsx`).
+- **Found on the way:** the KNOWN_ISSUES gap "the address chosen on the Food home is not chosen again on the cart page" is no
+  longer true (the cart page shares the Food home's destination; the journey test and the live check both show it), so it is
+  removed. "Choose where to deliver." staying on screen is still listed; not rechecked.
+- **Left for later:** nothing on this item. The customer items are all ticked; next is "Real drivers and dispatch", slice 1.
