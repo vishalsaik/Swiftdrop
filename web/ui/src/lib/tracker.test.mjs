@@ -48,6 +48,9 @@ test('paymentSentence reads a card or wallet payment as one sentence', () => {
   assert.equal(paymentSentence(order({ state: 'payment_pending', paymentIssue: 'confirming', payment: paid({ status: 'needs_review' }) })),
     'A person is checking your payment of $19.00. You are never charged twice.');
   assert.equal(paymentSentence(order({ state: 'cancelled' })), 'Nothing was charged.');
+  // only money that was taken is "paid": a payment the server says nothing about is not
+  assert.equal(paymentSentence(order({ state: 'cancelled', payment: paid({ status: 'declined' }) })), 'Nothing was charged.');
+  assert.equal(paymentSentence(order({ payment: paid({ status: 'processing' }) })), 'Not paid yet. $19.00 with your card.');
 });
 
 test('paymentSentence says how many tries are left after a decline or an attempt with no answer', () => {
