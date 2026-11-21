@@ -27,6 +27,9 @@ export function timeline(order: Order): JourneyStep[];
 
 export interface Notice { issue: string; tone: 'wait' | 'bad' | 'money' | 'good' | 'alert'; title: string; body: string }
 export function noticeFor(order: Order): Notice | null;
+export function customerStatus(order: Order): string;
+export function paymentSentence(order: Order): string;
+export function customerTimeline(order: Order): JourneyStep[];
 export function describeEvent(event: LedgerEvent): { label: string; note: string };
 export function describeAlert(alert: Alert): { title: string; advice: string; detail: string; seen: string };
 export function openAlerts(alerts: Alert[] | null | undefined): Alert[];

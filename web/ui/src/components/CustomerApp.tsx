@@ -13,8 +13,7 @@ import type { Destination } from './DeliverTo';
 import { FoodHome, nearOf } from './FoodHome';
 import { NewOrderSheet } from './NewOrderSheet';
 import { RestaurantPage } from './RestaurantPage';
-import { OrderDetail } from './OrderDetail';
-import { OrderRow } from './OrderList';
+import { CustomerOrderRow, OrderPage } from './OrderPage';
 import { Avatar, Waiting } from './ui';
 
 // What a signed-in customer sees: their food, their orders and their account. Staff keep the
@@ -59,7 +58,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
   );
   const selected = selectedId ? orders.find((o) => o.id === selectedId) ?? null : null;
 
-  // Escape closes the open order when no sheet is on top of it.
+  // Escape goes back from an open order to the list when no sheet is on top of it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !document.querySelector('dialog[open]')) setSelectedId(null);
@@ -90,7 +89,11 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         <nav className="ctabs" aria-label="Sections">
           {TABS.map((t) => (
             <button key={t.key} type="button" className={`ctab ${tab === t.key ? 'active' : ''}`} aria-current={tab === t.key ? 'page' : undefined}
-              onClick={() => { if (t.key === 'food' && tab === 'food' && !cartOpen) setShop(null); setCartOpen(false); setTab(t.key); }}>
+              onClick={() => {
+                // the tab of the page that is open goes back to its start: Food to the restaurants, Orders to the list
+                if (tab === t.key && !cartOpen) { if (t.key === 'food') setShop(null); if (t.key === 'orders') setSelectedId(null); }
+                setCartOpen(false); setTab(t.key);
+              }}>
               <Icon name={t.icon} size={22} />
               <span>{t.label}</span>
             </button>
@@ -138,7 +141,10 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
             onBack={() => setShop(null)} onViewCart={() => setCartOpen(true)} />
         )}
 
-        {!cartOpen && tab === 'orders' && (
+        {!cartOpen && tab === 'orders' && selectedId && (
+          <OrderPage key={selectedId} order={selected} loaded={loaded} onBack={() => setSelectedId(null)} onChanged={refresh} />
+        )}
+        {!cartOpen && tab === 'orders' && !selectedId && (
           <section aria-labelledby="orders-title">
             <div className="page-head">
               <div>
@@ -157,7 +163,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
               </div>
             ) : (
               <ul className="list">
-                {newestFirst.map((o) => <OrderRow key={o.id} order={o} selected={o.id === selectedId} showCustomer={false} onSelect={setSelectedId} />)}
+                {newestFirst.map((o) => <CustomerOrderRow key={o.id} order={o} onOpen={setSelectedId} />)}
               </ul>
             )}
           </section>
@@ -170,11 +176,6 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
           </section>
         )}
       </main>
-
-      <div className={`scrim ${selected ? 'show' : ''}`} onClick={() => setSelectedId(null)} hidden={!selected} />
-      <aside className={`inspector ${selected ? 'open' : ''}`} aria-label="Order details" aria-hidden={!selected}>
-        {selected && <OrderDetail order={selected} role={user.role} canSeeHistory={false} onClose={() => setSelectedId(null)} onChanged={refresh} />}
-      </aside>
 
       <NewOrderSheet open={sheet === 'order'} user={user} placeForOthers={false} onClose={closeSheet('order')}
         onPlaced={async (id) => { setShop(null); await refresh(); openOrder(id); }} />
