@@ -41,7 +41,7 @@ export function DriversView() {
           <ul className="list">
             {drivers.map((d) => (
               <li key={d.userId}>
-                <div className="row person" aria-label={`${d.name}, ${driverBadges(d).map((b) => b.text).join(', ')}`}>
+                <div className="row person driver-row" aria-label={`${d.name}, ${driverBadges(d).map((b) => b.text).join(', ')}`}>
                   <Avatar name={d.name} />
                   <span className="row-main">
                     <span className="row-title">{d.name}</span>

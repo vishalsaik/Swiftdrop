@@ -523,3 +523,5 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
 .driver-card .action-row .btn { flex: 1; }
 .countdown { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .countdown.late { color: var(--red); }
+/* People rows drop their badges on a phone, but staff need a driver's badges there: online, free or on a delivery */
+.person.driver-row .row-trail { display: grid; }
