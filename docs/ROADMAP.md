@@ -456,3 +456,35 @@ their results, what is left.)
   longer true (the cart page shares the Food home's destination; the journey test and the live check both show it), so it is
   removed. "Choose where to deliver." staying on screen is still listed; not rechecked.
 - **Left for later:** nothing on this item. The customer items are all ticked; next is "Real drivers and dispatch", slice 1.
+
+### 2026-11-22, `feature/drivers-dispatch`: Real drivers and dispatch, slice 1 (drivers exist)
+
+Built by Claude in the session with the user (not by the daily agent), all four slices on one branch; the item is ticked when
+slice 4 is done.
+
+- **Built:** `domain.RoleDriver`; the `users_role_check` constraint re-created with `driver` (the same drop-and-add as
+  `payments_status_check`, so an older database upgrades in place; checked on a database that had the two-role check); a `drivers`
+  table (user id, `online`, `online_since`, one `latitude`/`longitude` and `location_at`, both-or-neither constraint); `ports.DriverStore`
+  with the Postgres adapter and an in-memory `drivertest.Board`; routes `GET /driver/me`, `POST /driver/online`, `/driver/offline`,
+  `/driver/location` for drivers and `GET /drivers` for staff; staff make drivers under People (role choice, Drivers filter) and
+  `cmd/user -role driver`.
+- **Design choices:** (1) **busy is never stored.** A driver is busy while an order assigned to them is `preparing` or `picked_up`,
+  and their idle time runs from going online or from their last finished or cancelled order; both are read from `orders`, so they
+  cannot disagree with it (a stored flag would be one more thing to keep in step across a crash). (2) **A location is kept only while
+  online and never as a trail:** one row, one point, replaced by the next, cleared when the driver goes offline; a location from an
+  offline driver is a 409. (3) **`signedIn` now means customer or staff.** Before, any signed-in account passed it, so a driver would
+  have reached `/orders`, `/restaurants` and `/addresses`; now a driver gets a 403 there, and `anyAccount` keeps sign out, who-am-I
+  and change password for every role. (4) **The driver store is its own interface on `Server`** (nil until `main` sets it, then the
+  routes answer 503), like `Accounts` and `Geocoder`, so no existing fake had to learn about drivers. (5) The location limit reuses
+  the geocoder's per-person limiter (6 a minute; the app sends every 30 s). Rejected: a `status` column (`available`, `on_delivery`)
+  as the old `domain.Driver` had, for the reason in (1); a location history table (nothing needs a trail, and it is the kind of data
+  that is better not to have).
+- **Tests:** against Postgres (`drivers_test.go`: only driver accounts are drivers, a new driver is offline, going online twice keeps
+  the first time, a point is kept only while online and replaced not added, the database refuses a half point, a latitude of 91 and
+  an unknown role, busy and idle time from the orders, the list online first and without disabled accounts, names) and through real
+  sign-in (`driver_test.go`: every driver route refused to staff, customers and signed-out visitors; a driver refused on 15 customer
+  and staff routes but able to see who they are and sign out; a driver made by staff must replace the temporary password first; the
+  point must exist; the rate limit is per driver; 503 when not set up; 500 without leaking the cause). Web: badge, validation, the
+  Driver choice and the Drivers filter. `go test -race -count=1 ./...` passes with `cmd/handlers` at 100.0%.
+- **Not yet:** nothing offers a driver an order, and a driver who signs in sees the staff dashboard (its calls are refused); both
+  are the next slices.
