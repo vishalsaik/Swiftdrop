@@ -325,3 +325,40 @@ CREATE TABLE IF NOT EXISTS drivers (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT drivers_point_whole CHECK ((latitude IS NULL) = (longitude IS NULL))
 );
+
+-- Dispatch. An order that is being prepared and has no driver is OFFERED to one driver at a time. An offer
+-- is a lease: it holds the order for that driver until expires_at (60 seconds, by this database's clock, like
+-- the payment and refund claims), and ends as accepted, declined or expired. Two unique indexes are the
+-- guarantee that matters: an order has at most one open offer, and a driver at most one, so of two servers
+-- offering at once exactly one insert succeeds. A third says a driver holds at most one unfinished delivery.
+-- order_offers is a history: a row is made, ended once, and never changed again (the trigger below).
+CREATE TABLE IF NOT EXISTS order_offers (
+    id         BIGSERIAL PRIMARY KEY,
+    order_id   TEXT NOT NULL REFERENCES orders (id),
+    driver_id  TEXT NOT NULL REFERENCES users (id),
+    status     TEXT NOT NULL CHECK (status IN ('offered', 'accepted', 'declined', 'expired')),
+    offered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    ended_at   TIMESTAMPTZ,                                  -- NULL exactly while the offer is open
+    CONSTRAINT order_offers_ended_when_closed CHECK ((status = 'offered') = (ended_at IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS order_offers_one_open_per_order ON order_offers (order_id) WHERE status = 'offered';
+CREATE UNIQUE INDEX IF NOT EXISTS order_offers_one_open_per_driver ON order_offers (driver_id) WHERE status = 'offered';
+CREATE INDEX IF NOT EXISTS order_offers_order_idx ON order_offers (order_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS orders_one_active_job_per_driver ON orders (assigned_driver_id)
+    WHERE assigned_driver_id <> '' AND state IN ('preparing', 'picked_up');
+
+CREATE OR REPLACE FUNCTION order_offers_only_end() RETURNS trigger AS $$
+BEGIN
+    IF OLD.status <> 'offered' OR NEW.status = 'offered'
+       OR NEW.id <> OLD.id OR NEW.order_id <> OLD.order_id OR NEW.driver_id <> OLD.driver_id
+       OR NEW.offered_at <> OLD.offered_at OR NEW.expires_at <> OLD.expires_at THEN
+        RAISE EXCEPTION 'an order offer can only be ended, once';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS order_offers_only_end ON order_offers;
+CREATE TRIGGER order_offers_only_end BEFORE UPDATE ON order_offers
+    FOR EACH ROW EXECUTE FUNCTION order_offers_only_end();

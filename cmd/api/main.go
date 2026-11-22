@@ -15,6 +15,7 @@ import (
 	"swiftdrop/internal/alertnotify"
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/databases/adapters"
+	"swiftdrop/internal/dispatch"
 	"swiftdrop/internal/geocode"
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/payment/gateways"
@@ -35,6 +36,10 @@ const defaultReconcileInterval = time.Minute
 // defaultAlertNotifyInterval is how often the job that sends alerts out looks for ones
 // that are due. Set ALERT_NOTIFY_INTERVAL (for example "5s") to change it.
 const defaultAlertNotifyInterval = 15 * time.Second
+
+// defaultDispatchInterval is how often dispatch looks for orders that need a driver. Set DISPATCH_INTERVAL
+// (for example "5s") to change it. DISPATCH_RADIUS_KM sets how far from a restaurant a driver may be (default 8).
+const defaultDispatchInterval = 10 * time.Second
 
 // defaultPaymentCacheSize is how many paid orders' payments are kept in memory.
 // Set PAYMENT_CACHE_SIZE to change it; 0 switches the cache off.
@@ -66,6 +71,21 @@ func main() {
 		reconcileInterval, err = time.ParseDuration(v)
 		if err != nil || reconcileInterval <= 0 {
 			panic(fmt.Sprintf("RECONCILE_INTERVAL must be a positive duration such as 1m, got %q", v))
+		}
+	}
+
+	dispatchInterval := defaultDispatchInterval
+	if v := os.Getenv("DISPATCH_INTERVAL"); v != "" {
+		dispatchInterval, err = time.ParseDuration(v)
+		if err != nil || dispatchInterval <= 0 {
+			panic(fmt.Sprintf("DISPATCH_INTERVAL must be a positive duration such as 10s, got %q", v))
+		}
+	}
+	dispatchRadius := dispatch.DefaultRadiusKm
+	if v := os.Getenv("DISPATCH_RADIUS_KM"); v != "" {
+		dispatchRadius, err = strconv.ParseFloat(v, 64)
+		if err != nil || !(dispatchRadius > 0 && dispatchRadius <= 100) {
+			panic(fmt.Sprintf("DISPATCH_RADIUS_KM must be a number of kilometres above 0 and up to 100, got %q", v))
 		}
 	}
 
@@ -119,7 +139,9 @@ func main() {
 	authService := auth.New(dbConn)
 	s.Accounts = authService
 	s.SecureCookies = os.Getenv("COOKIE_SECURE") == "true"
-	s.Drivers = dbConn // drivers: online or not, and where they last said they were
+	s.Drivers = dbConn  // drivers: online or not, and where they last said they were
+	s.Dispatch = dbConn // the offers a driver is asked to answer
+	s.Jobs = dbConn     // the delivery a driver is doing
 	fmt.Println("sign-in is required. Make the first staff account with: go run ./cmd/user -email you@example.com -name \"Your Name\"")
 
 	// A retried /pay on a paid order is answered from memory: an authorized payment
@@ -185,6 +207,17 @@ func main() {
 	}()
 	fmt.Printf("payment reconciler running every %s\n", reconcileInterval)
 
+	// Dispatch offers each order being prepared to the nearest free driver, one at a time, with a lease of
+	// 60 seconds. Every server may run it: the offers are claimed in the database.
+	dispatchDone := make(chan struct{})
+	go func() {
+		defer close(dispatchDone)
+		dispatcher := dispatch.NewService(dbConn)
+		dispatcher.RadiusKm = dispatchRadius
+		dispatcher.Run(ctx, dispatchInterval)
+	}()
+	fmt.Printf("dispatch running every %s, drivers within %.0f km of a restaurant\n", dispatchInterval, dispatchRadius)
+
 	// Alerts are sent to a webhook (Slack-compatible) so they do not wait for someone to
 	// open the dashboard. The address is a secret and is never printed, only its host.
 	notifyDone := make(chan struct{})
@@ -229,6 +262,7 @@ func main() {
 		<-reconcileDone
 		<-cleanupDone
 		<-notifyDone
+		<-dispatchDone
 		panic(err)
 	case <-ctx.Done():
 	}
@@ -243,4 +277,5 @@ func main() {
 	<-reconcileDone
 	<-cleanupDone
 	<-notifyDone
+	<-dispatchDone
 }

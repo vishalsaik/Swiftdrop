@@ -100,6 +100,12 @@ func (s *Server) staffOnly(h http.HandlerFunc) http.HandlerFunc {
 	return s.guard(h, "this needs a staff account", domain.RoleStaff)
 }
 
+// staffOrDriver lets a request through for a staff member or a driver. The handler behind it decides what a
+// driver may do: only their own delivery, and it is told nothing else about the order.
+func (s *Server) staffOrDriver(h http.HandlerFunc) http.HandlerFunc {
+	return s.guard(h, "this needs a staff or driver account", domain.RoleStaff, domain.RoleDriver)
+}
+
 // driverOnly lets a request through only if a driver is signed in.
 func (s *Server) driverOnly(h http.HandlerFunc) http.HandlerFunc {
 	return s.guard(h, "this needs a driver account", domain.RoleDriver)
@@ -136,8 +142,8 @@ func (s *Server) guard(h http.HandlerFunc, forbidden string, roles ...domain.Rol
 	}
 }
 
-// mayAccess reports whether the request's account may see and act on the order:
-// staff any order, a customer only their own.
+// mayAccess reports whether the request's account may see and act on the order: staff any order, a customer
+// only their own, a driver only the delivery they are doing (assigned to them, and not yet finished).
 func mayAccess(r *http.Request, o domain.Order) bool {
 	p := principalFrom(r)
 	switch {
@@ -145,6 +151,8 @@ func mayAccess(r *http.Request, o domain.Order) bool {
 		return false
 	case p.User.Role == domain.RoleStaff:
 		return true
+	case p.User.Role == domain.RoleDriver:
+		return o.AssignedDriverID == p.User.ID && (o.State == domain.OrderPreparing || o.State == domain.OrderPickedUp)
 	default:
 		return p.User.Role == domain.RoleCustomer && o.CustomerID == p.User.ID
 	}

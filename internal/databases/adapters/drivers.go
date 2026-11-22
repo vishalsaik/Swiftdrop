@@ -64,16 +64,36 @@ func (db *DBAdapter) SetOnline(ctx context.Context, userID string, online bool) 
 			return domain.Driver{}, fmt.Errorf("failed to set driver online: %w", err)
 		}
 	} else {
-		// Going offline forgets where they were: a location is kept only while they are online. Saying
-		// "offline" to an offline driver changes nothing and is not an error.
-		if _, err := db.Pool.Exec(ctx, `
-			UPDATE drivers SET online = false, online_since = NULL, latitude = NULL, longitude = NULL,
-			       location_at = NULL, updated_at = now()
-			WHERE user_id = $1 AND online`, userID); err != nil {
-			return domain.Driver{}, fmt.Errorf("failed to set driver offline: %w", err)
+		// Going offline forgets where they were: a location is kept only while they are online. It also
+		// ends an offer they hold, so the order is offered to someone else at the next round instead of
+		// waiting out the lease for a driver who has left. Saying "offline" to an offline driver changes
+		// nothing and is not an error.
+		if err := db.goOffline(ctx, userID); err != nil {
+			return domain.Driver{}, err
 		}
 	}
 	return db.GetDriver(ctx, userID)
+}
+
+// goOffline makes the driver offline, forgets their point and ends the offer they hold, in one transaction.
+func (db *DBAdapter) goOffline(ctx context.Context, userID string) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to set driver offline: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE drivers SET online = false, online_since = NULL, latitude = NULL, longitude = NULL,
+		       location_at = NULL, updated_at = now()
+		WHERE user_id = $1 AND online`, userID); err != nil {
+		return fmt.Errorf("failed to set driver offline: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE order_offers SET status = 'expired', ended_at = clock_timestamp()
+		WHERE driver_id = $1 AND status = 'offered'`, userID); err != nil {
+		return fmt.Errorf("failed to set driver offline: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (db *DBAdapter) SetLocation(ctx context.Context, userID string, lat, lng float64) (domain.Driver, error) {

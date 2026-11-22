@@ -43,6 +43,11 @@ func (s *Server) ListOrders(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		views = append(views, viewOf(row.Order, row.Payment))
 	}
+	pointers := make([]*orderView, len(views))
+	for i := range views {
+		pointers[i] = &views[i]
+	}
+	s.nameDrivers(r.Context(), principalFrom(r).User.Role, pointers...)
 	writeJSON(w, http.StatusOK, map[string][]orderView{"orders": views})
 }
 
