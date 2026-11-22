@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../api';
 import { useOrders } from '../hooks/data';
 import { CartProvider, useCart } from '../hooks/cart';
 import { greeting } from '../lib/logic';
 import type { IconName } from '../lib/present';
-import type { User } from '../lib/types';
+import type { Restaurant, User } from '../lib/types';
 import { useSession } from '../session';
 import type { Theme } from '../theme';
 import { AccountBody, AccountSheet } from './AccountSheet';
@@ -56,6 +57,20 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
     [orders],
   );
   const selected = selectedId ? orders.find((o) => o.id === selectedId) ?? null : null;
+
+  // An order carries its restaurant's id, not its name, so the names come from the list of open
+  // restaurants, read when the Orders tab is first opened (and again the next time if that failed).
+  // A restaurant that has closed since is not in the list; its orders just show no name.
+  const [restaurantNames, setRestaurantNames] = useState<Record<string, string>>({});
+  const namesRead = useRef(false);
+  useEffect(() => {
+    if (tab !== 'orders' || namesRead.current) return;
+    namesRead.current = true;
+    void api<{ restaurants: Restaurant[] | null }>('GET', '/restaurants').then((res) => {
+      if (!res.ok) { namesRead.current = false; return; }
+      setRestaurantNames(Object.fromEntries((res.data?.restaurants ?? []).map((r) => [r.id, r.name])));
+    });
+  }, [tab]);
 
   // Escape goes back from an open order to the list when no sheet is on top of it.
   useEffect(() => {
@@ -137,7 +152,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         )}
 
         {!cartOpen && tab === 'orders' && selectedId && (
-          <OrderPage key={selectedId} order={selected} loaded={loaded} onBack={() => setSelectedId(null)} onChanged={refresh} />
+          <OrderPage key={selectedId} order={selected} restaurant={selected ? restaurantNames[selected.restaurantId] : undefined} loaded={loaded} onBack={() => setSelectedId(null)} onChanged={refresh} />
         )}
         {!cartOpen && tab === 'orders' && !selectedId && (
           <section aria-labelledby="orders-title">
@@ -158,7 +173,7 @@ function CustomerView({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
               </div>
             ) : (
               <ul className="list">
-                {newestFirst.map((o) => <CustomerOrderRow key={o.id} order={o} onOpen={setSelectedId} />)}
+                {newestFirst.map((o) => <CustomerOrderRow key={o.id} order={o} restaurant={restaurantNames[o.restaurantId]} onOpen={setSelectedId} />)}
               </ul>
             )}
           </section>

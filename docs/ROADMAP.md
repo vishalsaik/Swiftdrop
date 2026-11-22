@@ -562,3 +562,26 @@ their code is one commit and their tests another; slice 4 is the web. **The item
   range has refused waits for a new driver, no push to a driver, straight-line distance, no street address for a restaurant, no pay or
   shifts. The next unticked item is "Email notifications and self-service password reset".
 
+
+### 2026-11-22, `feature/housekeeping`: Test gaps, steadier tests, the restaurant's name on order rows
+
+Built by Claude in the session with the user (not by the daily agent). Not an item on the list: it clears what the reviews of the
+customer-view items left behind.
+
+- **Built:** (1) The slow-machine failures: `asyncUtilTimeout` 5 s to 10 s and `testTimeout` 20 s to 60 s, and the 49-click stepper
+  test sends its clicks with `fireEvent` (the two tests that failed under load, the orb test and the stepper-to-50 test, now pass in
+  a full run with Docker and a database running). (2) New tests for the mutants the reviews found surviving: the first cancel tap is
+  kept for the full 4 s (3.5 s still armed, then gone), a 402 with `canRetry: false` offers no "Try another method", the state pill
+  beside an order's number, the orb on a `payment_pending` row and not on a paid one (the orb is stubbed in that file, as in
+  `Effects.test.tsx`), a staff order-id clash stays on the id field with `aria-invalid` and no toast, a staff-placed order closes the
+  sheet, re-reads the list and opens in the drawer within 2 s, and a near restaurant's page says "Delivers to Home". (3) The
+  restaurant's name on a customer's order rows and order page: `CustomerView` reads `GET /restaurants` once when the Orders tab is
+  first opened (again next time if that read failed) and passes the name down.
+- **Checked by mutation:** each new test was shown to fail when the line it watches is changed (the 4 s timer to 0.4 s; the 409
+  branch to a toast; the Shell dropping `openOrder`; RestaurantPage given no address; the name dropped from the row or the page;
+  the read repeated on every visit; a failed read never retried). **One mutant survives and is judged equivalent:** removing
+  `await refreshAll()` before `openOrder(id)` in the Shell's `onPlaced` still opens the order, because opening the Orders view
+  starts its own read; the test keeps a 2 s wait (shorter than the 3 s poll) but cannot prove that line on its own.
+- **Left for later:** nothing on this branch. The Food home reads the restaurant list itself and the Orders tab reads it again
+  (two small requests; sharing one read between them would mean lifting the Food home's state). The next unticked item is still
+  "Email notifications and self-service password reset".

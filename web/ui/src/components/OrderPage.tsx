@@ -14,7 +14,7 @@ import { Pill, Waiting } from './ui';
 // because drivers are still a stand-in. The server decides what the customer may do; the page
 // offers only paying and cancelling (actionsFor with the customer role).
 
-export function CustomerOrderRow({ order, onOpen }: { order: Order; onOpen(id: string): void }) {
+export function CustomerOrderRow({ order, restaurant, onOpen }: { order: Order; restaurant?: string; onOpen(id: string): void }) {
   const stamp = stampFor(order);
   return (
     <li>
@@ -25,7 +25,7 @@ export function CustomerOrderRow({ order, onOpen }: { order: Order; onOpen(id: s
           </span>
           <span className="row-status">{customerStatus(order)}</span>
           <span className="row-sub">{itemsSummary(order) || 'No items'}</span>
-          <span className="row-meta">{timeAgo(order.createdAt)}</span>
+          <span className="row-meta">{[restaurant, timeAgo(order.createdAt)].filter(Boolean).join(' · ')}</span>
         </span>
         <span className="row-trail">
           <span className="amount">{money(totalCents(order))}</span>
@@ -40,19 +40,21 @@ export function CustomerOrderRow({ order, onOpen }: { order: Order; onOpen(id: s
 interface PageProps {
   /** the order, from the polled list; null when the list has no such order (any more) */
   order: Order | null;
+  /** the restaurant's name, when it is known (the list of restaurants has been read and still has it) */
+  restaurant?: string;
   /** false until the first answer of the list */
   loaded: boolean;
   onBack(): void;
   onChanged(): Promise<void>;
 }
 
-export function OrderPage({ order, loaded, onBack, onChanged }: PageProps) {
+export function OrderPage({ order, restaurant, loaded, onBack, onChanged }: PageProps) {
   return (
     <section className="order-page" aria-label="Order details">
       <button type="button" className="text-btn back" onClick={onBack}>
         <Icon name="chevron" size={16} /> Your orders
       </button>
-      {order ? <Tracker order={order} onChanged={onChanged} /> : !loaded ? (
+      {order ? <Tracker order={order} restaurant={restaurant} onChanged={onChanged} /> : !loaded ? (
         <div className="empty"><Waiting label="Loading the order" /><p>Loading the order</p></div>
       ) : (
         <div className="empty">
@@ -65,7 +67,7 @@ export function OrderPage({ order, loaded, onBack, onChanged }: PageProps) {
   );
 }
 
-function Tracker({ order, onChanged }: { order: Order; onChanged(): Promise<void> }) {
+function Tracker({ order, restaurant, onChanged }: { order: Order; restaurant?: string; onChanged(): Promise<void> }) {
   const { actions, run, busy, payOpen, method, setMethod, hints, label } = useOrderActions(order, 'customer', onChanged);
   const notice = noticeFor(order);
   const address = order.deliveryAddress;
@@ -75,7 +77,7 @@ function Tracker({ order, onChanged }: { order: Order; onChanged(): Promise<void
       <div className="page-head">
         <div>
           <h1 className="mono">{order.id}</h1>
-          <p className="sub">{[timeAgo(order.createdAt) ? `Placed ${timeAgo(order.createdAt)}` : '', itemsSummary(order, 1)].filter(Boolean).join(' · ')}</p>
+          <p className="sub">{[restaurant, timeAgo(order.createdAt) ? `Placed ${timeAgo(order.createdAt)}` : '', itemsSummary(order, 1)].filter(Boolean).join(' · ')}</p>
         </div>
         <Pill tone="neutral">{STATE_LABELS[order.state] || order.state}</Pill>
       </div>

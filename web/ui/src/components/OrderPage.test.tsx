@@ -8,6 +8,12 @@ import { customer, mockServer, order, session, type Handler } from '../test/serv
 
 // The customer's tracker: the Orders list and an order's page.
 
+// The orb draws on a canvas, which jsdom does not have; a stand-in that can be found stands in for it.
+vi.mock('thinking-orbs', async () => {
+  const React = await import('react');
+  return { ThinkingOrb: () => React.createElement('canvas', { 'data-testid': 'orb' }) };
+});
+
 beforeEach(() => { localStorage.clear(); document.documentElement.dataset.theme = 'light'; });
 afterEach(() => { setSession(null); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -54,6 +60,54 @@ describe('the Orders list', () => {
     // the list says nothing staff-like: no payment type column, no customer id
     expect(screen.queryByText(/card \//)).toBeNull();
     expect(screen.queryByText(/u-cust/)).toBeNull();
+  });
+});
+
+describe('which restaurant an order is from', () => {
+  const restaurants = () => ({ body: { restaurants: [{ id: 'r1', name: 'Corner Kitchen', active: true }, { id: 'r2', name: 'Noodle Bar', active: true }] } });
+  const meta = (name: RegExp) => screen.getByRole('button', { name }).querySelector('.row-meta')?.textContent ?? '';
+
+  it('names the restaurant on the order\'s row and on its page, and reads the names once', async () => {
+    const user = userEvent.setup();
+    const server = serve([order({ id: 'o1', restaurantId: 'r1' }), order({ id: 'o2', restaurantId: 'r2' })], { 'GET /restaurants': restaurants });
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
+    await screen.findByRole('button', { name: /^Order o1,/ });
+    await waitFor(() => expect(meta(/^Order o1,/)).toMatch(/^Corner Kitchen/));
+    expect(meta(/^Order o2,/)).toMatch(/^Noodle Bar/);
+    await user.click(screen.getByRole('button', { name: /^Order o1,/ }));
+    expect(await page().findByText(/^Corner Kitchen/, { selector: '.sub' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Your orders/ }));
+    await user.click(await screen.findByRole('button', { name: 'Food' }));
+    await user.click(screen.getByRole('button', { name: 'Orders' }));
+    await screen.findByRole('button', { name: /^Order o1,/ });
+    expect(server.callsTo('GET', '/restaurants')).toHaveLength(3); // the Food home reads the list each time it opens (twice here); the Orders tab read it once
+  });
+
+  it('shows no name, and no stray separator, for a restaurant that is not in the list', async () => {
+    const user = userEvent.setup();
+    const server = serve([order({ id: 'o1', restaurantId: 'closed' })], { 'GET /restaurants': restaurants });
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
+    await screen.findByRole('button', { name: /^Order o1,/ });
+    await waitFor(() => expect(server.callsTo('GET', '/restaurants')).toHaveLength(2)); // the Food home's read, then the Orders tab's
+    expect(meta(/^Order o1,/)).not.toMatch(/\u00b7|Corner|Noodle/);
+  });
+
+  it('asks again the next time the Orders tab opens when the names could not be read', async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    const server = serve([order({ id: 'o1', restaurantId: 'r1' })], {
+      'GET /restaurants': () => (++calls === 2 ? { status: 500, body: { error: 'down' } } : restaurants()),
+    });
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
+    await screen.findByRole('button', { name: /^Order o1,/ });
+    await waitFor(() => expect(server.callsTo('GET', '/restaurants')).toHaveLength(2)); // the Food home's read, then the Orders tab's, which fails
+    expect(meta(/^Order o1,/)).not.toMatch(/Corner Kitchen/);
+    await user.click(screen.getByRole('button', { name: 'Food' }));
+    await user.click(screen.getByRole('button', { name: 'Orders' }));
+    await waitFor(() => expect(meta(/^Order o1,/)).toMatch(/^Corner Kitchen/));
   });
 });
 
@@ -234,6 +288,53 @@ describe('acting on an order from its page', () => {
     await user.click(p.getByRole('button', { name: 'Cancel order' }));
     await user.click(p.getByRole('button', { name: 'Confirm: cancel order' }));
     expect(await screen.findByText('o1: order can no longer be cancelled')).toBeTruthy();
+  });
+});
+
+describe('details a mutation check found nothing was watching', () => {
+  it('keeps the first cancel tap for the whole four seconds, not less', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    serve([order({ id: 'o1', state: 'created' })], { 'POST /orders/o1/cancel': () => ({ body: {} }) });
+    const p = await openOrder(user);
+    await user.click(p.getByRole('button', { name: 'Cancel order' }));
+    await vi.advanceTimersByTimeAsync(3500);
+    // still asking to be confirmed: a timer of 0.4 s (or any under four seconds) would have forgotten it
+    expect(p.getByRole('button', { name: 'Confirm: cancel order' })).toBeTruthy();
+    await vi.advanceTimersByTimeAsync(700);
+    expect(await p.findByRole('button', { name: 'Cancel order' })).toBeTruthy();
+  });
+
+  it('gives no "try another method" when the server says the payment cannot be retried', async () => {
+    const user = userEvent.setup();
+    serve([order({ id: 'o1', state: 'created' })], {
+      'POST /orders/o1/pay': () => ({ status: 402, body: { error: 'the last attempt was declined', canRetry: false, attemptsLeft: 0 } }),
+    });
+    const p = await openOrder(user);
+    await user.click(p.getByRole('button', { name: 'Pay now' }));
+    await user.click(p.getByRole('button', { name: 'Pay now' }));
+    expect(await screen.findByText('o1: the last attempt was declined')).toBeTruthy();
+    expect(screen.queryByText(/Try another method/)).toBeNull();
+  });
+
+  it('shows the order\'s state beside its number', async () => {
+    const user = userEvent.setup();
+    serve([order({ id: 'o1', state: 'picked_up', payment: paid() })]);
+    const p = await openOrder(user);
+    expect(p.getByText('On the road', { selector: '.pill' })).toBeTruthy();
+  });
+
+  it('draws the thinking orb on a row whose payment is being confirmed, and on no other', async () => {
+    const user = userEvent.setup();
+    serve([
+      order({ id: 'wait', state: 'payment_pending', paymentIssue: 'confirming', payment: paid({ status: 'processing' }) }),
+      order({ id: 'done', state: 'paid', payment: paid() }),
+    ]);
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Orders' }));
+    const waiting = await screen.findByRole('button', { name: /^Order wait,/ });
+    expect(within(waiting).getByTestId('orb')).toBeTruthy();
+    expect(within(screen.getByRole('button', { name: /^Order done,/ })).queryByTestId('orb')).toBeNull();
   });
 });
 

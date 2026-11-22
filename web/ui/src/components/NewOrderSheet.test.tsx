@@ -198,7 +198,34 @@ describe('ordering as staff', () => {
     await openSheet(user);
     await more(user, 'Fries');
     await placeOrder(user);
-    expect(await screen.findByText('order SD-1 already exists')).toBeTruthy();
+    // the message sits on the id field (marked invalid, so staff see which field to change), not in a toast
+    const message = await screen.findByText('order SD-1 already exists');
+    expect(message.className).toContain('form-error');
+    expect(screen.getByLabelText('Order id').getAttribute('aria-invalid')).toBe('true');
+    expect(screen.queryAllByRole('alert').some((a) => /already exists/.test(a.textContent ?? ''))).toBe(false); // not a toast
+    expect(screen.getByRole('button', { name: /^Place order/ })).toBeTruthy(); // the sheet is still open
+  });
+
+  it('closes the sheet, re-reads the list and opens the new order for staff who placed it', async () => {
+    const user = userEvent.setup();
+    const placed: ReturnType<typeof order>[] = [];
+    const server = shop(staff, {
+      'GET /orders': () => ({ body: { orders: placed } }),
+      'POST /orders': (c) => {
+        const o = order({ id: (c.body as { id: string }).id });
+        placed.push(o);
+        return { status: 201, body: { order: o } };
+      },
+    });
+    await openSheet(user);
+    await more(user, 'Fries');
+    await placeOrder(user);
+    await waitFor(() => expect(server.callsTo('POST', '/orders')).toHaveLength(1));
+    const id = (server.callsTo('POST', '/orders')[0].body as { id: string }).id;
+    // the order is in the drawer (its number is the drawer's heading) quickly (a 2 s wait, shorter than the list's 3 s poll)
+    expect(await screen.findByRole('heading', { level: 2, name: id }, { timeout: 2000 })).toBeTruthy();
+    expect(server.callsTo('GET', '/orders').length).toBeGreaterThan(1);
+    expect(screen.queryByRole('button', { name: /^Place order/ })).toBeNull();
   });
 
   it('points at the Menu when no restaurant is open', async () => {

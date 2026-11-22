@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { App } from '../App';
@@ -132,6 +132,18 @@ describe('a restaurant page', () => {
     expect(screen.getByText('Too far to deliver to Home')).toBeTruthy();
   });
 
+  it('says a near restaurant delivers to the chosen address, and says nothing of the kind before one is chosen', async () => {
+    const user = userEvent.setup();
+    serve();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Deliver to Home' }));
+    await user.click(await screen.findByRole('button', { name: /^Corner Kitchen/ }));
+    await screen.findByRole('heading', { name: 'Corner Kitchen' });
+    expect(screen.getByText(/50 m away/)).toBeTruthy();
+    expect(screen.getByText('Delivers to Home')).toBeTruthy();
+    expect(screen.queryByText(/Too far/)).toBeNull();
+  });
+
   it('filters the menu by what is typed and by vegetarian, on the page, asking the server nothing', async () => {
     const user = userEvent.setup();
     const server = serve();
@@ -236,7 +248,10 @@ describe('the steppers', () => {
     expect(cartButton().getAttribute('aria-label')).toBe('Cart, 1 item');
     expect(screen.getByRole('button', { name: /View cart · 1 item · \$9\.50/ })).toBeTruthy();
 
-    for (let i = 0; i < 49; i++) await user.click(screen.getByRole('button', { name: 'More Smash burger' }));
+    // 49 more presses of the same button: fireEvent on the one element, because 49 full user-event
+    // clicks, each with its own query of the page, took twenty seconds on a busy machine
+    const more = screen.getByRole('button', { name: 'More Smash burger' });
+    for (let i = 0; i < 49; i++) fireEvent.click(more);
     expect(screen.getByLabelText('Smash burger in cart').textContent).toBe('50');
     expect((screen.getByRole('button', { name: 'More Smash burger' }) as HTMLButtonElement).disabled).toBe(true);
   });
