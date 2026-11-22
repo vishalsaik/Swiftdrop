@@ -138,6 +138,12 @@ func (s *Service) CreateStaff(ctx context.Context, email, name, password string)
 	return s.createUser(ctx, domain.RoleStaff, email, name, password)
 }
 
+// CreateDriver makes a driver account, for the command line. In the dashboard staff make drivers
+// through CreateAccount, which gives them a temporary password to replace.
+func (s *Service) CreateDriver(ctx context.Context, email, name, password string) (domain.User, error) {
+	return s.createUser(ctx, domain.RoleDriver, email, name, password)
+}
+
 func (s *Service) createUser(ctx context.Context, role domain.Role, email, name, password string) (domain.User, error) {
 	email = NormalizeEmail(email)
 	name = strings.TrimSpace(name)
@@ -491,7 +497,7 @@ func (s *Service) CreateAccount(ctx context.Context, actor Principal, email, nam
 		problems["name"] = why
 	}
 	if !role.Valid() {
-		problems["role"] = "must be staff or customer"
+		problems["role"] = "must be staff, customer or driver"
 	}
 	if len(problems) > 0 {
 		return domain.User{}, "", &InvalidError{Fields: problems}

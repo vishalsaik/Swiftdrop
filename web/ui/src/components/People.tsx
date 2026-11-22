@@ -6,9 +6,9 @@ import { useToast } from '../toasts';
 import { Icon } from './Icon';
 import { Avatar, Pill, Segmented, Sheet } from './ui';
 
-type Filter = 'all' | 'staff' | 'customer' | 'disabled';
+type Filter = 'all' | 'staff' | 'customer' | 'driver' | 'disabled';
 
-// The people the service knows: staff and customers. Only staff see this, and the server checks.
+// The people the service knows: staff, customers and drivers. Only staff see this, and the server checks.
 export function PeopleView({ me }: { me: User }) {
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
@@ -21,7 +21,7 @@ export function PeopleView({ me }: { me: User }) {
   const load = useCallback(async () => {
     const mine = ++latest.current; // an older, slower answer must not replace a newer one
     const params = new URLSearchParams({ limit: '200' });
-    if (filter === 'staff' || filter === 'customer') params.set('role', filter);
+    if (filter === 'staff' || filter === 'customer' || filter === 'driver') params.set('role', filter);
     if (filter === 'disabled') params.set('status', 'disabled');
     if (search.trim()) params.set('q', search.trim());
     const res = await api<{ accounts: User[] | null }>('GET', `/users?${params}`);
@@ -44,7 +44,7 @@ export function PeopleView({ me }: { me: User }) {
     <div className="groups">
       <div className="people-tools">
         <Segmented<Filter> label="Which people" value={filter} onChange={setFilter}
-          options={[{ value: 'all', label: 'All' }, { value: 'staff', label: 'Staff' }, { value: 'customer', label: 'Customers' }, { value: 'disabled', label: 'Disabled' }]} />
+          options={[{ value: 'all', label: 'All' }, { value: 'staff', label: 'Staff' }, { value: 'customer', label: 'Customers' }, { value: 'driver', label: 'Drivers' }, { value: 'disabled', label: 'Disabled' }]} />
         <input className="search" type="search" placeholder="Search by name or email" aria-label="Search people" value={search}
           onChange={(e) => setSearch(e.target.value)} />
         <button className="btn primary" type="button" onClick={() => setAdding(true)}><Icon name="plus" size={18} /> Add a person</button>
@@ -218,11 +218,17 @@ function AddPersonSheet({ open, onClose, onChanged }: { open: boolean; onClose()
   );
 }
 
+const ROLE_HINTS = {
+  customer: 'A customer places and follows their own orders.',
+  staff: 'Staff run the kitchen and delivery, see every order, and manage people.',
+  driver: 'A driver goes online, is offered deliveries nearby and sees only the one they are doing.',
+};
+
 function AddPersonForm({ onChanged, onClose }: { onChanged(): Promise<void>; onClose(): void }) {
   const toast = useToast();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'staff' | 'customer'>('customer');
+  const [role, setRole] = useState<'staff' | 'customer' | 'driver'>('customer');
   const [problems, setProblems] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [made, setMade] = useState<{ user: User; password: string } | null>(null);
@@ -266,9 +272,9 @@ function AddPersonForm({ onChanged, onClose }: { onChanged(): Promise<void>; onC
         </label>
       </div>
       <h3 className="group-title">What they can do</h3>
-      <Segmented<'staff' | 'customer'> label="Role" value={role} onChange={setRole}
-        options={[{ value: 'customer', label: 'Customer' }, { value: 'staff', label: 'Staff' }]} />
-      <p className="hint">{role === 'staff' ? 'Staff run the kitchen and delivery, see every order, and manage people.' : 'A customer places and follows their own orders.'}</p>
+      <Segmented<'staff' | 'customer' | 'driver'> label="Role" value={role} onChange={setRole}
+        options={[{ value: 'customer', label: 'Customer' }, { value: 'staff', label: 'Staff' }, { value: 'driver', label: 'Driver' }]} />
+      <p className="hint">{ROLE_HINTS[role]}</p>
       {Object.entries(problems).map(([k, t]) => <p key={k} className="form-error">{t}</p>)}
       <button className="btn primary wide" type="submit" disabled={busy}>Create account</button>
       <p className="hint">They get a temporary password, shown once, and choose their own when they first sign in.</p>

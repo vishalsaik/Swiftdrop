@@ -306,3 +306,22 @@ CREATE TABLE IF NOT EXISTS addresses (
 );
 CREATE INDEX IF NOT EXISTS addresses_user_idx ON addresses (user_id, created_at);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address JSONB;
+
+-- Drivers. A driver is an account with the role 'driver' (the check is re-created so an older database
+-- takes the new role) plus a row here with what dispatch needs: whether they are taking deliveries and the
+-- last point they sent. There is one point per driver, replaced by the next, never a trail. Whether a
+-- driver is busy is NOT stored: it is read from the orders (see order_offers and orders_one_active_job
+-- below), so it can never disagree with them.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('customer', 'staff', 'driver'));
+
+CREATE TABLE IF NOT EXISTS drivers (
+    user_id      TEXT PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    online       BOOLEAN NOT NULL DEFAULT false,
+    online_since TIMESTAMPTZ,                                -- when they last went online; NULL while offline
+    latitude     DOUBLE PRECISION CHECK (latitude BETWEEN -90 AND 90),
+    longitude    DOUBLE PRECISION CHECK (longitude BETWEEN -180 AND 180),
+    location_at  TIMESTAMPTZ,                                -- when that point was sent
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT drivers_point_whole CHECK ((latitude IS NULL) = (longitude IS NULL))
+);

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"swiftdrop/internal/auth"
@@ -83,13 +84,30 @@ func (s *Server) identifyFromCookie(r *http.Request) (auth.Principal, error) {
 	return p, nil
 }
 
-// signedIn lets a request through only if someone is signed in, any role.
-func (s *Server) signedIn(h http.HandlerFunc) http.HandlerFunc { return s.guard(false, h) }
+// signedIn lets a request through only if a customer or a staff member is signed in. A driver is signed in
+// too but is not let through here: a driver is offered deliveries and sees the one they are doing, and
+// nothing else (see driverOnly and the routes that name drivers).
+func (s *Server) signedIn(h http.HandlerFunc) http.HandlerFunc {
+	return s.guard(h, "this is not available to a driver account", domain.RoleCustomer, domain.RoleStaff)
+}
+
+// anyAccount lets a request through for any signed-in account, whatever its role: the routes everyone
+// needs to sign out, see who they are and change their password.
+func (s *Server) anyAccount(h http.HandlerFunc) http.HandlerFunc { return s.guard(h, "") }
 
 // staffOnly lets a request through only if a staff member is signed in.
-func (s *Server) staffOnly(h http.HandlerFunc) http.HandlerFunc { return s.guard(true, h) }
+func (s *Server) staffOnly(h http.HandlerFunc) http.HandlerFunc {
+	return s.guard(h, "this needs a staff account", domain.RoleStaff)
+}
 
-func (s *Server) guard(staffOnly bool, h http.HandlerFunc) http.HandlerFunc {
+// driverOnly lets a request through only if a driver is signed in.
+func (s *Server) driverOnly(h http.HandlerFunc) http.HandlerFunc {
+	return s.guard(h, "this needs a driver account", domain.RoleDriver)
+}
+
+// guard runs h for a signed-in account, and only for one of roles when any are named (otherwise any role).
+// An account of another role is answered 403 with forbidden.
+func (s *Server) guard(h http.HandlerFunc, forbidden string, roles ...domain.Role) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.Identify(r)
 		switch {
@@ -110,8 +128,8 @@ func (s *Server) guard(staffOnly bool, h http.HandlerFunc) http.HandlerFunc {
 			refusePasswordChangeRequired(w)
 			return
 		}
-		if staffOnly && p.User.Role != domain.RoleStaff {
-			writeError(w, http.StatusForbidden, "this needs a staff account")
+		if len(roles) > 0 && !slices.Contains(roles, p.User.Role) {
+			writeError(w, http.StatusForbidden, forbidden)
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))

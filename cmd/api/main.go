@@ -119,6 +119,7 @@ func main() {
 	authService := auth.New(dbConn)
 	s.Accounts = authService
 	s.SecureCookies = os.Getenv("COOKIE_SECURE") == "true"
+	s.Drivers = dbConn // drivers: online or not, and where they last said they were
 	fmt.Println("sign-in is required. Make the first staff account with: go run ./cmd/user -email you@example.com -name \"Your Name\"")
 
 	// A retried /pay on a paid order is answered from memory: an authorized payment

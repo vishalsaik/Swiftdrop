@@ -1,6 +1,6 @@
 // The shapes the Go API answers with. See cmd/handlers and internal/domain.
 
-export type Role = 'customer' | 'staff';
+export type Role = 'customer' | 'staff' | 'driver';
 
 export interface User {
   id: string; email: string; name: string; role: Role; createdAt?: string;

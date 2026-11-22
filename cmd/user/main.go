@@ -30,6 +30,7 @@ const defaultDSN = "postgres://postgres:postgres@127.0.0.1:5434/swiftdrop?sslmod
 // creator is the part of the auth service this command uses.
 type creator interface {
 	CreateStaff(ctx context.Context, email, name, password string) (domain.User, error)
+	CreateDriver(ctx context.Context, email, name, password string) (domain.User, error)
 	SignUp(ctx context.Context, ip, email, name, password string) (domain.User, error)
 }
 
@@ -56,7 +57,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	fs.SetOutput(stderr)
 	email := fs.String("email", "", "the account's email address (required)")
 	name := fs.String("name", "", "the person's name (required)")
-	role := fs.String("role", string(domain.RoleStaff), "staff or customer")
+	role := fs.String("role", string(domain.RoleStaff), "staff, customer or driver")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -83,8 +84,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		user, err = svc.CreateStaff(ctx, *email, *name, password)
 	case domain.RoleCustomer:
 		user, err = svc.SignUp(ctx, "cli", *email, *name, password)
+	case domain.RoleDriver:
+		user, err = svc.CreateDriver(ctx, *email, *name, password)
 	default:
-		fmt.Fprintf(stderr, "-role must be staff or customer, not %q\n", *role)
+		fmt.Fprintf(stderr, "-role must be staff, customer or driver, not %q\n", *role)
 		return 2
 	}
 	var invalid *auth.InvalidError

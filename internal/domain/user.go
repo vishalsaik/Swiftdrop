@@ -2,18 +2,20 @@ package domain
 
 import "time"
 
-// Role says what a signed-in person may do. There are two: a customer, who can
-// only see and act on their own orders, and staff, who run the kitchen and the
-// delivery and see every order.
+// Role says what a signed-in person may do. There are three: a customer, who can
+// only see and act on their own orders, staff, who run the kitchen and the
+// delivery and see every order, and a driver, who is offered deliveries and sees
+// only the one they are doing.
 type Role string
 
 const (
 	RoleCustomer Role = "customer"
 	RoleStaff    Role = "staff"
+	RoleDriver   Role = "driver"
 )
 
 // Valid reports whether r is one of the roles.
-func (r Role) Valid() bool { return r == RoleCustomer || r == RoleStaff }
+func (r Role) Valid() bool { return r == RoleCustomer || r == RoleStaff || r == RoleDriver }
 
 // User is an account. The password is never part of it: only a slow salted hash
 // is stored, and it is read through the auth store when a password is checked.

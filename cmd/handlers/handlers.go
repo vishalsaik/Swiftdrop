@@ -55,6 +55,11 @@ type Server struct {
 	Geocoder geocode.Geocoder
 	// GeoLimit limits how often each person may ask the geocoder; NewServer sets it.
 	GeoLimit *geocode.Limiter
+	// Drivers is where a driver's working state is kept (online, last point). Optional: while nil the
+	// driver routes answer 503 (drivers are not set up) and nothing else is affected.
+	Drivers ports.DriverStore
+	// DriverLimit limits how often each driver may send a location; NewServer sets it.
+	DriverLimit *geocode.Limiter
 	// SecureCookies marks the session cookie Secure, so a browser only sends it over
 	// HTTPS. It is on whenever the connection itself is TLS; set it too when TLS is
 	// ended by a proxy in front of the server.
@@ -92,6 +97,9 @@ func NewServer(db ports.Store, pay *payment.Router) *Server {
 		Lookup:  db,
 		// 30 address searches a minute is more than anyone types, and fewer than a script would
 		GeoLimit: geocode.NewLimiter(30, time.Minute),
+		// a driver's app sends a point every 30 seconds, so 6 a minute leaves room for a retry and
+		// stops a script from filling the table
+		DriverLimit: geocode.NewLimiter(6, time.Minute),
 	}
 	// The middleware chain: links run in this order for every route.
 	s.Router.Use(MaxBody(maxBodyBytes))
@@ -109,9 +117,17 @@ func (s *Server) routes() {
 	// (which proves itself by its signature) need no account.
 	s.Router.HandleFunc("/auth/signup", s.SignUp).Methods("POST")
 	s.Router.HandleFunc("/auth/login", s.SignIn).Methods("POST")
-	s.Router.HandleFunc("/auth/logout", s.signedIn(s.SignOut)).Methods("POST")
-	s.Router.HandleFunc("/auth/me", s.signedIn(s.Me)).Methods("GET")
-	s.Router.HandleFunc("/auth/password", s.signedIn(s.ChangePassword)).Methods("POST")
+	s.Router.HandleFunc("/auth/logout", s.anyAccount(s.SignOut)).Methods("POST")
+	s.Router.HandleFunc("/auth/me", s.anyAccount(s.Me)).Methods("GET")
+	s.Router.HandleFunc("/auth/password", s.anyAccount(s.ChangePassword)).Methods("POST")
+
+	// A driver takes deliveries: goes online and offline, says where they are, and (in the routes that
+	// follow) is offered an order and does it. Nothing here is for anyone else.
+	s.Router.HandleFunc("/driver/me", s.driverOnly(s.DriverMe)).Methods("GET")
+	s.Router.HandleFunc("/driver/online", s.driverOnly(s.DriverOnline)).Methods("POST")
+	s.Router.HandleFunc("/driver/offline", s.driverOnly(s.DriverOffline)).Methods("POST")
+	s.Router.HandleFunc("/driver/location", s.driverOnly(s.DriverLocation)).Methods("POST")
+	s.Router.HandleFunc("/drivers", s.staffOnly(s.ListDrivers)).Methods("GET")
 
 	s.Router.HandleFunc("/orders", s.signedIn(s.CreateOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders", s.signedIn(s.ListOrders)).Methods("GET")

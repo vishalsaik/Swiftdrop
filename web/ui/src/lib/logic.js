@@ -833,7 +833,7 @@ export function describeUserEvent(event) {
 
 // accountBadges are the short marks on a person in the list: what they are and what is wrong.
 export function accountBadges(user, youId) {
-  const out = [{ text: user.role === 'staff' ? 'Staff' : 'Customer', tone: 'neutral' }];
+  const out = [{ text: { staff: 'Staff', driver: 'Driver' }[user.role] || 'Customer', tone: 'neutral' }];
   if (user.disabledAt) out.push({ text: 'Disabled', tone: 'bad' });
   if (user.mustChangePassword) out.push({ text: 'Temporary password', tone: 'wait' });
   if (youId && user.id === youId) out.push({ text: 'You', tone: 'good' });
@@ -848,7 +848,7 @@ export function validateNewAccount(form) {
   const role = String(form.role ?? '');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address';
   if (!name) errors.name = 'Enter their name';
-  if (role !== 'staff' && role !== 'customer') errors.role = 'Choose staff or customer';
+  if (role !== 'staff' && role !== 'customer' && role !== 'driver') errors.role = 'Choose staff, customer or driver';
   return { ok: Object.keys(errors).length === 0, errors, payload: { email, name, role } };
 }
 
