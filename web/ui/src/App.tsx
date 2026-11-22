@@ -1,5 +1,6 @@
 import { AuthScreen } from './components/AuthScreen';
 import { CustomerApp } from './components/CustomerApp';
+import { DriverApp } from './components/DriverApp';
 import { MustChangeScreen } from './components/MustChangeScreen';
 import { Shell } from './components/Shell';
 import { Waiting } from './components/ui';
@@ -14,9 +15,10 @@ export function Gate() {
   if (status === 'loading') return <div className="boot"><Waiting label="Loading" /></div>;
   if (status === 'out') return <AuthScreen />;
   if (user?.mustChangePassword) return <MustChangeScreen />;
-  // One app, two shells: a customer orders food, staff run the dispatch dashboard.
+  // One app, three shells: a customer orders food, a driver takes deliveries, staff run the dispatch dashboard.
   // Keyed by the user, so nothing of one account (a cart, an open order) survives into the next.
   if (user?.role === 'customer') return <CustomerApp key={user.id} theme={theme} onTheme={setTheme} />;
+  if (user?.role === 'driver') return <DriverApp key={user.id} theme={theme} onTheme={setTheme} />;
   return <Shell theme={theme} onTheme={setTheme} />;
 }
 

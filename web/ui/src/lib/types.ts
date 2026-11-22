@@ -51,6 +51,37 @@ export interface PaymentView {
 
 export type PaymentType = 'card' | 'wallet' | 'cash';
 
+/** A driver as staff see them (GET /drivers) and as a driver sees themselves (GET /driver/me). */
+export interface Driver {
+  userId: string; name: string; online: boolean; busy: boolean; updatedAt: string;
+  /** the last point they sent; kept only while they are online */
+  latitude?: number; longitude?: number; locationAt?: string;
+  onlineSince?: string; idleSince?: string;
+}
+
+/** Where a restaurant is, as a driver is shown it. */
+export interface Place { name: string; latitude?: number; longitude?: number }
+
+/** The order a driver is being asked to take: no customer, no address, no price. */
+export interface DriverOffer {
+  id: number;
+  /** how long they have to answer, by the server's clock when it was read: count down from this, not from a time */
+  remainingSeconds: number;
+  restaurant: Place;
+  /** how far the restaurant is from where the driver last said they were */
+  pickupKm?: number;
+}
+
+/** The delivery a driver has accepted: where it goes, and nothing of who ordered or what it cost. */
+export interface DriverJob {
+  orderId: string;
+  state: string;
+  foodReady: boolean;
+  itemCount: number;
+  restaurant: Place;
+  deliverTo?: { line1: string; landmark?: string; city?: string; postalCode?: string; latitude: number; longitude: number };
+}
+
 export interface Order {
   id: string;
   customerId: string;
@@ -59,7 +90,10 @@ export interface Order {
   state: string;
   items: OrderItem[];
   createdAt: string;
+  /** staff see the driver's account id; a customer is never sent it (see driverName) */
   assignedDriverId?: string;
+  /** who is delivering it: the whole name for staff, the first name for the customer */
+  driverName?: string;
   /** absent on orders placed before addresses existed */
   deliveryAddress?: DeliveryAddress;
   foodReady?: string;

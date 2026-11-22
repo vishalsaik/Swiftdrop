@@ -6,7 +6,7 @@ import type { Alert, Order } from '../lib/types';
 export const POLL_MS = 3000;
 
 // Runs fn now and then every POLL_MS while the page is visible and `enabled` is true.
-function usePoll(fn: () => Promise<void>, enabled: boolean) {
+export function usePoll(fn: () => Promise<void>, enabled: boolean) {
   const ref = useRef(fn);
   ref.current = fn;
   useEffect(() => {
