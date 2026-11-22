@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"swiftdrop/internal/auth"
 	"swiftdrop/internal/auth/authtest"
 	"swiftdrop/internal/catalog/catalogtest"
@@ -53,7 +51,7 @@ type fakeDB struct {
 	payments map[string]domain.Payment
 
 	// beforeWrite, if set, runs inside a state write (UpdateOrderState,
-	// AcceptOrder, StartPayment, FinishPayment) just before its compare-and-set
+	// StartPayment, FinishPayment) just before its compare-and-set
 	// check, with mu held and the ORDER id. Tests use it to simulate another
 	// request changing things after this request read them.
 	beforeWrite func(f *fakeDB, orderID string)
@@ -97,13 +95,11 @@ type fakeDB struct {
 	beforeMark      func(*fakeDB) // runs inside MarkPaymentNeedsReview, before it looks, to change things under a request
 	createErr       error
 	readyErr        error
-	acceptErr       error
 	updateErr       error
 	// updateErrOn restricts updateErr to moves into this state; "" means every move.
 	updateErrOn domain.OrderState
 
-	stateWrites     []domain.OrderState
-	acceptDriverIDs []string
+	stateWrites []domain.OrderState
 }
 
 // staffPrincipal is who every test server says is signed in, unless a test says
@@ -270,29 +266,6 @@ func (f *fakeDB) SetFoodReady(_ context.Context, id string, from string) (domain
 		o.FoodReady = &now
 	}
 	f.orders[id] = o
-	return o, nil
-}
-
-func (f *fakeDB) AcceptOrder(_ context.Context, id, driverID, from, to string) (domain.Order, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.beforeWrite != nil {
-		f.beforeWrite(f, id)
-	}
-	if f.acceptErr != nil {
-		return domain.Order{}, f.acceptErr
-	}
-	o, ok := f.orders[id]
-	if !ok {
-		return domain.Order{}, notFound(id)
-	}
-	if string(o.State) != from {
-		return domain.Order{}, stateConflict(id)
-	}
-	o.State = domain.OrderState(to)
-	o.AssignedDriverID = driverID
-	f.orders[id] = o
-	f.acceptDriverIDs = append(f.acceptDriverIDs, driverID)
 	return o, nil
 }
 
@@ -995,9 +968,6 @@ func TestAcceptOnlyFromPaid(t *testing.T) {
 
 			if from != domain.OrderPaid {
 				wantStatus(t, rec, http.StatusConflict)
-				if len(db.acceptDriverIDs) != 0 {
-					t.Error("a refused accept must not assign a driver")
-				}
 				if got := db.orders["o1"].AssignedDriverID; got != "" {
 					t.Errorf("driver was set to %q", got)
 				}
@@ -1008,9 +978,6 @@ func TestAcceptOnlyFromPaid(t *testing.T) {
 			if got.State != domain.OrderPreparing {
 				t.Errorf("state = %s, want preparing", got.State)
 			}
-			if _, err := uuid.Parse(got.AssignedDriverID); err != nil {
-				t.Errorf("assignedDriverId %q is not a UUID: %v", got.AssignedDriverID, err)
-			}
 			if got.FoodReady != nil {
 				t.Error("accepting must not mark the food ready")
 			}
@@ -1018,32 +985,23 @@ func TestAcceptOnlyFromPaid(t *testing.T) {
 	}
 }
 
-func TestAcceptAssignsDriverAndStateTogether(t *testing.T) {
+// Accepting is the kitchen taking an order. It chooses no driver: dispatch offers a preparing order to the
+// nearest free driver, and a driver's accepting the offer is what sets one.
+func TestAcceptChoosesNoDriver(t *testing.T) {
 	db := newFakeDB()
 	db.seed("o1", domain.OrderPaid)
-	wantStatus(t, do(t, db, http.MethodPost, "/orders/o1/accept", ""), http.StatusOK)
+	rec := do(t, db, http.MethodPost, "/orders/o1/accept", "")
+	wantStatus(t, rec, http.StatusOK)
 
-	if len(db.acceptDriverIDs) != 1 {
-		t.Fatalf("AcceptOrder called %d times, want 1", len(db.acceptDriverIDs))
-	}
-	if len(db.stateWrites) != 0 {
-		t.Errorf("accept must be one write via AcceptOrder, not a separate state write: %v", db.stateWrites)
+	if got := orderFrom(t, rec); got.AssignedDriverID != "" {
+		t.Errorf("assignedDriverId = %q in the answer, want none", got.AssignedDriverID)
 	}
 	stored := db.orders["o1"]
-	if stored.State != domain.OrderPreparing || stored.AssignedDriverID != db.acceptDriverIDs[0] {
-		t.Errorf("stored order is inconsistent: %+v", stored)
+	if stored.State != domain.OrderPreparing || stored.AssignedDriverID != "" {
+		t.Errorf("stored order = %+v, want preparing with no driver", stored)
 	}
-}
-
-func TestAcceptGivesEachOrderItsOwnDriver(t *testing.T) {
-	db := newFakeDB()
-	db.seed("a", domain.OrderPaid)
-	db.seed("b", domain.OrderPaid)
-	wantStatus(t, do(t, db, http.MethodPost, "/orders/a/accept", ""), http.StatusOK)
-	wantStatus(t, do(t, db, http.MethodPost, "/orders/b/accept", ""), http.StatusOK)
-
-	if db.orders["a"].AssignedDriverID == db.orders["b"].AssignedDriverID {
-		t.Error("two orders were given the same driver ID")
+	if len(db.stateWrites) != 1 || db.stateWrites[0] != domain.OrderPreparing {
+		t.Errorf("accept should be one state write to preparing, got %v", db.stateWrites)
 	}
 }
 
@@ -1052,7 +1010,7 @@ func TestAcceptMissingAndFailing(t *testing.T) {
 
 	db := newFakeDB()
 	db.seed("o1", domain.OrderPaid)
-	db.acceptErr = errors.New("boom")
+	db.updateErr = errors.New("boom")
 	wantStatus(t, do(t, db, http.MethodPost, "/orders/o1/accept", ""), http.StatusInternalServerError)
 	if db.orders["o1"].State != domain.OrderPaid {
 		t.Errorf("a failed accept changed state to %s", db.orders["o1"].State)
@@ -1490,6 +1448,7 @@ func TestFullLifecycle(t *testing.T) {
 		{"/orders/o1/accept", http.StatusOK, domain.OrderPreparing},
 		{"/orders/o1/pickup", http.StatusConflict, domain.OrderPreparing}, // food not ready
 		{"/orders/o1/ready", http.StatusOK, domain.OrderPreparing},
+		{"/orders/o1/pickup", http.StatusConflict, domain.OrderPreparing}, // food ready, but dispatch has not found a driver
 		{"/orders/o1/pickup", http.StatusOK, domain.OrderPickedUp},
 		{"/orders/o1/cancel", http.StatusConflict, domain.OrderPickedUp}, // too late to cancel
 		{"/orders/o1/deliver", http.StatusOK, domain.OrderDelivered},
@@ -1497,6 +1456,12 @@ func TestFullLifecycle(t *testing.T) {
 		{"/orders/o1/cancel", http.StatusConflict, domain.OrderDelivered},
 	}
 	for _, step := range steps {
+		if step.path == "/orders/o1/pickup" && step.want == http.StatusOK {
+			// dispatch offered the order and a driver accepted it: only then is there a driver to pick it up
+			o := db.orders["o1"]
+			o.AssignedDriverID = "driver-1"
+			db.orders["o1"] = o
+		}
 		rec := do(t, db, http.MethodPost, step.path, "")
 		if rec.Code != step.want {
 			t.Fatalf("POST %s = %d, want %d (body: %s)", step.path, rec.Code, step.want, rec.Body.String())

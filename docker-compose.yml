@@ -58,6 +58,9 @@ services:
       # How often refunds are retried and payments are checked: the defaults, unless the tests want it quick.
       REFUND_INTERVAL: ${REFUND_INTERVAL:-}
       RECONCILE_INTERVAL: ${RECONCILE_INTERVAL:-}
+      # How often an order that needs a driver is offered to one, and how far from a restaurant a driver may be.
+      DISPATCH_INTERVAL: ${DISPATCH_INTERVAL:-}
+      DISPATCH_RADIUS_KM: ${DISPATCH_RADIUS_KM:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

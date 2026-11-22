@@ -19,10 +19,12 @@ test('customerStatus says where the order is in the customer\'s words', () => {
   assert.equal(customerStatus(order({ state: 'paid', paymentType: 'cash' })), 'Confirmed. Waiting for the restaurant to accept it');
   assert.equal(customerStatus(order({ state: 'preparing' })), 'Being prepared in the kitchen');
   assert.equal(customerStatus(order({ state: 'preparing', foodReady: '2026-11-21T08:00:00Z' })), 'Ready. Waiting for a driver');
-  assert.equal(customerStatus(order({ state: 'preparing', foodReady: '2026-11-21T08:00:00Z', assignedDriverId: 'd1' })), 'Ready. A driver is picking it up');
+  // the customer is told the driver's first name (the server sends that and never the driver's account id)
+  assert.equal(customerStatus(order({ state: 'preparing', foodReady: '2026-11-21T08:00:00Z', driverName: 'Ana' })), 'Ready. Ana is picking it up');
   // a driver assigned before the food is ready does not make it ready
-  assert.equal(customerStatus(order({ state: 'preparing', assignedDriverId: 'd1' })), 'Being prepared in the kitchen');
+  assert.equal(customerStatus(order({ state: 'preparing', driverName: 'Ana' })), 'Being prepared in the kitchen');
   assert.equal(customerStatus(order({ state: 'picked_up' })), 'On its way to you');
+  assert.equal(customerStatus(order({ state: 'picked_up', driverName: 'Ana' })), 'Ana has it and is on the way to you');
   assert.equal(customerStatus(order({ state: 'delivered' })), 'Delivered');
   assert.equal(customerStatus(order({ state: 'mystery' })), 'mystery');
   assert.equal(customerStatus(order({ state: undefined })), '');
@@ -104,6 +106,6 @@ test('customerTimeline notes ready food on the kitchen step only while it is cur
   const ready = '2026-11-21T08:00:00Z';
   assert.equal(customerTimeline(order({ state: 'preparing' }))[2].note, undefined);
   assert.equal(customerTimeline(order({ state: 'preparing', foodReady: ready }))[2].note, 'ready, waiting for a driver');
-  assert.equal(customerTimeline(order({ state: 'preparing', foodReady: ready, assignedDriverId: 'd1' }))[2].note, 'ready, a driver is on the way');
+  assert.equal(customerTimeline(order({ state: 'preparing', foodReady: ready, driverName: 'Ana' }))[2].note, 'ready, Ana is on the way');
   assert.equal(customerTimeline(order({ state: 'picked_up', foodReady: ready }))[2].note, undefined);
 });

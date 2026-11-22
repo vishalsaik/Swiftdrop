@@ -140,7 +140,7 @@ Tick an item by changing `[ ]` to `[x]` and add a line to the Log.
 
 ### Heavier items (each is a day's agent run, or several; do the first self-contained slice and say what is left)
 
-- [ ] **Real drivers and dispatch.** The "driver" on an order is a random id made up when the kitchen
+- [x] **Real drivers and dispatch.** The "driver" on an order is a random id made up when the kitchen
   accepts it. Replace it with the real thing, in slices (one slice per run; tick the item only when all
   four are done, and log each slice):
   1. *Drivers exist.* Add `RoleDriver` (`'driver'`) to `internal/domain` and the `users.role` check in
@@ -456,3 +456,109 @@ their results, what is left.)
   longer true (the cart page shares the Food home's destination; the journey test and the live check both show it), so it is
   removed. "Choose where to deliver." staying on screen is still listed; not rechecked.
 - **Left for later:** nothing on this item. The customer items are all ticked; next is "Real drivers and dispatch", slice 1.
+
+### 2026-11-22, `feature/drivers-dispatch`: Real drivers and dispatch, slice 1 (drivers exist)
+
+Built by Claude in the session with the user (not by the daily agent), all four slices on one branch; the item is ticked when
+slice 4 is done.
+
+- **Built:** `domain.RoleDriver`; the `users_role_check` constraint re-created with `driver` (the same drop-and-add as
+  `payments_status_check`, so an older database upgrades in place; checked on a database that had the two-role check); a `drivers`
+  table (user id, `online`, `online_since`, one `latitude`/`longitude` and `location_at`, both-or-neither constraint); `ports.DriverStore`
+  with the Postgres adapter and an in-memory `drivertest.Board`; routes `GET /driver/me`, `POST /driver/online`, `/driver/offline`,
+  `/driver/location` for drivers and `GET /drivers` for staff; staff make drivers under People (role choice, Drivers filter) and
+  `cmd/user -role driver`.
+- **Design choices:** (1) **busy is never stored.** A driver is busy while an order assigned to them is `preparing` or `picked_up`,
+  and their idle time runs from going online or from their last finished or cancelled order; both are read from `orders`, so they
+  cannot disagree with it (a stored flag would be one more thing to keep in step across a crash). (2) **A location is kept only while
+  online and never as a trail:** one row, one point, replaced by the next, cleared when the driver goes offline; a location from an
+  offline driver is a 409. (3) **`signedIn` now means customer or staff.** Before, any signed-in account passed it, so a driver would
+  have reached `/orders`, `/restaurants` and `/addresses`; now a driver gets a 403 there, and `anyAccount` keeps sign out, who-am-I
+  and change password for every role. (4) **The driver store is its own interface on `Server`** (nil until `main` sets it, then the
+  routes answer 503), like `Accounts` and `Geocoder`, so no existing fake had to learn about drivers. (5) The location limit reuses
+  the geocoder's per-person limiter (6 a minute; the app sends every 30 s). Rejected: a `status` column (`available`, `on_delivery`)
+  as the old `domain.Driver` had, for the reason in (1); a location history table (nothing needs a trail, and it is the kind of data
+  that is better not to have).
+- **Tests:** against Postgres (`drivers_test.go`: only driver accounts are drivers, a new driver is offline, going online twice keeps
+  the first time, a point is kept only while online and replaced not added, the database refuses a half point, a latitude of 91 and
+  an unknown role, busy and idle time from the orders, the list online first and without disabled accounts, names) and through real
+  sign-in (`driver_test.go`: every driver route refused to staff, customers and signed-out visitors; a driver refused on 15 customer
+  and staff routes but able to see who they are and sign out; a driver made by staff must replace the temporary password first; the
+  point must exist; the rate limit is per driver; 503 when not set up; 500 without leaking the cause). Web: badge, validation, the
+  Driver choice and the Drivers filter. `go test -race -count=1 ./...` passes with `cmd/handlers` at 100.0%.
+- **Not yet (then done in slices 2 to 4, below):** nothing offered a driver an order, and a driver who signed in saw the staff
+  dashboard.
+
+### 2026-11-22, `feature/drivers-dispatch`: Real drivers and dispatch, slices 2 to 4 (dispatch, the driver's routes, the screens)
+
+Built by Claude in the session with the user, on the same branch. Slices 2 and 3 share files (handlers, schema, `main.go`), so
+their code is one commit and their tests another; slice 4 is the web. **The item is ticked.**
+
+- **Slice 2, dispatch decides:** `internal/dispatch` (`Pick`, a pure function; `Service`, the job), `ports.DispatchStore` and its
+  Postgres adapter, the `order_offers` table with its history trigger, and three unique indexes. The stand-in is gone: `AcceptOrder`
+  is removed from the port and the adapter, and `POST /orders/{id}/accept` is a plain `paid → preparing`. Settings
+  `DISPATCH_INTERVAL` (10 s) and `DISPATCH_RADIUS_KM` (8); lease 60 s, point age 3 min, batch 20 are the service's defaults.
+- **Slice 3, the driver's routes:** `GET /driver/offers`, `POST /driver/offers/{id}/accept|decline`, `GET /driver/job`, and
+  `pickup`/`deliver` for the driver's own delivery only (`staffOrDriver`, with `mayAccess` allowing a driver an order assigned to
+  them and not finished; a driver is answered with the job, not the order). `ports.JobStore.CurrentJob`. Staff see the driver's whole
+  name on an order (`driverName`) and a customer the first name, never the driver's account id.
+- **Slice 4, the screens:** `DriverApp` (Go online, the offer with its countdown, the delivery with its one next button), staff's
+  `Drivers` view, the order drawer naming the driver, the customer tracker using the first name. `docs/DISPATCH.md` has the state
+  diagram, the guarantees and what enforces each.
+- **Design choices.** (1) **The guarantees are the database's, not the application's.** Dispatch holds no lock in Go: an order has
+  at most one open offer, a driver at most one, and a driver at most one unfinished delivery, each as a unique index, so several
+  servers can run the job and a race is decided by the insert that succeeds. (2) **An offer is a lease on the database's clock**
+  (`clock_timestamp()`, judged at the moment of the write, not at the start of a transaction), so a lease that ran out while an
+  accept waited its turn is never completed. (3) **The countdown is a number of seconds, not a time:** the browser, this server and
+  the database disagree on the time of day (the Docker VM's is two seconds from the host's), so the store says how many seconds are
+  left, and the browser counts that down on its own clock. (4) **Distance is compared to the nearest 10 metres**, so a few metres of
+  GPS noise never decides who gets an order; ties go to who has waited longest, then by id so the answer is stable. (5) **A driver
+  who declined or let an offer lapse is not asked about that order again** (the cost, in KNOWN_ISSUES: with few drivers an order
+  can wait). (6) **A driver is shown the least:** the offer has the restaurant and the distance; the address only for a delivery they
+  accepted, without the customer's own name for it; never who ordered, what, or the price. An offer that cannot be answered is always
+  the same 404. (7) **`signedIn` means customer or staff:** before, any account passed it, which a driver would have used to read
+  orders. Rejected: a driver-assignment column on the offer (the order's own `assigned_driver_id` already says it), a stored "busy"
+  flag (read from the orders), and an advisory lock in Go.
+- **A real race, found by a test:** the system test (three dispatch servers, 14 orders, five drivers, on a throwaway database)
+  failed on about two runs in five: a driver who had just accepted could be handed another order to hold for the whole lease (the
+  "holds no delivery" check was read just before the accept committed, and the unique index let the offer through once the accept
+  had committed). Fixed by taking the driver's row lock first in both `OfferOrder` and `AcceptOffer` (so for one driver they
+  take turns, and the busy check is a new statement after the lock is granted); two deterministic tests hold the lock open to force
+  each order of events, and the system test passes 12 of 12 runs.
+- **Tests.** Go: `go test -race -count=1 ./...` passes; `cmd/handlers` and `internal/dispatch` are at 100.0%. Against Postgres
+  (`dispatch_test.go`, `drivers_test.go`): leases of exactly the length asked; every refusal (order, driver, disabled, offline, busy,
+  not a driver); who is a candidate; which orders wait; accept sets the driver and the outcome together or neither; a lost lease is
+  never completed; the history can be ended once; 20 drivers offered one order, 20 orders offered to one driver, 20 accepts of one
+  offer, and an accept racing the end of the lease each have exactly one winner. Handlers through real sign-in
+  (`driver_jobs_test.go`): the driver routes are for drivers only; an offer and a job show nothing of the customer; the same 404 for
+  every offer that cannot be answered and for every order that is not the driver's; the whole path from the kitchen to the door.
+  The end-to-end test now runs the road with a real driver over HTTP. Web: 116 node tests and 272 vitest tests pass (the two
+  tests known to time out under load, the orb and the stepper-to-50, failed in a full run under load and passed alone); `tsc
+  --noEmit` is clean.
+- **Mutation check:** 40 hand mutants of `Pick`, the service and the SQL that makes offers and leases safe (a radius edge, the age
+  limit, nearest and farthest, the idle tie-break, the 10 metre step, ending lapsed offers, every condition of an offer, the
+  lease, the accept's transaction, the two driver-row locks, the unique-race handling, the history order, going offline ending an
+  offer): **40 of 40 caught**, after one test fix (one mutant survived because the "offline driver" test used a driver with no row
+  at all; it now uses one who was online and left). A mutant that removed the lock made a failing test leak its own lock and hang
+  the run: the helper now rolls the lock back on any failure.
+- **Go, formatting:** `gofmt` clean with CRs stripped; `go vet ./...` clean.
+- **web/static:** rebuilt on Linux (`node:24-alpine`, CRs stripped, `npm ci && npm run build`) from the committed sources
+  (c77e160: `index-Bn1BSb1H.js`, `index-CerW7lmT.css`); a second fresh Linux build of HEAD was identical to the committed
+  `web/static` (3 files, 0 differences), twice (after a fix found in the live check).
+- **Live check** (throwaway compose project `sddrv`, `DISPATCH_INTERVAL=2s`, demo seed, built-in browser): signed in as staff, the
+  sidebar had Drivers; People made "Dana Driver" with the Driver role and showed her temporary password once; Drivers listed her
+  Offline, "Not taking deliveries"; Dana signed in, was made to choose her own password, and got her own screen (no dashboard).
+  The browser's position was asked exactly once, when Go online was pressed (stubbed to a point 0.4 km from the restaurant); within
+  about two seconds dispatch offered her the staff-placed order: "Noodle Bar, 0.4 km to the restaurant, 59 s to answer", with the
+  countdown ticking and no customer, address or price. Accept made it her delivery: where to collect (with a map link), 3 items,
+  the address with its landmark, "The kitchen is still cooking" and no Picked up button; when staff marked the food ready the
+  screen changed by itself to "The food is ready. Collect it." with Picked up, then Delivered, and she was back to "Waiting for an
+  order". Staff saw "Dana Driver" on the order; a second order from a real customer showed the customer "Ready. Dana is picking it
+  up" and "ready, Dana is on the way", with no driver id and no full name in their list. At 375 px the driver screens and the
+  seven-tab staff bar fit with no sideways scroll. **One bug found by looking:** staff's Drivers rows lost their Online and On a
+  delivery badges on a phone (the People list's rule that hides badges applied to them): fixed (088bda5), rebuilt, and looked at
+  again. The real end-to-end test (`go test ./e2e`, which now includes the driver) passed against this stack.
+- **Left for later:** nothing on this item. Known limits are in `KNOWN_ISSUES.md` ("Drivers and dispatch"): an order every driver in
+  range has refused waits for a new driver, no push to a driver, straight-line distance, no street address for a restaurant, no pay or
+  shifts. The next unticked item is "Email notifications and self-service password reset".
+

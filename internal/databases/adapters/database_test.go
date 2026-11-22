@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -183,10 +182,6 @@ func TestPaymentTypeIsStoredAndReturnedByEveryQuery(t *testing.T) {
 	if err != nil || ready.PaymentType != domain.PaymentWallet {
 		t.Errorf("SetFoodReady: paymentType = %q, err = %v", ready.PaymentType, err)
 	}
-	accepted, err := db.AcceptOrder(ctx, "it-payment", "d1", string(domain.OrderPreparing), string(domain.OrderPreparing))
-	if err != nil || accepted.PaymentType != domain.PaymentWallet {
-		t.Errorf("AcceptOrder: paymentType = %q, err = %v", accepted.PaymentType, err)
-	}
 }
 
 func TestGetMissingOrder(t *testing.T) {
@@ -303,34 +298,20 @@ func TestConcurrentSetFoodReadyKeepsOneTimestamp(t *testing.T) {
 	}
 }
 
-func TestAcceptOrderWritesStateAndDriverTogether(t *testing.T) {
+func TestTheKitchenAcceptingAnOrderChoosesNoDriver(t *testing.T) {
 	db := testAdapter(t)
 	newRow(t, db, "it-accept", domain.OrderPaid)
 
-	got, err := db.AcceptOrder(context.Background(), "it-accept", "driver-42", string(domain.OrderPaid), string(domain.OrderPreparing))
+	got, err := db.UpdateOrderState(context.Background(), "it-accept", string(domain.OrderPaid), string(domain.OrderPreparing))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != domain.OrderPreparing || got.AssignedDriverID != "driver-42" {
-		t.Errorf("returned order = %+v", got)
+	if got.State != domain.OrderPreparing || got.AssignedDriverID != "" {
+		t.Errorf("returned order = %+v, want preparing with no driver: dispatch chooses one", got)
 	}
-
-	stored, err := db.GetOrderbyId(context.Background(), "it-accept")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.State != domain.OrderPreparing || stored.AssignedDriverID != "driver-42" {
-		t.Errorf("stored order = %+v", stored)
-	}
-	if stored.FoodReady != nil {
+	if got.FoodReady != nil {
 		t.Error("accepting must not mark the food ready")
 	}
-}
-
-func TestAcceptOrderMissingOrder(t *testing.T) {
-	db := testAdapter(t)
-	_, err := db.AcceptOrder(context.Background(), "it-does-not-exist", "d", string(domain.OrderPaid), string(domain.OrderPreparing))
-	wantNotFound(t, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -384,20 +365,6 @@ func TestSecondWriteFromTheSameStateLoses(t *testing.T) {
 	}
 }
 
-func TestAcceptFromTheWrongStateAssignsNoDriver(t *testing.T) {
-	db := testAdapter(t)
-	ctx := context.Background()
-	newRow(t, db, "it-cas-accept", domain.OrderCreated) // not paid yet
-
-	_, err := db.AcceptOrder(ctx, "it-cas-accept", "driver-1", string(domain.OrderPaid), string(domain.OrderPreparing))
-	wantConflict(t, err)
-
-	stored, _ := db.GetOrderbyId(ctx, "it-cas-accept")
-	if stored.State != domain.OrderCreated || stored.AssignedDriverID != "" {
-		t.Errorf("a refused accept changed the order: %+v", stored)
-	}
-}
-
 // A failure that is not "no rows" (here, the caller gave up) is an internal
 // error: it must be neither a conflict nor a missing order, or a handler would
 // tell the client something false about the order.
@@ -411,9 +378,9 @@ func TestStateWriteWithACancelledContextIsAnInternalError(t *testing.T) {
 	if err == nil || errors.Is(err, ports.ErrStateConflict) || errors.Is(err, ports.ErrOrderNotFound) {
 		t.Errorf("UpdateOrderState error = %v, want a plain internal error", err)
 	}
-	_, err = db.AcceptOrder(ctx, "it-cas-cancelled", "d1", string(domain.OrderCreated), string(domain.OrderPreparing))
+	_, err = db.SetFoodReady(ctx, "it-cas-cancelled", string(domain.OrderCreated))
 	if err == nil || errors.Is(err, ports.ErrStateConflict) || errors.Is(err, ports.ErrOrderNotFound) {
-		t.Errorf("AcceptOrder error = %v, want a plain internal error", err)
+		t.Errorf("SetFoodReady error = %v, want a plain internal error", err)
 	}
 
 	stored, _ := db.GetOrderbyId(context.Background(), "it-cas-cancelled")
@@ -453,49 +420,5 @@ func TestConcurrentStateWritesHaveExactlyOneWinner(t *testing.T) {
 	}
 	if wins != 1 || conflicts != racers-1 {
 		t.Errorf("wins=%d conflicts=%d, want exactly 1 and %d", wins, conflicts, racers-1)
-	}
-}
-
-func TestConcurrentAcceptsAssignExactlyOneDriver(t *testing.T) {
-	db := testAdapter(t)
-	ctx := context.Background()
-	newRow(t, db, "it-cas-drivers", domain.OrderPaid)
-
-	const racers = 20
-	type result struct {
-		driver string
-		err    error
-	}
-	results := make([]result, racers)
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := range racers {
-		wg.Go(func() {
-			<-start
-			driver := fmt.Sprintf("driver-%d", i)
-			_, err := db.AcceptOrder(ctx, "it-cas-drivers", driver, string(domain.OrderPaid), string(domain.OrderPreparing))
-			results[i] = result{driver, err}
-		})
-	}
-	close(start)
-	wg.Wait()
-
-	winner := ""
-	for _, r := range results {
-		if r.err == nil {
-			if winner != "" {
-				t.Fatalf("two drivers won: %s and %s", winner, r.driver)
-			}
-			winner = r.driver
-		} else if !errors.Is(r.err, ports.ErrStateConflict) {
-			t.Errorf("unexpected error: %v", r.err)
-		}
-	}
-	if winner == "" {
-		t.Fatal("no accept won")
-	}
-	stored, _ := db.GetOrderbyId(ctx, "it-cas-drivers")
-	if stored.AssignedDriverID != winner || stored.State != domain.OrderPreparing {
-		t.Errorf("stored %+v, want the winner %s and state preparing", stored, winner)
 	}
 }

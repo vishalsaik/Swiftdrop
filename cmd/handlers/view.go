@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"swiftdrop/internal/databases/ports"
@@ -21,6 +23,10 @@ type orderView struct {
 	// domain.IssueFor), so it cannot go out of date. Absent when there is
 	// nothing to tell the customer.
 	PaymentIssue domain.PaymentIssue `json:"paymentIssue,omitempty"`
+	// DriverName is who is delivering it, once a driver has taken it: the whole name for staff, and for a
+	// customer only the first, the way a delivery person introduces themselves. A customer is never sent the
+	// driver's account id (assignedDriverId is empty for them), only that there is a driver.
+	DriverName string `json:"driverName,omitempty"`
 }
 
 // paymentView is the part of a payment a customer-facing screen may see. It
@@ -58,6 +64,48 @@ func viewOf(o domain.Order, p *domain.Payment) orderView {
 		}
 	}
 	return v
+}
+
+// unknownDriver is what a customer is told when an order has a driver whose name cannot be read.
+const unknownDriver = "Your driver"
+
+// nameDrivers fills in who is delivering each order, and keeps the driver's account id for staff: a customer
+// is told only the first name, and an order with a driver whose name cannot be read still says it has one. A
+// name that cannot be looked up is not a reason to fail the answer, only to leave it out.
+func (s *Server) nameDrivers(ctx context.Context, role domain.Role, views ...*orderView) {
+	var ids []string
+	seen := map[string]bool{}
+	for _, v := range views {
+		if id := v.AssignedDriverID; id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var names map[string]string
+	if s.Drivers != nil {
+		var err error
+		if names, err = s.Drivers.DriverNames(ctx, ids); err != nil {
+			log.Printf("reading the names of drivers: %v", err)
+		}
+	}
+	for _, v := range views {
+		id := v.AssignedDriverID
+		if id == "" {
+			continue
+		}
+		if role == domain.RoleStaff {
+			v.DriverName = names[id]
+			continue
+		}
+		v.AssignedDriverID = ""
+		v.DriverName = unknownDriver
+		if first := strings.Fields(names[id]); len(first) > 0 {
+			v.DriverName = first[0]
+		}
+	}
 }
 
 // loadView reads an order's payment and builds its view. If it cannot, it has

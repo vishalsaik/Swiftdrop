@@ -154,18 +154,3 @@ func (db *DBAdapter) SetFoodReady(ctx context.Context, id string, from string) (
 	}
 	return o, nil
 }
-
-func (db *DBAdapter) AcceptOrder(ctx context.Context, id string, driverID string, from, to string) (domain.Order, error) {
-	// The state and the driver are written together, and only if the order is
-	// still in `from`: a request that lost the race assigns no driver at all.
-	query := `
-		UPDATE orders
-		SET state = $1, assigned_driver_id = $2, updated_at = now()
-		WHERE id = $3 AND state = $4
-		RETURNING ` + orderColumns
-	o, err := scanOrder(db.Pool.QueryRow(ctx, query, to, driverID, id, from))
-	if err != nil {
-		return domain.Order{}, db.translateStateWrite(ctx, err, id, "failed to accept order")
-	}
-	return o, nil
-}

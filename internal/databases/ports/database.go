@@ -46,7 +46,6 @@ type IDatabase interface {
 	// keeps the first timestamp. The order's state does not change.
 	SetFoodReady(ctx context.Context, id string, from string) (domain.Order, error)
 
-	// AcceptOrder moves the order from `from` to `to` and assigns the driver
-	// in one write, with the same compare-and-set rule as UpdateOrderState.
-	AcceptOrder(ctx context.Context, id string, driverID string, from, to string) (domain.Order, error)
+	// An order's driver is not set here: dispatch offers a preparing order to a driver, and the driver's
+	// accepting is what sets it, in the same transaction as the offer's outcome (see DispatchStore).
 }

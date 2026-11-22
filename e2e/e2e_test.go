@@ -7,7 +7,8 @@
 //	SWIFTDROP_E2E_STAFF_PASSWORD=...     its password
 //
 // For the refund step to finish quickly start the server with REFUND_INTERVAL=2s; at the default of
-// 30 seconds the test simply waits longer.
+// 30 seconds the test simply waits longer. The same goes for DISPATCH_INTERVAL=1s, which is how often an
+// order that needs a driver is offered to one (the default is 10 seconds).
 package e2e
 
 import (
@@ -19,6 +20,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +173,125 @@ func (s *session) fetchOrder(id string) map[string]any {
 	return s.want(s.do("GET", "/orders/"+id, nil), 200, "read order "+id).body
 }
 
+// deliverWithADriver is the road part of the journey, with a real driver: staff make a driver account, who
+// replaces the temporary password, goes online near the restaurant and says where they are; the kitchen accepts
+// and prepares the order; dispatch offers it to the driver (this waits for the job, which runs every
+// DISPATCH_INTERVAL; set it to 1s for a quick run); the driver takes it, collects it and delivers it. Along the
+// way it checks what the driver is never shown, and what staff and the customer see of the driver.
+func deliverWithADriver(t *testing.T, base, run string, staff, customer *session, id string) {
+	t.Helper()
+	email, name, temp := "e2e-driver-"+run+"@example.test", "Dina Driver", ""
+	made := staff.want(staff.do("POST", "/users", map[string]string{"email": email, "name": name, "role": "driver"}), 201, "make a driver").body
+	temp = str(made["temporaryPassword"])
+	if temp == "" {
+		t.Fatalf("no temporary password for the new driver: %v", made)
+	}
+
+	// the driver signs in on the temporary password, which can do nothing but be replaced
+	driver := newSession(t, base)
+	driver.signIn(email, temp)
+	driver.want(driver.do("GET", "/driver/me", nil), 403, "a driver on a temporary password")
+	own := "a long unique driver passphrase " + run
+	driver.want(driver.do("POST", "/auth/password", map[string]string{"currentPassword": temp, "newPassword": own}), 204, "choose their own password")
+	driver = newSession(t, base)
+	driver.signIn(email, own)
+
+	// a driver is not a customer or staff member
+	for _, path := range []string{"/orders", "/restaurants", "/addresses", "/users", "/alerts"} {
+		driver.want(driver.do("GET", path, nil), 403, "a driver reading "+path)
+	}
+	customer.want(customer.do("GET", "/driver/me", nil), 403, "a customer on the driver's route")
+	staff.want(staff.do("POST", "/driver/online", nil), 403, "staff on the driver's route")
+
+	// online, and where they are: 400 metres from the restaurant
+	driver.want(driver.do("POST", "/driver/online", nil), 200, "go online")
+	driver.want(driver.do("POST", "/driver/location", map[string]any{"latitude": 64.1502, "longitude": -21.9426}), 200, "say where they are")
+	driver.want(driver.do("POST", "/driver/location", map[string]any{"latitude": 91, "longitude": 0}), 422, "a place that does not exist")
+
+	// the kitchen accepts: that chooses no driver
+	staff.want(staff.do("POST", "/orders/"+id+"/accept", nil), 200, "accept")
+	if got := str(staff.fetchOrder(id)["assignedDriverId"]); got != "" {
+		t.Fatalf("accepting chose driver %q: dispatch chooses", got)
+	}
+	staff.want(staff.do("POST", "/orders/"+id+"/ready", nil), 200, "ready")
+	driver.want(driver.do("POST", "/orders/"+id+"/pickup", nil), 404, "a driver picking up an order that is not theirs")
+
+	// dispatch offers it
+	var offer map[string]any
+	deadline := time.Now().Add(60 * time.Second)
+	for offer == nil {
+		offer, _ = driver.want(driver.do("GET", "/driver/offers", nil), 200, "read the offer").body["offer"].(map[string]any)
+		if offer == nil {
+			if time.Now().After(deadline) {
+				t.Fatal("dispatch never offered the order to the online driver (is DISPATCH_INTERVAL short, and is the job running?)")
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	shown := driver.do("GET", "/driver/offers", nil).raw
+	for _, secret := range []string{"Eve", "unitPriceCents", "Smash burger", "1 Test Street", "customerId", "paymentType"} {
+		if strings.Contains(shown, secret) {
+			t.Errorf("a driver's offer shows %q: %s", secret, shown)
+		}
+	}
+	if km, _ := offer["pickupKm"].(float64); km < 0.3 || km > 0.5 {
+		t.Errorf("the restaurant is %v km from the driver, want about 0.4", offer["pickupKm"])
+	}
+	if secs, _ := offer["remainingSeconds"].(float64); secs <= 0 || secs > 60 {
+		t.Errorf("remainingSeconds = %v, want what is left of the 60 second lease", offer["remainingSeconds"])
+	}
+
+	// the driver takes it
+	offerPath := "/driver/offers/" + fmtInt(num(offer["id"]))
+	job := driver.want(driver.do("POST", offerPath+"/accept", nil), 200, "accept the offer").body["job"].(map[string]any)
+	driver.want(driver.do("POST", offerPath+"/accept", nil), 404, "accepting the same offer again")
+	if to, _ := job["deliverTo"].(map[string]any); str(to["line1"]) != "1 Test Street" {
+		t.Errorf("the delivery goes to %v, want the order's address", job["deliverTo"])
+	}
+	if raw := driver.do("GET", "/driver/job", nil).raw; strings.Contains(raw, "Eve") || strings.Contains(raw, "customerId") || strings.Contains(raw, "Smash burger") {
+		t.Errorf("a driver's delivery shows the customer's or the order's details: %s", raw)
+	}
+	if str(job["orderId"]) != id {
+		t.Errorf("the job is %v, want %s", job["orderId"], id)
+	}
+
+	// who is delivering it: staff see the whole name, the customer the first name and never the id
+	if v := staff.fetchOrder(id); str(v["driverName"]) != name || str(v["assignedDriverId"]) == "" {
+		t.Errorf("staff see driver %q (%q), want %q and the id", v["driverName"], v["assignedDriverId"], name)
+	}
+	if v := customer.fetchOrder(id); str(v["driverName"]) != "Dina" || str(v["assignedDriverId"]) != "" {
+		t.Errorf("the customer sees driver %q (id %q), want the first name and no id", v["driverName"], v["assignedDriverId"])
+	}
+
+	// collect it, deliver it
+	customer.want(customer.do("POST", "/orders/"+id+"/pickup", nil), 403, "a customer picking up")
+	driver.want(driver.do("POST", "/orders/"+id+"/deliver", nil), 409, "delivering before collecting")
+	driver.want(driver.do("POST", "/orders/"+id+"/pickup", nil), 200, "pick up")
+	driver.want(driver.do("POST", "/orders/"+id+"/deliver", nil), 200, "deliver")
+	driver.want(driver.do("POST", "/orders/"+id+"/deliver", nil), 404, "delivering a finished order")
+	if st := str(customer.fetchOrder(id)["state"]); st != "delivered" {
+		t.Fatalf("the customer sees %q, want delivered", st)
+	}
+	if after := driver.want(driver.do("GET", "/driver/job", nil), 200, "read the job after delivering").body; after["job"] != nil {
+		t.Errorf("a delivered order is still the driver's job: %v", after["job"])
+	}
+
+	// the drivers list shows them, and they go offline
+	var seen bool
+	for _, d := range staff.want(staff.do("GET", "/drivers", nil), 200, "list drivers").body["drivers"].([]any) {
+		if str(d.(map[string]any)["name"]) == name && d.(map[string]any)["online"] == true {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("staff do not see the driver online in the drivers list")
+	}
+	driver.want(driver.do("POST", "/driver/offline", nil), 200, "go offline")
+}
+
+// fmtInt writes a whole number the way a URL wants it.
+func fmtInt(n int64) string { return strconv.FormatInt(n, 10) }
+
 // TestACustomerOrdersAndTheOrderIsDelivered is the journey: staff set up a menu, a customer signs up,
 // browses, orders (and cannot name a price), pays, the kitchen and the road do their parts, and the
 // customer sees it delivered. Then the other ways it can go: a price change, a cancel with a refund,
@@ -311,12 +432,7 @@ func TestACustomerOrdersAndTheOrderIsDelivered(t *testing.T) {
 		t.Fatalf("after paying the state is %q, want paid", st)
 	}
 	customer.want(customer.do("POST", "/orders/"+id+"/accept", nil), 403, "a customer accepting their own order")
-	for _, step := range []string{"accept", "ready", "pickup", "deliver"} {
-		staff.want(staff.do("POST", "/orders/"+id+"/"+step, nil), 200, step)
-	}
-	if st := str(customer.fetchOrder(id)["state"]); st != "delivered" {
-		t.Fatalf("the customer sees %q, want delivered", st)
-	}
+	deliverWithADriver(t, base, run, staff, customer, id)
 
 	// -- a new price applies to new orders; the delivered one keeps its own
 	staff.want(staff.do("PATCH", "/menu/"+burger, map[string]any{"priceCents": 1100}), 200, "change the price")

@@ -80,6 +80,7 @@ jobs:
     timeout-minutes: 20
     env:
       REFUND_INTERVAL: 2s
+      DISPATCH_INTERVAL: 1s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

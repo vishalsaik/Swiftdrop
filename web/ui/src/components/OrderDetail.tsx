@@ -85,7 +85,7 @@ export function OrderDetail({ order, role, canSeeHistory, onClose, onChanged }: 
     ...(refund ? [['Refund', refund] as [string, string]] : []),
     ...(order.deliveryAddress ? [['Deliver to', [addressLine(order.deliveryAddress), order.deliveryAddress.landmark].filter(Boolean).join(' · ')] as [string, string]] : []),
     ...(role === 'staff' ? [['Customer', order.customerId] as [string, string], ['Restaurant', order.restaurantId] as [string, string]] : []),
-    ...(order.assignedDriverId ? [['Driver', order.assignedDriverId.slice(0, 8)] as [string, string]] : []),
+    ...(order.assignedDriverId ? [['Driver', order.driverName || order.assignedDriverId.slice(0, 8)] as [string, string]] : []),
     ...(order.foodReady ? [['Food ready', timeAgo(order.foodReady)] as [string, string]] : []),
   ];
 

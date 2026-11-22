@@ -9,6 +9,7 @@ import { useToast } from '../toasts';
 import type { Theme } from '../theme';
 import { AccountSheet } from './AccountSheet';
 import { AlertsView } from './AlertsView';
+import { DriversView } from './DriversView';
 import { Icon } from './Icon';
 import { MenuView } from './Menu';
 import { NewOrderSheet } from './NewOrderSheet';
@@ -17,7 +18,7 @@ import { OrderList, type Stage } from './OrderList';
 import { PeopleView } from './People';
 import { Avatar, Waiting } from './ui';
 
-type View = 'orders' | 'alerts' | 'people' | 'menu';
+type View = 'orders' | 'alerts' | 'people' | 'menu' | 'drivers';
 type SheetName = 'new' | 'account' | null;
 
 interface NoticeEntry { id: string; orderId: string; notice: Notice }
@@ -148,6 +149,7 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
             <h2 className="side-title">Admin</h2>
             <ul className="side-list">
               <SideItem icon="flame" tint="orange" label="Menu" active={view === 'menu'} onClick={() => pick('menu')} />
+              <SideItem icon="scooter" tint="teal" label="Drivers" active={view === 'drivers'} onClick={() => pick('drivers')} />
               <SideItem icon="person" tint="purple" label="People" active={view === 'people'} onClick={() => pick('people')} />
             </ul>
           </>
@@ -165,8 +167,8 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
       <div className="main" id="content" tabIndex={-1}>
         <header className="page-head">
           <div>
-            <h1>{view === 'alerts' ? 'Alerts' : view === 'people' ? 'People' : view === 'menu' ? 'Menu' : `${greeting()}, ${user.name.trim().split(/\s+/)[0] || 'there'}`}</h1>
-            <p className="sub">{view === 'alerts' ? 'Things that need a person.' : view === 'people' ? 'Staff and customers, and what they can do.' : view === 'menu' ? 'Restaurants and what they sell.' : caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.'}</p>
+            <h1>{view === 'alerts' ? 'Alerts' : view === 'people' ? 'People' : view === 'menu' ? 'Menu' : view === 'drivers' ? 'Drivers' : `${greeting()}, ${user.name.trim().split(/\s+/)[0] || 'there'}`}</h1>
+            <p className="sub">{view === 'alerts' ? 'Things that need a person.' : view === 'people' ? 'Staff, customers and drivers, and what they can do.' : view === 'menu' ? 'Restaurants and what they sell.' : view === 'drivers' ? 'Who is taking deliveries, and who is on one.' : caps.everyonesOrders ? 'Here is how the orders are doing.' : 'Here are your orders.'}</p>
           </div>
           <div className="head-tools">
             <span className={`live ${online === false ? 'off' : online ? 'on' : ''}`} role="status">
@@ -195,6 +197,8 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
           <PeopleView me={user} />
         ) : view === 'menu' && caps.menu ? (
           <MenuView />
+        ) : view === 'drivers' && caps.drivers ? (
+          <DriversView />
         ) : (
           <AlertsView alerts={alerts} knownOrders={new Set(byId.keys())} onOpenOrder={openOrder} onResolved={refreshAll} />
         )}
@@ -204,6 +208,7 @@ export function Shell({ theme, onTheme }: { theme: Theme; onTheme(t: Theme): voi
         <TabButton icon="tray" label="Orders" active={view === 'orders'} onClick={() => pick('orders', stage)} />
         {caps.alerts && <TabButton icon="bell" label="Alerts" badge={alerts.length} active={view === 'alerts'} onClick={() => pick('alerts')} />}
         {caps.menu && <TabButton icon="flame" label="Menu" active={view === 'menu'} onClick={() => pick('menu')} />}
+        {caps.drivers && <TabButton icon="scooter" label="Drivers" active={view === 'drivers'} onClick={() => pick('drivers')} />}
         {caps.people && <TabButton icon="person" label="People" active={view === 'people'} onClick={() => pick('people')} />}
         <TabButton icon="plus" label="New" onClick={() => setSheet('new')} />
         <TabButton icon="person" label="Account" onClick={() => setSheet('account')} />

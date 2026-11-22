@@ -20,7 +20,6 @@ import (
 	"swiftdrop/internal/payment"
 	"swiftdrop/internal/validation"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
@@ -55,6 +54,15 @@ type Server struct {
 	Geocoder geocode.Geocoder
 	// GeoLimit limits how often each person may ask the geocoder; NewServer sets it.
 	GeoLimit *geocode.Limiter
+	// Drivers is where a driver's working state is kept (online, last point). Optional: while nil the
+	// driver routes answer 503 (drivers are not set up) and nothing else is affected.
+	Drivers ports.DriverStore
+	// DriverLimit limits how often each driver may send a location; NewServer sets it.
+	DriverLimit *geocode.Limiter
+	// Dispatch is where a driver's offers are read and answered, and Jobs is where their current delivery is
+	// read. Optional like Drivers: while nil the driver's offer and job routes answer 503.
+	Dispatch ports.DispatchStore
+	Jobs     ports.JobStore
 	// SecureCookies marks the session cookie Secure, so a browser only sends it over
 	// HTTPS. It is on whenever the connection itself is TLS; set it too when TLS is
 	// ended by a proxy in front of the server.
@@ -92,6 +100,9 @@ func NewServer(db ports.Store, pay *payment.Router) *Server {
 		Lookup:  db,
 		// 30 address searches a minute is more than anyone types, and fewer than a script would
 		GeoLimit: geocode.NewLimiter(30, time.Minute),
+		// a driver's app sends a point every 30 seconds, so 6 a minute leaves room for a retry and
+		// stops a script from filling the table
+		DriverLimit: geocode.NewLimiter(6, time.Minute),
 	}
 	// The middleware chain: links run in this order for every route.
 	s.Router.Use(MaxBody(maxBodyBytes))
@@ -109,9 +120,21 @@ func (s *Server) routes() {
 	// (which proves itself by its signature) need no account.
 	s.Router.HandleFunc("/auth/signup", s.SignUp).Methods("POST")
 	s.Router.HandleFunc("/auth/login", s.SignIn).Methods("POST")
-	s.Router.HandleFunc("/auth/logout", s.signedIn(s.SignOut)).Methods("POST")
-	s.Router.HandleFunc("/auth/me", s.signedIn(s.Me)).Methods("GET")
-	s.Router.HandleFunc("/auth/password", s.signedIn(s.ChangePassword)).Methods("POST")
+	s.Router.HandleFunc("/auth/logout", s.anyAccount(s.SignOut)).Methods("POST")
+	s.Router.HandleFunc("/auth/me", s.anyAccount(s.Me)).Methods("GET")
+	s.Router.HandleFunc("/auth/password", s.anyAccount(s.ChangePassword)).Methods("POST")
+
+	// A driver takes deliveries: goes online and offline, says where they are, and (in the routes that
+	// follow) is offered an order and does it. Nothing here is for anyone else.
+	s.Router.HandleFunc("/driver/me", s.driverOnly(s.DriverMe)).Methods("GET")
+	s.Router.HandleFunc("/driver/online", s.driverOnly(s.DriverOnline)).Methods("POST")
+	s.Router.HandleFunc("/driver/offline", s.driverOnly(s.DriverOffline)).Methods("POST")
+	s.Router.HandleFunc("/driver/location", s.driverOnly(s.DriverLocation)).Methods("POST")
+	s.Router.HandleFunc("/driver/offers", s.driverOnly(s.DriverOffer)).Methods("GET")
+	s.Router.HandleFunc("/driver/offers/{id}/accept", s.driverOnly(s.AcceptDriverOffer)).Methods("POST")
+	s.Router.HandleFunc("/driver/offers/{id}/decline", s.driverOnly(s.DeclineDriverOffer)).Methods("POST")
+	s.Router.HandleFunc("/driver/job", s.driverOnly(s.DriverJob)).Methods("GET")
+	s.Router.HandleFunc("/drivers", s.staffOnly(s.ListDrivers)).Methods("GET")
 
 	s.Router.HandleFunc("/orders", s.signedIn(s.CreateOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders", s.signedIn(s.ListOrders)).Methods("GET")
@@ -119,8 +142,9 @@ func (s *Server) routes() {
 	s.Router.HandleFunc("/orders/{id}/cancel", s.signedIn(s.CancelOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/pay", s.signedIn(s.PayOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/ready", s.staffOnly(s.ReadyState)).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/deliver", s.staffOnly(s.DeliverOrder)).Methods("POST")
-	s.Router.HandleFunc("/orders/{id}/pickup", s.staffOnly(s.PickupOrder)).Methods("POST")
+	// Staff move any order along; a driver may pick up and deliver only their own (anything else is "not found").
+	s.Router.HandleFunc("/orders/{id}/deliver", s.staffOrDriver(s.DeliverOrder)).Methods("POST")
+	s.Router.HandleFunc("/orders/{id}/pickup", s.staffOrDriver(s.PickupOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/accept", s.staffOnly(s.AcceptOrder)).Methods("POST")
 	s.Router.HandleFunc("/orders/{id}/refund", s.staffOnly(s.RecordRefund)).Methods("POST")
 	s.Router.HandleFunc("/restaurants", s.signedIn(s.ListRestaurants)).Methods("GET")
@@ -229,7 +253,7 @@ func (s *Server) saveState(w http.ResponseWriter, r *http.Request, id string, fr
 		writeWriteError(w, id, err, "Failed to update order due to an internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	s.writeOrder(w, r, updated)
 }
 
 // writeWriteError answers a failed state write. A lost race is the caller's to
@@ -343,6 +367,7 @@ func (s *Server) GetOrderByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if view, ok := s.loadView(w, r, o); ok {
+		s.nameDrivers(r.Context(), principalFrom(r).User.Role, &view)
 		writeJSON(w, http.StatusOK, view)
 	}
 }
@@ -397,24 +422,11 @@ func (s *Server) PickupOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	s.saveState(w, r, o.ID, o.State, domain.OrderPickedUp)
 }
+
+// AcceptOrder is the kitchen taking an order: paid to preparing. It does not choose a driver: dispatch
+// offers a preparing order to the nearest free driver (see internal/dispatch).
 func (s *Server) AcceptOrder(w http.ResponseWriter, r *http.Request) {
-	o, ok := s.loadOrder(w, r)
-	if !ok {
-		return
-	}
-	if !order.CanTransition(o.State, domain.OrderPreparing) {
-		writeIllegalTransition(w, o, domain.OrderPreparing)
-		return
-	}
-	// TODO: stand-in for real dispatch. Replace once the driver/dispatch feature exists.
-	driverID := uuid.New().String()
-	updated, err := s.DB.AcceptOrder(r.Context(), o.ID, driverID, string(o.State), string(domain.OrderPreparing))
-	if err != nil {
-		log.Printf("database update error for %s: %v", o.ID, err)
-		writeWriteError(w, o.ID, err, "Failed to accept order due to an internal server error")
-		return
-	}
-	writeJSON(w, http.StatusOK, updated)
+	s.transition(w, r, domain.OrderPreparing)
 }
 
 // PayOrder pays for an order, and is idempotent: calling it again for the same

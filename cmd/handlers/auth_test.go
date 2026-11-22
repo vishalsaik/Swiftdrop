@@ -497,16 +497,17 @@ func TestOnlyStaffRunTheKitchenTheDeliveryAndTheAlerts(t *testing.T) {
 		{http.MethodGet, "/alerts"}, {http.MethodPost, "/alerts/1/resolve"},
 	} {
 		wantStatus(t, anonymous.do(c.method, c.path, ""), http.StatusUnauthorized)
+		before := w.db.orders["o1"]
 		rec := customer.do(c.method, c.path, "")
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("customer %s %s = %d, want 403 even for their own order", c.method, c.path, rec.Code)
 		}
+		if after := w.db.orders["o1"]; after.State != before.State || after.AssignedDriverID != before.AssignedDriverID {
+			t.Errorf("a refused customer %s %s changed the order: %+v -> %+v", c.method, c.path, before, after)
+		}
 		if code := staff.do(c.method, c.path, "").Code; code == http.StatusUnauthorized || code == http.StatusForbidden {
 			t.Errorf("staff %s %s = %d, want it let through", c.method, c.path, code)
 		}
-	}
-	if w.db.orders["o1"].State != domain.OrderPaid && w.db.orders["o1"].AssignedDriverID == "" {
-		t.Error("state changed by a customer")
 	}
 }
 

@@ -441,8 +441,8 @@ test('a customer is spoken to as the customer: "Pay now", and their own refund',
 });
 
 test('only staff are shown the alerts, the history and everyone\'s orders', () => {
-  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true, people: true, menu: true });
-  for (const role of ['customer', 'admin', '', undefined]) {
+  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true, people: true, menu: true, drivers: true });
+  for (const role of ['customer', 'driver', 'admin', '', undefined]) {
     assert.ok(Object.values(capabilities(role)).every((v) => v === false), String(role));
   }
 });
@@ -589,6 +589,7 @@ test('the marks on a person show what they are and what is wrong', () => {
   const tones = (u, you) => accountBadges(u, you).map((b) => `${b.text}:${b.tone}`);
   assert.deepEqual(tones({ id: 'u', role: 'staff' }), ['Staff:neutral']);
   assert.deepEqual(tones({ id: 'u', role: 'customer' }), ['Customer:neutral']);
+  assert.deepEqual(tones({ id: 'u', role: 'driver' }), ['Driver:neutral']);
   assert.deepEqual(tones({ id: 'u', role: 'customer', disabledAt: '2026-01-01T00:00:00Z' }), ['Customer:neutral', 'Disabled:bad']);
   assert.deepEqual(tones({ id: 'u', role: 'staff', mustChangePassword: true }), ['Staff:neutral', 'Temporary password:wait']);
   assert.deepEqual(tones({ id: 'u', role: 'staff' }, 'u'), ['Staff:neutral', 'You:good']);
@@ -601,6 +602,8 @@ test('a new account is checked before anything is sent', () => {
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.payload, { email: 'ada@example.com', name: 'Ada Lovelace', role: 'staff' });
   assert.equal(validateNewAccount({ email: 'a@b.co', name: 'A', role: 'customer' }).ok, true);
+  assert.equal(validateNewAccount({ email: 'a@b.co', name: 'A', role: 'driver' }).ok, true);
+  assert.equal(validateNewAccount({ email: 'a@b.co', name: 'A', role: 'courier' }).errors.role, 'Choose staff, customer or driver');
 
   const bad = validateNewAccount({ email: 'nope', name: '  ', role: 'admin' });
   assert.equal(bad.ok, false);

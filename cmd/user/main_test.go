@@ -82,6 +82,20 @@ func TestACustomerAccountCanBeMadeToo(t *testing.T) {
 	}
 }
 
+func TestADriverAccountCanBeMadeToo(t *testing.T) {
+	svc, store := service()
+	code, out, errOut := runCmd(svc, nil, "-email", "dev@example.com", "-name", "Dev Driver", "-role", "driver")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if u := store.Users["dev@example.com"]; u == nil || u.User.Role != domain.RoleDriver {
+		t.Errorf("account = %+v, want a driver", u)
+	}
+	if !strings.Contains(out, "Created the driver account") {
+		t.Errorf("output = %q, want it to say a driver account was made", out)
+	}
+}
+
 func TestWhatIsMissingOrWrongIsSaidAndNothingIsMade(t *testing.T) {
 	svc, store := service()
 	for name, c := range map[string]struct {
@@ -90,7 +104,7 @@ func TestWhatIsMissingOrWrongIsSaidAndNothingIsMade(t *testing.T) {
 	}{
 		"no email":        {[]string{"-name", "Dee"}, "-email and -name are required"},
 		"no name":         {[]string{"-email", "d@example.com"}, "-email and -name are required"},
-		"an odd role":     {[]string{"-email", "d@example.com", "-name", "Dee", "-role", "admin"}, "staff or customer"},
+		"an odd role":     {[]string{"-email", "d@example.com", "-name", "Dee", "-role", "admin"}, "staff, customer or driver"},
 		"an unknown flag": {[]string{"-nope"}, "flag provided but not defined"},
 	} {
 		code, _, errOut := runCmd(svc, nil, c.args...)

@@ -12,6 +12,24 @@ export interface LocationState {
 
 const IDLE: LocationState = { status: 'idle', position: null, message: '' };
 
+export type PositionResult = { ok: true; position: Position } | { ok: false; code: number };
+
+/**
+ * One look at where the person is, asked for now (the browser shows its own prompt the first time). For a
+ * driver, who sends it on purpose and again every half minute while they are online; code is the browser's
+ * (1 denied, 2 unavailable, 3 timed out). Nothing is kept here.
+ */
+export function currentPosition(): Promise<PositionResult> {
+  return new Promise((resolve) => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) { resolve({ ok: false, code: 2 }); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ ok: true, position: { lat: p.coords.latitude, lng: p.coords.longitude } }),
+      (e) => resolve({ ok: false, code: e.code }),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 10_000 },
+    );
+  });
+}
+
 /**
  * Where the person is, only when they ask for it. Nothing happens until ask() is called (the
  * browser shows its own permission prompt then, not before), the position is kept in memory only,

@@ -1,5 +1,5 @@
 // Types for logic.js, which stays plain JavaScript so `node --test` can run it with no tooling.
-import type { AccountEvent, Alert, LedgerEvent, MenuItem, Order, Restaurant, Role, User } from './types';
+import type { AccountEvent, Alert, Driver, DriverJob, DriverOffer, LedgerEvent, MenuItem, Order, Restaurant, Role, User } from './types';
 
 export interface Column { key: string; title: string; states: string[] }
 export const COLUMNS: Column[];
@@ -19,7 +19,7 @@ export interface OrderAction {
   why?: string;
 }
 export function actionsFor(order: Order, role?: Role | string): OrderAction[];
-export interface Capabilities { alerts: boolean; history: boolean; placeForOthers: boolean; everyonesOrders: boolean; kitchen: boolean; people: boolean; menu: boolean }
+export interface Capabilities { alerts: boolean; history: boolean; placeForOthers: boolean; everyonesOrders: boolean; kitchen: boolean; people: boolean; menu: boolean; drivers: boolean }
 export function capabilities(role: Role | string | null | undefined): Capabilities;
 
 export interface JourneyStep { key: string; label: string; status: 'done' | 'current' | 'todo' | 'skipped' | 'stopped'; note?: string }
@@ -129,3 +129,13 @@ export function checkoutBody(input: {
   id: string; cart: { restaurantId: string | null; lines: readonly StoredCartLine[] } | null; paymentType: string; destination: CheckoutDestination | null;
 }): { body: CheckoutBody | null; problem: string };
 export function checkoutProblem(status: number, body: unknown): string;
+
+export const DRIVER_LOCATION_MS: number;
+export function driverStatusLine(driver: Driver | null | undefined, offer: DriverOffer | null | undefined, job: DriverJob | null | undefined): string;
+export function offerCountdown(secondsLeft: number): string;
+export function pickupText(km: number | null | undefined): string;
+export interface JobStep { text: string; action: 'pickup' | 'deliver' | null; label: string }
+export function jobStep(job: DriverJob | null | undefined): JobStep | null;
+export function driverBadges(driver: Driver): { text: string; tone: 'neutral' | 'bad' | 'wait' | 'good' }[];
+export function lastHeard(driver: Driver, now?: number): string;
+export function driverLocationProblem(code: number): string;

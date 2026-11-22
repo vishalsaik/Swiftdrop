@@ -510,3 +510,18 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filte
 .check-line { display: flex; align-items: center; gap: 8px; font-size: 15px; padding: 4px 4px 0; }
 .check-line input { width: auto; margin: 0; }
 .attribution { padding-top: 0; }
+
+/* the driver's screen: a few cards, one thing to do at a time */
+.driver-app .capp-main { display: grid; gap: 16px; align-content: start; }
+.driver-card { display: grid; gap: 10px; padding: 16px; border-radius: 18px; background: var(--card); box-shadow: var(--shadow); }
+.driver-card h2 { font-size: 22px; line-height: 1.2; }
+.driver-card small { color: var(--label-2); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+.driver-card.offer { border: 2px solid var(--green); }
+.driver-card .kv a { margin-left: 6px; }
+.driver-card .kv.address .v { display: grid; gap: 2px; text-align: right; }
+.driver-card .action-row { display: flex; gap: 10px; }
+.driver-card .action-row .btn { flex: 1; }
+.countdown { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.countdown.late { color: var(--red); }
+/* People rows drop their badges on a phone, but staff need a driver's badges there: online, free or on a delivery */
+.person.driver-row .row-trail { display: grid; }

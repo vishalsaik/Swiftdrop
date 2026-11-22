@@ -133,7 +133,7 @@ function forCustomer(actions, charged) {
 // What each role is shown. The server enforces all of it; this only decides what to draw.
 export function capabilities(role) {
   const staff = role === 'staff';
-  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff, people: staff, menu: staff };
+  return { alerts: staff, history: staff, placeForOthers: staff, everyonesOrders: staff, kitchen: staff, people: staff, menu: staff, drivers: staff };
 }
 
 // timeline is the order's journey as rows a departure board can show. A
@@ -257,9 +257,9 @@ export function customerStatus(order) {
       return `${cash ? 'Confirmed' : 'Paid'}. Waiting for the restaurant to accept it`;
     case 'preparing':
       if (!order.foodReady) return 'Being prepared in the kitchen';
-      return order.assignedDriverId ? 'Ready. A driver is picking it up' : 'Ready. Waiting for a driver';
+      return order.driverName ? `Ready. ${order.driverName} is picking it up` : 'Ready. Waiting for a driver';
     case 'picked_up':
-      return 'On its way to you';
+      return order.driverName ? `${order.driverName} has it and is on the way to you` : 'On its way to you';
     case 'delivered':
       return 'Delivered';
     case 'cancelled':
@@ -321,7 +321,7 @@ export function customerTimeline(order) {
     if (step.key === 'paid' && order.paymentType === 'cash') label = 'Confirmed';
     const out = { ...step, label };
     if (step.key === 'preparing' && step.status === 'current' && order.foodReady) {
-      out.note = order.assignedDriverId ? 'ready, a driver is on the way' : 'ready, waiting for a driver';
+      out.note = order.driverName ? `ready, ${order.driverName} is on the way` : 'ready, waiting for a driver';
     }
     return out;
   });
@@ -833,7 +833,7 @@ export function describeUserEvent(event) {
 
 // accountBadges are the short marks on a person in the list: what they are and what is wrong.
 export function accountBadges(user, youId) {
-  const out = [{ text: user.role === 'staff' ? 'Staff' : 'Customer', tone: 'neutral' }];
+  const out = [{ text: { staff: 'Staff', driver: 'Driver' }[user.role] || 'Customer', tone: 'neutral' }];
   if (user.disabledAt) out.push({ text: 'Disabled', tone: 'bad' });
   if (user.mustChangePassword) out.push({ text: 'Temporary password', tone: 'wait' });
   if (youId && user.id === youId) out.push({ text: 'You', tone: 'good' });
@@ -848,7 +848,7 @@ export function validateNewAccount(form) {
   const role = String(form.role ?? '');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address';
   if (!name) errors.name = 'Enter their name';
-  if (role !== 'staff' && role !== 'customer') errors.role = 'Choose staff or customer';
+  if (role !== 'staff' && role !== 'customer' && role !== 'driver') errors.role = 'Choose staff, customer or driver';
   return { ok: Object.keys(errors).length === 0, errors, payload: { email, name, role } };
 }
 
@@ -924,4 +924,67 @@ export function checkoutProblem(status, body) {
   if (status === 422 && fields.length) return fields.join('. ');
   if (status === 0) return "Can't reach the server. Your cart is kept: press Place order again when you are back online.";
   return errorMessage(status, body);
+}
+
+// ---------------------------------------------------------------------------
+// the driver
+// ---------------------------------------------------------------------------
+
+/** How often an online driver's position is sent: the server keeps one point per driver, and dispatch ignores one older than 3 minutes. */
+export const DRIVER_LOCATION_MS = 30_000;
+
+// driverStatusLine is the one line at the top of a driver's screen: where they stand.
+export function driverStatusLine(driver, offer, job) {
+  if (job) return job.state === 'picked_up' ? 'On a delivery: take it to the customer' : 'On a delivery: collect it from the restaurant';
+  if (offer) return 'An order is waiting for your answer';
+  if (driver && driver.online) return 'Online. Waiting for an order near you';
+  return 'Offline. Go online to be offered orders';
+}
+
+// offerCountdown is what the offer says about the time left to answer (whole seconds, never below 0).
+export function offerCountdown(secondsLeft) {
+  const s = Math.max(0, Math.ceil(Number(secondsLeft) || 0));
+  return s === 0 ? 'Time is up' : `${s} s to answer`;
+}
+
+// pickupText says how far the restaurant is, or nothing when the driver has not said where they are.
+export function pickupText(km) {
+  if (typeof km !== 'number' || !Number.isFinite(km) || km < 0) return '';
+  return km < 0.1 ? 'You are at the restaurant' : `${km.toFixed(1)} km to the restaurant`;
+}
+
+// jobStep is what a driver does next on their delivery: the words, and the one button (if any) that moves it on.
+export function jobStep(job) {
+  if (!job) return null;
+  if (job.state === 'picked_up') return { text: 'Take it to the customer.', action: 'deliver', label: 'Delivered' };
+  if (job.state === 'delivered') return { text: 'Delivered. Thank you.', action: null, label: '' };
+  if (job.state === 'preparing') {
+    return job.foodReady
+      ? { text: 'The food is ready. Collect it.', action: 'pickup', label: 'Picked up' }
+      : { text: 'Go to the restaurant. The kitchen is still cooking.', action: null, label: '' };
+  }
+  return { text: 'This delivery has ended.', action: null, label: '' };
+}
+
+// driverBadges are the short marks on a driver in staff's list: whether they are taking deliveries, and busy or free.
+export function driverBadges(driver) {
+  if (!driver.online) return [{ text: 'Offline', tone: 'neutral' }];
+  return [{ text: 'Online', tone: 'good' }, driver.busy ? { text: 'On a delivery', tone: 'wait' } : { text: 'Free', tone: 'good' }];
+}
+
+// lastHeard is when staff last heard from an online driver: the time of their last point.
+export function lastHeard(driver, now = Date.now()) {
+  if (!driver.online) return '';
+  const ago = driver.locationAt ? timeAgo(driver.locationAt, now) : '';
+  return ago ? `Last seen ${ago}` : 'Has not sent a location yet';
+}
+
+// driverLocationProblem is what a driver is told when their position cannot be had: unlike a customer they
+// cannot work without it, so it says what that costs.
+export function driverLocationProblem(code) {
+  const why = {
+    1: 'Location is turned off for this page. Allow it in your browser, then try again.',
+    3: 'Your location took too long to find. Try again.',
+  }[code] || 'Your location could not be found. Try again.';
+  return `${why} Orders are offered to the nearest driver, so you cannot go online without it.`;
 }

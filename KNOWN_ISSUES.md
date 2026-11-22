@@ -6,7 +6,7 @@ Things we decided **not** to build yet, written down so they are not forgotten. 
 
 v1 is the whole journey working end to end (see the README). This is what it leaves out on purpose, and what that costs.
 
-- **Drivers are a stand-in.** `/accept` assigns a random id; there is no driver registry, no driver app, no dispatch and no location. The order's driver is not shown by name anywhere.
+- **Drivers and dispatch are basic.** Drivers exist and are offered orders (see "Drivers and dispatch" below), but there is no pay, no shift, no rating and no vehicle, and nothing tells a driver by push that an order is waiting.
 - **Nothing is sent to a customer.** No email, SMS or push. The customer sees status in their own view while it is open; the messages the dispatcher sees are the same sentences.
 - **Accounts have no email.** A forgotten password is reset by a staff member, who passes the temporary password on by hand. There is no self-service reset, no email checking and no two-factor sign-in (see Orders and API).
 - **Menus are plain.** A name, a description, a price in dollars (one currency, fixed) and sold out or not. No categories, photos, options or sizes, opening hours, stock counts, tax, delivery fee, tips or discounts. Items and restaurants cannot be deleted (an item is marked sold out, a restaurant is closed); a staff member can change any restaurant's menu, there is no per-restaurant login.
@@ -41,7 +41,7 @@ Built: saved addresses, an address search, "where I am", and a delivery check on
 - **A paid geocoder may not allow what we do.** Google and Mapbox restrict storing the coordinates they return (we keep saved addresses and each order's copy); Nominatim-compatible services built on OpenStreetMap data do not, but need the "© OpenStreetMap contributors" credit, which the dashboard shows. Check a service's terms before pointing `GEOCODER_URL` at it.
 - **The delivery check is a circle.** Straight-line distance within the restaurant's radius; no delivery zones drawn on a map, no delivery fee by distance, no estimated time.
 - **Addresses are personal data.** A person can remove each saved address, but accounts cannot be deleted yet, so what they keep stays until they remove it, and an order keeps its copy of the address for as long as the order exists. There is no export.
-- **No contact number.** A driver (when there are drivers) cannot call the customer: no phone number is collected.
+- **No contact number.** A driver cannot call the customer: no phone number is collected.
 - **Old orders have no address,** and an address cannot be added to an order after it is placed.
 - **Staff placing an order for a customer cannot use that customer's saved addresses** (they are the customer's own); staff search for, or type in, the address. With no geocoder set up, staff type the street and its coordinates by hand.
 - **Saved addresses have a label but no "default".** The customer chooses each time.
@@ -104,15 +104,30 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 - **The tracker shows status only.** A customer's order opens as a page (timeline, payment message and sentence, items, total, delivery address, pay and cancel), with no payment history. It has no map, no driver name and no time estimate, because drivers are still a stand-in, and it learns of changes by polling every 3 seconds while the page is visible (nothing is pushed, and nothing is sent when the page is closed). The restaurant is not named on the order (the order keeps its restaurant's id, not its name). Paying from the page still asks for a payment method id (a Stripe test token such as `pm_card_visa`), as the drawer did: there is no card form yet.
 - **One app, two shells.** A customer and staff run the same bundle and the same API; the role decides the shell. Hiding a staff tool is only a convenience, as it always was: the server answers `403` or `404` for anything a customer may not do, and a test checks that a customer's view never asks for staff-only routes.
 - **Sample orders are a staff tool.** A customer with no orders is pointed at Food instead.
-- **What the customer view still lacks:** no **map** (addresses are confirmed as text, the tracker draws no route), no **driver** (no name, no position, no time estimate: drivers are a stand-in until the "Real drivers and dispatch" work), and no **notifications** (nothing is emailed, texted or pushed; the customer learns of a change only while the page is open). There is no reorder, no rating and no receipt to keep.
+- **What the customer view still lacks:** no **map** (addresses are confirmed as text, the tracker draws no route), no **driver position or time estimate** (the tracker names the driver by first name but draws no route and does not follow them), and no **notifications** (nothing is emailed, texted or pushed; the customer learns of a change only while the page is open). There is no reorder, no rating and no receipt to keep.
 - **The journey test uses a fake server.** `CustomerJourney.test.tsx` runs the real screens in a simulated browser against a small stateful fake of the API, so CI needs no browser. The Go end-to-end test walks the same journey over HTTP against the real server and database, but nothing yet drives the real page against the real server in CI; that was checked by hand in a browser.
+
+## Drivers and dispatch
+
+How it works, and what keeps it safe with several servers, is in [docs/DISPATCH.md](docs/DISPATCH.md). What it does not do:
+
+- **An order that every driver in range has refused or let lapse waits for a new driver.** A driver who said no (or did not answer) is not offered the same order again, so with few drivers an order can wait with nobody left to ask until another comes online. Staff see it as "Waiting for a driver" and can cancel it. There is no alert and no widening of the radius.
+- **A driver is not told by a push.** Their screen asks every 3 seconds, so an offer can take that long to appear and only works while the page is open. A tab in the background is throttled by the browser and may be slower still; a phone that sleeps sends no location, and a driver whose point is older than 3 minutes is not offered orders.
+- **Distance is a straight line**, from the restaurant to the driver's last point, to the nearest 10 metres. Roads, one-way streets and traffic are not considered, and a driver is not told how far the customer is until they accept.
+- **A restaurant has no street address.** A driver is shown its name, its place on the map and a link that opens it in Google Maps (which receives those coordinates when the driver presses it). The delivery address is shown, with its landmark, only after they accept.
+- **No contact number, no pay, no shifts, no vehicle, no rating, no history screen** for a driver. The offer history (`order_offers`) is kept but nothing shows it.
+- **A driver's point is exact while they are online** and visible to staff in the Drivers list only as "last seen"; the point itself is used for dispatch and shown to no one. It is forgotten when they go offline. If a driver's phone dies while online, the point stays until they go offline or sign in again; dispatch stops trusting it after 3 minutes.
+- **Dispatch runs inside the API process,** like the refund job. Several API servers can run it at once (the database decides every race), but a server that is busy with requests also runs its own rounds.
+- **The lease is 60 seconds and the round is 10:** an order waits up to 10 seconds for its first offer, and a lapsed offer is given to the next driver at the next round, so up to 70 seconds can pass between one driver's silence and the next offer. `DISPATCH_INTERVAL` shortens the second.
+- **A driver cannot decline an order after accepting it.** Staff can cancel it, which frees the driver, but there is no "I cannot do this" for a driver: the delivery stays theirs until it is delivered or cancelled.
+- **Timestamps in the history are the database's clock** and may differ by seconds from this computer's; that is on purpose (see docs/DISPATCH.md).
 
 ## The dashboard
 
 - It polls every 3 seconds. Pushing changes to the screen (server-sent events) is not built.
 - Its rules (`logic.js`) and its screens (in a simulated browser, against a fake server) have automated tests. How it looks, the animation and the phone layout were checked by hand in a browser, so a change to those needs a look in a browser.
 - The build output in `web/static` is committed, because the Go server embeds it and `go run` must work without Node. After a change in `web/ui`, run `npm run build` there and commit the result; a stale build is the one thing no test can tell, because both halves are valid on their own.
-- Two libraries.dev effects are used, both only for the long wait of a payment that has no answer yet: a thinking orb beside such an order, and a border beam round its notice in the inspector (off for people who ask for less motion). Short waits keep plain CSS dots. Both draw every frame, so many orders waiting at once would mean many animations; that is fine while a stuck payment is rare. They added about 110 kB to the script (270 kB to 380 kB, 107 kB gzipped). Bot avatars were not used: a driver is only an id.
+- Two libraries.dev effects are used, both only for the long wait of a payment that has no answer yet: a thinking orb beside such an order, and a border beam round its notice in the inspector (off for people who ask for less motion). Short waits keep plain CSS dots. Both draw every frame, so many orders waiting at once would mean many animations; that is fine while a stuck payment is rare. They added about 110 kB to the script (270 kB to 380 kB, 107 kB gzipped). Bot avatars were not used.
 - The customer messages are shown to the dispatcher too, in the same words the customer's view uses. Nothing is sent to a customer: no email or push yet.
 - It uses the system font (SF on Apple devices, Segoe UI on Windows, Roboto elsewhere), so there is nothing to download and it looks different from device to device.
 - Shutting down on Ctrl+C (the server stops, then the refund job finishes what it is doing) is in `main.go`, which has no automated test.
@@ -125,5 +140,4 @@ Built: `POST /webhooks/stripe` (see the README). What it leaves open:
 ## Stand-ins
 
 - Wallet payments go to the same Stripe gateway as cards.
-- `/accept` assigns a random UUID as the driver. No driver registry, no dispatch.
 - Without `STRIPE_KEY` the fake gateway is used. Use only Stripe **test-mode** keys while developing.

@@ -24,14 +24,14 @@ func passwordChangeAllowed(r *http.Request) bool {
 	return false
 }
 
-// ListAccounts answers accounts, newest first: {"accounts": [...]}. Filters: ?role=staff or
-// customer, ?status=active or disabled, ?q= (part of the email or the name), ?limit=.
+// ListAccounts answers accounts, newest first: {"accounts": [...]}. Filters: ?role=staff, customer or
+// driver, ?status=active or disabled, ?q= (part of the email or the name), ?limit=.
 func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	noStore(w)
 	query := r.URL.Query()
 	q := ports.UserQuery{Role: domain.Role(query.Get("role")), Status: query.Get("status"), Search: query.Get("q")}
 	if q.Role != "" && !q.Role.Valid() {
-		writeError(w, http.StatusBadRequest, "role must be staff or customer")
+		writeError(w, http.StatusBadRequest, "role must be staff, customer or driver")
 		return
 	}
 	if q.Status != "" && q.Status != "active" && q.Status != "disabled" {
