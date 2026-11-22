@@ -441,8 +441,8 @@ test('a customer is spoken to as the customer: "Pay now", and their own refund',
 });
 
 test('only staff are shown the alerts, the history and everyone\'s orders', () => {
-  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true, people: true, menu: true });
-  for (const role of ['customer', 'admin', '', undefined]) {
+  assert.deepEqual(capabilities('staff'), { alerts: true, history: true, placeForOthers: true, everyonesOrders: true, kitchen: true, people: true, menu: true, drivers: true });
+  for (const role of ['customer', 'driver', 'admin', '', undefined]) {
     assert.ok(Object.values(capabilities(role)).every((v) => v === false), String(role));
   }
 });

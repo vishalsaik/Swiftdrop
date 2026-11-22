@@ -61,7 +61,7 @@ describe('an order\'s page', () => {
   it('shows the status, the items and total, the delivery address and the money, and nothing of staff', async () => {
     const user = userEvent.setup();
     serve([order({
-      id: 'o1', state: 'paid', payment: paid(), restaurantId: 'r-secret', assignedDriverId: 'driver-123456789',
+      id: 'o1', state: 'paid', payment: paid(), restaurantId: 'r-secret', assignedDriverId: 'driver-123456789', driverName: 'Ana',
       items: [{ sku: 'A', name: 'Pad thai', quantity: 2, unitPriceCents: 1290 }, { sku: 'B', name: 'Spring rolls', quantity: 1, unitPriceCents: 850 }],
       deliveryAddress: { label: 'Home', line1: '12 100 Feet Road', city: 'Bengaluru', landmark: 'Opposite the park', latitude: 12.97, longitude: 77.64 },
     })]);
