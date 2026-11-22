@@ -57,6 +57,8 @@ describe('the people screen', () => {
     await openPeople(user);
     await user.click(screen.getByRole('tab', { name: 'Staff' }));
     await waitFor(() => expect(server.calls.some((c) => c.path.startsWith('/users?') && c.path.includes('role=staff'))).toBe(true));
+    await user.click(screen.getByRole('tab', { name: 'Drivers' }));
+    await waitFor(() => expect(server.calls.some((c) => c.path.startsWith('/users?') && c.path.includes('role=driver'))).toBe(true));
     await user.click(screen.getByRole('tab', { name: 'Disabled' }));
     await waitFor(() => expect(server.calls.some((c) => c.path.includes('status=disabled'))).toBe(true));
     await user.type(screen.getByLabelText('Search people'), 'ada');
@@ -117,6 +119,21 @@ describe('adding a person', () => {
     expect(within(sheet).getByText(/must choose their own password/)).toBeTruthy();
     // the list was read again, so the new person is there
     await waitFor(() => expect(server.callsTo('GET', '/users').length).toBeGreaterThan(1));
+  });
+
+  it('can make a driver, and says what a driver may do', async () => {
+    const user = userEvent.setup();
+    const made: User = { id: 'u-drv', email: 'dev@example.com', name: 'Dev Driver', role: 'driver', mustChangePassword: true };
+    const { server, sheet } = await addSheet(user, { 'POST /users': () => ({ status: 201, body: { user: made, temporaryPassword: 'Tmp-Pass-123456789' } }) });
+    await user.type(within(sheet).getByLabelText('Name'), 'Dev Driver');
+    await user.type(within(sheet).getByLabelText('Email'), 'dev@example.com');
+    await user.click(within(sheet).getByRole('tab', { name: 'Driver' }));
+    expect(within(sheet).getByText(/offered deliveries nearby and sees only the one they are doing/)).toBeTruthy();
+    await user.click(within(sheet).getByRole('button', { name: 'Create account' }));
+
+    expect(await within(sheet).findByText('Tmp-Pass-123456789')).toBeTruthy();
+    expect(server.callsTo('POST', '/users')[0].body).toEqual({ email: 'dev@example.com', name: 'Dev Driver', role: 'driver' });
+    expect(within(sheet).getByText('driver')).toBeTruthy();
   });
 
   it('says when the email already has an account', async () => {
