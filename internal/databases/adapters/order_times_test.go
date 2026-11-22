@@ -44,9 +44,6 @@ func TestEveryOrderWriteMovesUpdatedAtAndKeepsCreatedAt(t *testing.T) {
 		"SetFoodReady": {domain.OrderPreparing, func(db *DBAdapter, id string) (domain.Order, error) {
 			return db.SetFoodReady(ctx, id, string(domain.OrderPreparing))
 		}},
-		"AcceptOrder": {domain.OrderPaid, func(db *DBAdapter, id string) (domain.Order, error) {
-			return db.AcceptOrder(ctx, id, "d1", string(domain.OrderPaid), string(domain.OrderPreparing))
-		}},
 		"StartPayment": {domain.OrderCreated, func(db *DBAdapter, id string) (domain.Order, error) {
 			_, _, err := db.StartPayment(ctx, domain.Payment{ID: "pay-" + id, OrderID: id, AmountCents: 1}, time.Minute,
 				string(domain.OrderCreated), string(domain.OrderPaymentPending))

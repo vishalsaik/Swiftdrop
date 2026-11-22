@@ -58,11 +58,8 @@ func TestStateWriteThatLosesTheRaceAnswers409AndChangesNothing(t *testing.T) {
 				t.Errorf("state = %s, want the winner's %s left alone", got, tt.winner)
 			}
 			wantWrites(t, db)
-			if len(db.acceptDriverIDs) != 0 {
-				t.Errorf("a lost race must not assign a driver, got %v", db.acceptDriverIDs)
-			}
-			if tt.name == "accept" && db.orders["o1"].AssignedDriverID != "" {
-				t.Errorf("the losing accept left driver %q on the order", db.orders["o1"].AssignedDriverID)
+			if got := db.orders["o1"].AssignedDriverID; tt.name == "accept" && got != "" {
+				t.Errorf("the losing accept left driver %q on the order", got)
 			}
 		})
 	}
@@ -276,7 +273,7 @@ func TestFiftySimultaneousCancelsCancelOnce(t *testing.T) {
 	wantWrites(t, db, domain.OrderCancelled)
 }
 
-func TestFiftySimultaneousAcceptsAssignOneDriver(t *testing.T) {
+func TestFiftySimultaneousAcceptsMoveTheOrderOnce(t *testing.T) {
 	db := newFakeDB()
 	db.seed("o1", domain.OrderPaid)
 	s := newTestServer(db, testPayRouter())
@@ -288,11 +285,9 @@ func TestFiftySimultaneousAcceptsAssignOneDriver(t *testing.T) {
 	if ok != 1 || conflict != racers-1 || other != 0 {
 		t.Errorf("200s=%d 409s=%d other=%d, want exactly one 200 and %d 409s", ok, conflict, other, racers-1)
 	}
-	if len(db.acceptDriverIDs) != 1 {
-		t.Fatalf("%d drivers were assigned, want exactly 1", len(db.acceptDriverIDs))
-	}
-	if got := db.orders["o1"].AssignedDriverID; got != db.acceptDriverIDs[0] {
-		t.Errorf("stored driver %q is not the one that won, %q", got, db.acceptDriverIDs[0])
+	wantWrites(t, db, domain.OrderPreparing)
+	if got := db.orders["o1"].AssignedDriverID; got != "" {
+		t.Errorf("accepting chose driver %q, want none: dispatch chooses", got)
 	}
 }
 
