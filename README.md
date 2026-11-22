@@ -37,7 +37,7 @@ To stop: `docker compose down` (add `-v` to forget the data). Settings are envir
 
 ### What v1 is not
 
-Drivers are a stand-in (a random id is assigned when the kitchen accepts), nothing is sent by email, a forgotten password is reset by staff, and menus are plain (no photos, categories, options, fees or tax). The full list, and what each leaves open, is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md#v1-what-it-is-not). What changed is in [CHANGELOG.md](CHANGELOG.md).
+Dispatch is simple (the nearest free driver, by straight line, offered the order for a minute; see [docs/DISPATCH.md](docs/DISPATCH.md)), drivers have no pay, shifts or ratings, nothing is sent by email, a forgotten password is reset by staff, and menus are plain (no photos, categories, options, fees or tax). The full list, and what each leaves open, is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md#v1-what-it-is-not). What changed is in [CHANGELOG.md](CHANGELOG.md).
 
 ### How it is checked
 
@@ -102,14 +102,16 @@ Early stage. Working today:
 - Every payment has a **ledger**: an append-only history (`payment_events`) of what happened to it: started, taken over by a retry, authorized or declined, and every refund attempt. A trigger in the database writes it, in the same transaction as the change it describes, so a change that is rolled back leaves no trace and no code path can forget to record one. History rows cannot be updated, and a payment with a history cannot be deleted. `GET /orders/{id}/payment-history` reads it, and the dashboard shows it in the order drawer
 - Small guarantees added on the way: `SetFoodReady` is a compare-and-set like every other write; a card or wallet payment without a valid payment method is refused with a `422` **before** anything is claimed (so it cannot leave a payment stuck in `processing`); a body that is not JSON is a `400`; orders record `createdAt` and `updatedAt`
 
-Stand-ins for now: wallet payments go to the same Stripe gateway as cards, `/accept` assigns a random UUID as the driver. Not built yet: a real driver registry and dispatch.
+Stand-in for now: wallet payments go to the same Stripe gateway as cards.
+
+**Drivers and dispatch.** A driver is an account with the `driver` role (staff make one under People, or `go run ./cmd/user -role driver`). The driver signs in, goes online (the browser asks where they are only then, and the point is sent every 30 seconds and forgotten when they go offline), and is **offered** orders: when the kitchen accepts an order, a background job (`DISPATCH_INTERVAL`, default 10 s; `DISPATCH_RADIUS_KM`, default 8) offers it to the nearest free driver for 60 seconds, then to the next if they say no or do not answer. The driver accepts, collects it when the food is ready, and delivers it. A driver sees the restaurant and how far it is, and the address only of the delivery they have accepted: never who ordered, what, or what it cost. Staff see a **Drivers** list (online, free or on a delivery, last seen) and the driver's name on each order; a customer sees the driver's first name. How it works and what keeps it safe with several servers at once is in [docs/DISPATCH.md](docs/DISPATCH.md).
 
 ## Tech stack
 
 - Go 1.25
 - [gorilla/mux](https://github.com/gorilla/mux) for HTTP routing
 - [pgx](https://github.com/jackc/pgx) for Postgres access
-- [google/uuid](https://github.com/google/uuid) for the stand-in driver IDs and the fake payment IDs
+- [google/uuid](https://github.com/google/uuid) for account, session and fake payment IDs
 - PostgreSQL 16 (via Docker for local dev)
 - The dashboard is React 19 and TypeScript, built with Vite (`web/ui`). Its build output is committed in `web/static`, so `go run ./cmd/api` needs no Node. Node 20+ is only needed to change or test the dashboard
 
@@ -225,7 +227,7 @@ npm run typecheck
 npm run build     # refreshes web/static, which Go embeds; commit the result
 ```
 
-The end-to-end test (`e2e/`) needs a running server and is skipped unless `SWIFTDROP_E2E_URL` is set. Against the Docker stack, with a staff account made as in the quickstart (start the stack with `REFUND_INTERVAL=2s` so the refund step is quick):
+The end-to-end test (`e2e/`) needs a running server and is skipped unless `SWIFTDROP_E2E_URL` is set. Against the Docker stack, with a staff account made as in the quickstart (start the stack with `REFUND_INTERVAL=2s DISPATCH_INTERVAL=1s` so the refund and the offer to a driver are quick; the test makes its own driver):
 
 ```bash
 SWIFTDROP_E2E_URL=http://127.0.0.1:8080 SWIFTDROP_E2E_STAFF_EMAIL=you@example.com SWIFTDROP_E2E_STAFF_PASSWORD='your password' go test -count=1 -v ./e2e
@@ -273,11 +275,20 @@ The screens are tested in a simulated browser against a fake server (sign-in, ro
 | GET    | `/alerts`              | The problems a person has to look at, newest activity first: `{"alerts": [{id, kind, subject, orderId, message, occurrences, createdAt, lastSeenAt}]}`. Open ones only; `?all=true` adds the resolved ones. For the people running the service |
 | POST   | `/orders/{id}/refund`  | Staff only. Record a refund a person made by hand after the system gave up on it or the provider reversed it: `{"reference": "re_...", "note": "paid from the dashboard"}` (reference required, up to 200 characters; note optional, up to 500). Works only on a payment whose refund `failed`; answers `200` with the order, `409` with the reason for anything else (still being refunded, already done, never tried, never charged, no payment), `422` for a bad field. It never moves money or asks the provider for anything. Who recorded it is the signed-in account |
 | POST   | `/alerts/{id}/resolve` | Close an alert, optionally with a note: `{"note": "refunded by hand"}` (no body is fine). `404` unknown id, `409` already resolved, `400` bad id or body |
-| POST   | `/orders/{id}/accept`  | Restaurant accepts: `paid → preparing` and a stub driver is assigned; `409` otherwise       |
+| POST   | `/orders/{id}/accept`  | Restaurant accepts: `paid → preparing`; `409` otherwise. It chooses no driver: dispatch offers the order to one |
 | POST   | `/orders/{id}/cancel`  | Cancel an order (`409` if its current state can't be cancelled)                            |
 | POST   | `/orders/{id}/ready`   | Mark the food ready; only while `preparing`, otherwise `409` (also if the order changed while the request ran). State stays `preparing`      |
-| POST   | `/orders/{id}/pickup`  | `preparing → picked_up`; `409` unless food is ready **and** a driver is assigned           |
-| POST   | `/orders/{id}/deliver` | `picked_up → delivered`; `409` from any other state                                        |
+| POST   | `/orders/{id}/pickup`  | `preparing → picked_up`; `409` unless food is ready **and** a driver is assigned. Staff, or the driver whose delivery it is |
+| POST   | `/orders/{id}/deliver` | `picked_up → delivered`; `409` from any other state. Staff, or the driver whose delivery it is |
+| GET    | `/driver/me`           | A driver's own state: `{"driver": {online, busy, latitude, longitude, locationAt, ...}}`    |
+| POST   | `/driver/online`, `/driver/offline` | Take deliveries, or stop. Going offline forgets the driver's point and ends an offer they hold |
+| POST   | `/driver/location`     | `{"latitude": 12.97, "longitude": 77.64}` replaces the driver's point (one point, never a trail). `409` while offline, `422` for a place that does not exist, `429` past 6 a minute |
+| GET    | `/driver/offers`       | The one order the driver is offered, or `{"offer": null}`: `{"offer": {id, remainingSeconds, restaurant: {name, latitude, longitude}, pickupKm}}`. No customer, address or price |
+| POST   | `/driver/offers/{id}/accept`, `/decline` | Answer it. Accept answers `{"job": ...}` and makes it the driver's delivery. An offer that cannot be answered (never existed, not theirs, answered, ran out, order cancelled) is always the same `404`; `409` if the driver already has a delivery |
+| GET    | `/driver/job`          | The driver's current delivery, or `{"job": null}`: restaurant, number of items, and where it goes (address and landmark) |
+| GET    | `/drivers`             | Staff only. Every driver, online first: `{"drivers": [{userId, name, online, busy, locationAt, ...}]}` |
+
+A driver account reaches nothing else of the customer's or staff's (`403`), apart from signing out, who-am-I and changing their password. Dispatch, and what keeps it safe with several servers, is in [docs/DISPATCH.md](docs/DISPATCH.md).
 
 Every lifecycle endpoint answers `404` for an unknown order and `409` for a move the order's current state doesn't allow. Errors are always `{"error": "..."}`.
 
